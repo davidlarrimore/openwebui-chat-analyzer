@@ -16,12 +16,6 @@ fi
 
 echo "✅ Python 3 found: $(python3 --version)"
 
-# Create project directory
-PROJECT_DIR="$HOME/openwebui-analyzer"
-mkdir -p "$PROJECT_DIR"
-cd "$PROJECT_DIR"
-
-echo "📁 Created project directory: $PROJECT_DIR"
 
 # Create virtual environment
 echo "🐍 Creating virtual environment..."
@@ -45,8 +39,8 @@ Pillow>=10.0.0
 EOF
 
 # Install packages
-pip install --upgrade pip
-pip install -r requirements.txt
+pip3 install --upgrade pip
+pip3 install -r requirements.txt
 
 # Download NLTK data for TextBlob
 echo "📚 Downloading language data..."
@@ -114,8 +108,8 @@ echo ""
 echo "📁 Project location: $PROJECT_DIR"
 echo ""
 echo "Next steps:"
-echo "1. Save the analyzer code to: $PROJECT_DIR/openwebui_analyzer.py"
-echo "2. Run: cd $PROJECT_DIR && ./run_analyzer.sh"
+echo "1. Save the analyzer code to:./openwebui_analyzer.py"
+echo "2. Run: sh ./run_analyzer.sh"
 echo "3. Open your browser to: http://localhost:8501"
 echo "4. Upload your Open WebUI JSON export file"
 echo ""
