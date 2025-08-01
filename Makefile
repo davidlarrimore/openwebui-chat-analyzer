@@ -1,7 +1,7 @@
 # OpenWebUI Chat Analyzer - Docker Makefile
 # Provides convenient commands for Docker operations
 
-.PHONY: help build run stop clean logs shell test deploy backup restore
+.PHONY: help build run stop clean logs shell test deploy backup restore dev
 
 # Default target
 help: ## Show this help message
@@ -28,7 +28,34 @@ run: ## Run the container (detached)
 		openwebui-chat-analyzer:latest
 	@echo "✅ Container started! Access: http://localhost:8501"
 
-run-dev: ## Run in development mode with source code mounted
+# NEW: Development mode with live reloading
+dev: ## Run in development mode with live code reloading
+	@echo "🔧 Starting development environment with live reloading..."
+	@echo "📝 Changes to openwebui_chat_analyzer.py will be reflected immediately"
+	docker-compose --profile development up --build openwebui-chat-analyzer-dev
+	@echo "✅ Development container started! Access: http://localhost:8501"
+
+dev-detached: ## Run development mode in background
+	@echo "🔧 Starting development environment (detached)..."
+	docker-compose --profile development up -d --build openwebui-chat-analyzer-dev
+	@echo "✅ Development container started! Access: http://localhost:8501"
+	@echo "📋 Use 'make logs-dev' to view logs"
+
+logs-dev: ## Show development container logs
+	@echo "📋 Development container logs:"
+	docker-compose --profile development logs -f openwebui-chat-analyzer-dev
+
+stop-dev: ## Stop development container
+	@echo "🛑 Stopping development container..."
+	docker-compose --profile development down
+	@echo "✅ Development environment stopped"
+
+restart-dev: ## Restart development container
+	@echo "🔄 Restarting development container..."
+	docker-compose --profile development restart openwebui-chat-analyzer-dev
+	@echo "✅ Development container restarted!"
+
+run-dev: ## Run in development mode with source code mounted (legacy)
 	@echo "🔧 Starting in development mode..."
 	docker run -d \
 		--name openwebui-chat-analyzer-dev \
@@ -36,6 +63,7 @@ run-dev: ## Run in development mode with source code mounted
 		-v $$(pwd)/openwebui_chat_analyzer.py:/app/openwebui_chat_analyzer.py \
 		-v $$(pwd)/data:/app/data \
 		-e STREAMLIT_SERVER_FILE_WATCHER_TYPE=auto \
+		-e STREAMLIT_SERVER_RUN_ON_SAVE=true \
 		openwebui-chat-analyzer:latest
 	@echo "✅ Development container started! Access: http://localhost:8501"
 
@@ -71,11 +99,11 @@ status: ## Show container status
 stop: ## Stop the container
 	@echo "🛑 Stopping OpenWebUI Chat Analyzer..."
 	@# Try different possible container names
-	@for name in openwebui-chat-analyzer openwebui-chat-analyzer openwebui-chat-analyzer-openwebui-chat-analyzer; do \
-		if docker ps --filter name=$name --format "{{.Names}}" | grep -q $name; then \
-			echo "Stopping $name..."; \
-			docker stop $name; \
-			docker rm $name; \
+	@for name in openwebui-chat-analyzer openwebui-chat-analyzer-dev openwebui-chat-analyzer-openwebui-chat-analyzer; do \
+		if docker ps --filter name=$$name --format "{{.Names}}" | grep -q $$name; then \
+			echo "Stopping $$name..."; \
+			docker stop $$name; \
+			docker rm $$name; \
 		fi; \
 	done
 	@echo "✅ Cleanup complete"
@@ -85,14 +113,14 @@ logs: ## Show container logs
 	@echo "📋 Container logs:"
 	@if docker ps -a --filter name=openwebui-chat-analyzer --format "table {{.Names}}" | grep -q openwebui-chat-analyzer; then \
 		docker logs -f openwebui-chat-analyzer; \
-	elif docker ps -a --filter name=openwebui-chat-analyzer --format "table {{.Names}}" | grep -q openwebui-chat-analyzer; then \
-		docker logs -f openwebui-chat-analyzer; \
+	elif docker ps -a --filter name=openwebui-chat-analyzer-dev --format "table {{.Names}}" | grep -q openwebui-chat-analyzer-dev; then \
+		docker logs -f openwebui-chat-analyzer-dev; \
 	else \
 		echo "❌ No OpenWebUI analyzer container found"; \
 		echo "Available containers:"; \
 		docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"; \
 		echo ""; \
-		echo "Try: make up"; \
+		echo "Try: make dev"; \
 	fi
 
 logs-compose: ## Show docker-compose logs
@@ -101,26 +129,35 @@ logs-compose: ## Show docker-compose logs
 		docker-compose logs -f; \
 	else \
 		echo "❌ No docker-compose services running"; \
-		echo "Try: make up"; \
+		echo "Try: make up or make dev"; \
 	fi
 
 shell: ## Open shell in running container
 	@echo "🐚 Opening shell in container..."
-	@if docker ps --filter name=openwebui-chat-analyzer --format "{{.Names}}" | grep -q openwebui-chat-analyzer; then \
-		docker exec -it openwebui-chat-analyzer /bin/bash; \
+	@if docker ps --filter name=openwebui-chat-analyzer-dev --format "{{.Names}}" | grep -q openwebui-chat-analyzer-dev; then \
+		docker exec -it openwebui-chat-analyzer-dev /bin/bash; \
 	elif docker ps --filter name=openwebui-chat-analyzer --format "{{.Names}}" | grep -q openwebui-chat-analyzer; then \
 		docker exec -it openwebui-chat-analyzer /bin/bash; \
 	else \
 		echo "❌ No running OpenWebUI analyzer container found"; \
-		echo "Try: make up"; \
+		echo "Try: make dev"; \
+	fi
+
+shell-dev: ## Open shell in development container
+	@echo "🐚 Opening shell in development container..."
+	@if docker ps --filter name=openwebui-chat-analyzer-dev --format "{{.Names}}" | grep -q openwebui-chat-analyzer-dev; then \
+		docker exec -it openwebui-chat-analyzer-dev /bin/bash; \
+	else \
+		echo "❌ No running development container found"; \
+		echo "Try: make dev"; \
 	fi
 
 inspect: ## Inspect the container
 	@echo "🔍 Container inspection:"
 	@if docker ps -a --filter name=openwebui-chat-analyzer --format "{{.Names}}" | grep -q openwebui-chat-analyzer; then \
 		docker inspect openwebui-chat-analyzer; \
-	elif docker ps -a --filter name=openwebui-chat-analyzer --format "{{.Names}}" | grep -q openwebui-chat-analyzer; then \
-		docker inspect openwebui-chat-analyzer; \
+	elif docker ps -a --filter name=openwebui-chat-analyzer-dev --format "{{.Names}}" | grep -q openwebui-chat-analyzer-dev; then \
+		docker inspect openwebui-chat-analyzer-dev; \
 	else \
 		echo "❌ No OpenWebUI analyzer container found"; \
 	fi
@@ -128,7 +165,7 @@ inspect: ## Inspect the container
 stats: ## Show container resource usage
 	@echo "📊 Container stats:"
 	@if docker ps --filter name=openwebui --format "{{.Names}}" | grep -q openwebui; then \
-		docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}" $(docker ps --filter name=openwebui --format "{{.Names}}"); \
+		docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}" $$(docker ps --filter name=openwebui --format "{{.Names}}"); \
 	else \
 		echo "❌ No running OpenWebUI analyzer containers found"; \
 	fi
@@ -136,9 +173,9 @@ stats: ## Show container resource usage
 health: ## Check container health
 	@echo "🏥 Health check:"
 	@if docker ps --filter name=openwebui --format "{{.Names}}" | grep -q openwebui; then \
-		for container in $(docker ps --filter name=openwebui --format "{{.Names}}"); do \
-			echo "Checking $container..."; \
-			docker exec $container curl -f http://localhost:8501/_stcore/health 2>/dev/null && echo "✅ $container is healthy" || echo "❌ $container health check failed"; \
+		for container in $$(docker ps --filter name=openwebui --format "{{.Names}}"); do \
+			echo "Checking $$container..."; \
+			docker exec $$container curl -f http://localhost:8501/_stcore/health 2>/dev/null && echo "✅ $$container is healthy" || echo "❌ $$container health check failed"; \
 		done; \
 	else \
 		echo "❌ No running OpenWebUI analyzer containers found"; \
@@ -214,16 +251,16 @@ deploy-prod: ## Deploy to production (requires setup)
 	@echo "✅ Production deployment complete!"
 
 # Quick development workflow
-dev: clean build run-dev ## Clean, build, and run in development mode
-	@echo "✅ Development environment ready!"
+dev-quick: stop-dev dev-detached ## Stop any existing dev container and start fresh
+	@echo "✅ Quick development restart complete!"
 
 # Diagnostic commands
 debug: ## Show debugging information
 	@echo "🔍 Debug Information"
 	@echo "==================="
-	@echo "Docker version: $(docker --version 2>/dev/null || echo 'Not installed')"
-	@echo "Docker Compose version: $(docker-compose --version 2>/dev/null || docker compose version 2>/dev/null || echo 'Not installed')"
-	@echo "Make version: $(make --version | head -1 2>/dev/null || echo 'Not installed')"
+	@echo "Docker version: $$(docker --version 2>/dev/null || echo 'Not installed')"
+	@echo "Docker Compose version: $$(docker-compose --version 2>/dev/null || docker compose version 2>/dev/null || echo 'Not installed')"
+	@echo "Make version: $$(make --version | head -1 2>/dev/null || echo 'Not installed')"
 	@echo ""
 	@echo "📦 All containers:"
 	@docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "No containers found"
@@ -232,7 +269,7 @@ debug: ## Show debugging information
 	@docker-compose ps 2>/dev/null || echo "No compose services found"
 	@echo ""
 	@echo "🗂️ Project files:"
-	@ls -la | grep -E "(Dockerfile|docker-compose|Makefile|\.py$)" || echo "No relevant files found"
+	@ls -la | grep -E "(Dockerfile|docker-compose|Makefile|\.py$$)" || echo "No relevant files found"
 
 ps: ## Show all containers (alias for status)
 	@$(MAKE) status
@@ -249,8 +286,15 @@ update: ## Pull latest changes and rebuild
 # Maintenance
 restart: ## Restart the container
 	@echo "🔄 Restarting container..."
-	docker restart openwebui-chat-analyzer
-	@echo "✅ Container restarted!"
+	@if docker ps --filter name=openwebui-chat-analyzer-dev --format "{{.Names}}" | grep -q openwebui-chat-analyzer-dev; then \
+		docker restart openwebui-chat-analyzer-dev; \
+		echo "✅ Development container restarted!"; \
+	elif docker ps --filter name=openwebui-chat-analyzer --format "{{.Names}}" | grep -q openwebui-chat-analyzer; then \
+		docker restart openwebui-chat-analyzer; \
+		echo "✅ Production container restarted!"; \
+	else \
+		echo "❌ No running containers found"; \
+	fi
 
 quick-fix: ## Rebuild and restart to fix common issues
 	@echo "🔧 Quick fix: rebuilding containers..."
@@ -263,10 +307,10 @@ quick-fix: ## Rebuild and restart to fix common issues
 fix-permissions: ## Fix matplotlib and data directory permissions
 	@echo "🔧 Fixing permissions..."
 	@if docker ps --filter name=openwebui --format "{{.Names}}" | grep -q openwebui; then \
-		for container in $(docker ps --filter name=openwebui --format "{{.Names}}"); do \
-			echo "Fixing permissions in $container..."; \
-			docker exec -u root $container mkdir -p /tmp/matplotlib /app/data; \
-			docker exec -u root $container chown -R appuser:appuser /tmp/matplotlib /app/data; \
+		for container in $$(docker ps --filter name=openwebui --format "{{.Names}}"); do \
+			echo "Fixing permissions in $$container..."; \
+			docker exec -u root $$container mkdir -p /tmp/matplotlib /app/data; \
+			docker exec -u root $$container chown -R appuser:appuser /tmp/matplotlib /app/data; \
 		done; \
 		echo "✅ Permissions fixed!"; \
 	else \
@@ -291,3 +335,12 @@ urls: ## Show application URLs
 	@if docker ps --filter name=nginx --format "table {{.Names}}" | grep -q nginx; then \
 		echo "Nginx proxy: http://localhost"; \
 	fi
+
+# VS Code integration helpers
+code: ## Open project in VS Code
+	@echo "📝 Opening project in VS Code..."
+	code .
+
+edit: ## Quick edit the main Python file
+	@echo "📝 Opening main analyzer file..."
+	code openwebui_chat_analyzer.py
