@@ -1,0 +1,14 @@
+# Open WebUI Chat Analyzer Configuration
+analytics:
+  sentiment_threshold: 0.1
+  max_wordcloud_words: 100
+  default_timezone: "UTC"
+
+visualization:
+  theme: "plotly_white"
+  color_palette: "viridis"
+  chart_height: 400
+
+performance:
+  max_file_size_mb: 500
+  chunk_size: 1000
