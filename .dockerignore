@@ -1,0 +1,103 @@
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Data files (keep sensitive data out of image)
+*.json
+data/
+exports/
+chat_exports/
+chat_data/
+uploaded_files/
+processed_data/
+uploads/
+
+# Generated files
+*.csv
+*.xlsx
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+word_clouds/
+reports/
+analysis_output/
+
+# OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Cache
+.cache/
+.pytest_cache/
+
+# Documentation
+README.md
+docs/
+*.md
+
+# Scripts not needed in container
+setup.sh
+run_analyzer.sh
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Nginx config (if using proxy)
+nginx/

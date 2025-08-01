@@ -7,7 +7,7 @@ Installation:
 pip install streamlit pandas plotly wordcloud textblob networkx
 
 Usage:
-streamlit run openwebui_analyzer.py
+streamlit run openwebui_chat_analyzer.py
 """
 
 import streamlit as st

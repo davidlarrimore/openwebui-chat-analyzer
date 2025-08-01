@@ -5,6 +5,7 @@ A simple dashboard for analyzing Open WebUI chat log data. Transform your conver
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![Streamlit](https://img.shields.io/badge/streamlit-1.28%2B-red.svg)
+![Docker](https://img.shields.io/badge/docker-ready-blue.svg)
 
 ## ✨ Features
 
@@ -27,41 +28,55 @@ A simple dashboard for analyzing Open WebUI chat log data. Transform your conver
 
 ### Prerequisites
 
-- Python 3.8 or higher
-- macOS, Linux, or Windows
+**Choose your preferred method:**
+- **🐳 Docker** (Recommended): Docker Desktop installed
+- **🐍 Python**: Python 3.8+ (macOS, Linux, or Windows)
 
-### 1. Clone & Setup
+### Option A: Docker (Recommended - Zero Configuration)
 
 ```bash
+# 1. Clone the repository
 git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
 cd openwebui-chat-analyzer
 
-# Create virtual environment
+# 2. Start with Docker (one command!)
+make up
+# OR: docker-compose up -d
+
+# 3. Access the application
+open http://localhost:8501
+```
+
+**That's it!** Skip to step 4 below.
+
+### Option B: Python Setup
+
+```bash
+# 1. Clone & Setup
+git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
+cd openwebui-chat-analyzer
+
+# 2. Create virtual environment
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
+# 3. Install dependencies
 pip install -r requirements.txt
+
+# 4. Run the analyzer
+streamlit run openwebui_chat_analyzer.py
 ```
 
-### 2. Get Your Data
+### Get Your Data (Both Methods)
 
 1. Open your Open WebUI instance
 2. Navigate to **Settings** → **Data & Privacy**
 3. Click **"Export All Chats"**
 4. Save the downloaded JSON file
 
-### 3. Run the Analyzer
+### Analyze Your Data
 
-```bash
-streamlit run openwebui_analyzer.py
-```
-
-Your dashboard will open at `http://localhost:8501`
-
-### 4. Analyze Your Data
-
-1. Upload your JSON export file
+1. Upload your JSON export file to the web interface
 2. Explore the interactive dashboards
 3. Export insights as needed
 
@@ -85,13 +100,45 @@ Monitor user satisfaction and sentiment trends over time.
 
 ## 🛠️ Installation Options
 
-### Option 1: Automated Setup (Recommended)
+### Option 1: Docker (Recommended)
+
+**Why Docker?** Zero configuration, consistent environment, easy updates, and production-ready.
+
+```bash
+# Quick start
+git clone https://github.com/yourusername/openwebui-chat-analyzer.git
+cd openwebui-chat-analyzer
+make up
+
+# Alternative Docker commands
+docker-compose up -d
+# OR
+docker build -t openwebui-chat-analyzer . && docker run -d -p 8501:8501 openwebui-chat-analyzer
+```
+
+**Docker Features:**
+- 🚀 One-command deployment
+- 🔒 Security hardened (non-root user, read-only filesystem)
+- 📊 Resource management and health checks
+- 🔄 Easy updates and backups
+- 🌐 Production-ready with nginx proxy option
+
+**Docker Management:**
+```bash
+make help        # Show all available commands
+make logs        # View application logs
+make shell       # Open container shell
+make backup      # Backup data
+make clean       # Clean up containers
+```
+
+### Option 2: Automated Setup (Python)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yourusername/openwebui-chat-analyzer/main/setup.sh | bash
 ```
 
-### Option 2: Manual Installation
+### Option 3: Manual Installation (Python)
 
 ```bash
 # Clone repository
@@ -109,13 +156,7 @@ pip install streamlit pandas plotly wordcloud textblob networkx
 python -c "import nltk; nltk.download('punkt')"
 
 # Run the application
-streamlit run openwebui_analyzer.py
-```
-
-### Option 3: Docker (Coming Soon)
-
-```bash
-docker run -p 8501:8501 -v $(pwd)/data:/app/data openwebui-analyzer
+streamlit run openwebui_chat_analyzer.py
 ```
 
 ## 📊 Analytics Features
@@ -165,6 +206,18 @@ docker run -p 8501:8501 -v $(pwd)/data:/app/data openwebui-analyzer
 ## 🔧 Configuration
 
 ### Environment Variables
+
+**Docker:**
+```bash
+# Customize Docker deployment
+docker run -d \
+  -e STREAMLIT_SERVER_PORT=8501 \
+  -e TZ=America/New_York \
+  -p 8501:8501 \
+  openwebui-chat-analyzer
+```
+
+**Python:**
 
 ```bash
 # Optional: Customize port and host
@@ -219,7 +272,7 @@ spacy>=3.6.0           # Enhanced NLP
 
 ```python
 # Load your data
-python openwebui_analyzer.py
+python openwebui_chat_analyzer.py
 
 # Upload JSON file through the web interface
 # Explore the generated dashboards
@@ -245,19 +298,26 @@ python openwebui_analyzer.py
 
 ```text
 openwebui-chat-analyzer/
-├── openwebui_analyzer.py      # Main Streamlit application
-├── requirements.txt           # Python dependencies
-├── setup.sh                  # Automated setup script
-├── .gitignore               # Git ignore rules
-├── README.md                # This file
-├── config.yaml              # Configuration settings
-├── data/                    # Data directory (gitignored)
-│   └── sample_export.json   # Sample data for testing
-├── docs/                    # Documentation
-│   ├── user_guide.md
-│   └── api_reference.md
-└── tests/                   # Test files
-    └── test_analyzer.py
+├── 🐳 Docker Files
+│   ├── Dockerfile              # Multi-stage production build
+│   ├── docker-compose.yml      # Orchestration configuration
+│   ├── .dockerignore           # Docker ignore rules
+│   └── Makefile               # Docker management commands
+├── 📊 Application
+│   ├── openwebui_chat_analyzer.py   # Main Streamlit application
+│   ├── requirements.txt        # Python dependencies
+│   └── config.yaml            # Configuration settings
+├── 🚀 Setup Scripts
+│   ├── setup.sh               # Automated Python setup
+│   └── run_analyzer.sh        # Python launcher script
+├── 📁 Data Directories
+│   ├── data/                  # Upload directory (gitignored)
+│   └── sample_data/           # Example data for testing
+├── 📖 Documentation
+│   ├── README.md              # This file
+│   └── docs/                  # Additional documentation
+└── 🧪 Testing
+    └── tests/                 # Test files
 ```
 
 ## 🤝 Contributing
@@ -301,23 +361,50 @@ pytest tests/
 
 ### Common Issues
 
-#### Port Already in Use
+#### Docker Issues
+
+**Docker not running:**
+
+```bash
+# Start Docker Desktop (Mac/Windows) or Docker service (Linux)
+# Mac: Open Docker Desktop app
+# Linux: sudo systemctl start docker
+```
+
+**Port already in use:**
+
+```bash
+# Docker will automatically find an available port
+# Check logs: make logs or docker-compose logs
+```
+
+**Permission errors with volumes:**
+
+```bash
+# Fix data directory permissions
+sudo chown -R $USER:$USER ./data
+# Or use Docker: make backup && make restore BACKUP=filename
+```
+
+#### Python Issues
+
+##### Port Already in Use
 
 ```bash
 # Streamlit will automatically find an available port
 # Check terminal output for the actual URL
 ```
 
-#### Memory Issues with Large Files
+##### Memory Issues with Large Files
 
 ```bash
 # For very large exports (>100MB), consider:
-# 1. Splitting the JSON file
-# 2. Using the streaming processor
-# 3. Increasing system memory
+# 1. Use Docker with increased memory: docker run --memory="4g"
+# 2. Split the JSON file into smaller chunks
+# 3. Use the streaming processor mode
 ```
 
-**Missing Dependencies**
+##### Missing Dependencies
 
 ```bash
 # Reinstall requirements
@@ -327,13 +414,15 @@ pip install --force-reinstall -r requirements.txt
 pip install --upgrade pip
 ```
 
-**TextBlob Data Missing**
+##### TextBlob Data Missing
+
 ```bash
 # Download required NLTK data
 python -c "import nltk; nltk.download('punkt'); nltk.download('brown')"
 ```
 
 ### Performance Tips
+
 - Use smaller date ranges for faster processing
 - Close unused browser tabs to free memory
 - Consider using the batch processing mode for large datasets
@@ -356,21 +445,24 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - 📖 Check the [Documentation](docs/)
 - 🐛 Report issues on [GitHub Issues](https://github.com/yourusername/openwebui-chat-analyzer/issues)
 - 💬 Join our [Discord Community](https://discord.gg/your-server)
-- 📧 Email: support@yourproject.com
+- 📧 Email: dlarrimore@amivero.com
 
 ### FAQ
 
+**Q: Which installation method should I choose?**
+A: Docker is recommended for most users - it's faster to set up and more reliable. Use Python setup if you need to modify the code or don't have Docker.
+
 **Q: Is my chat data secure?**
-A: Yes! All processing happens locally on your machine. Your data never leaves your computer.
+A: Yes! All processing happens locally on your machine. Docker adds an extra security layer with isolated containers and non-root users.
 
-**Q: What file formats are supported?**
-A: Currently supports Open WebUI JSON exports. More formats coming soon.
+**Q: Can I run this on a server?**
+A: Yes! Use `make deploy-prod` for production deployment with nginx proxy and SSL support.
 
-**Q: Can I analyze data from other chat platforms?**
-A: The current version is optimized for Open WebUI. We're working on supporting more platforms.
+**Q: How do I update to the latest version?**
+A: Docker: `make update` | Python: `git pull && pip install -r requirements.txt`
 
-**Q: How large files can I process?**
-A: Tested with files up to 500MB. Performance depends on your system specifications.
+**Q: What if I have a very large JSON file?**
+A: Docker handles large files better due to optimized memory management. Use `docker run --memory="4g"` for files >500MB.
 
 ---
 
