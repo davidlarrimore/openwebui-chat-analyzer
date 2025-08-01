@@ -33,7 +33,6 @@ ENV/
 .env/
 
 # Streamlit
-.streamlit/
 streamlit_app.log
 
 # Chat Data Files (IMPORTANT: Keep your data private!)

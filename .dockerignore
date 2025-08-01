@@ -92,7 +92,7 @@ docs/
 
 # Scripts not needed in container
 setup.sh
-run_analyzer.sh
+run.sh
 
 # Docker files
 Dockerfile

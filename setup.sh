@@ -178,7 +178,7 @@ except Exception as e:
 
     # Create improved launcher script
     print_info "Creating launcher script..."
-    cat > run_analyzer.sh << 'EOF'
+    cat > run.sh << 'EOF'
 #!/bin/bash
 
 # Open WebUI Chat Analyzer Launcher
@@ -379,7 +379,7 @@ esac
 EOF
 
     # Make launcher executable
-    chmod +x run_analyzer.sh
+    chmod +x run.sh
     print_status "Launcher script created and made executable"
 
     # Create data directory with .gitkeep
@@ -494,13 +494,13 @@ else
     echo "  📁 $(pwd)"
     echo "  ├── 🐍 venv/              (Python virtual environment)"
     echo "  ├── 📊 openwebui_chat_analyzer.py (Main application)"
-    echo "  ├── 🚀 run_analyzer.sh    (Launcher script)"
+    echo "  ├── 🚀 run.sh    (Launcher script)"
     echo "  ├── 📋 requirements.txt   (Dependencies)"
     echo "  ├── ⚙️  config.yaml       (Configuration)"
     echo "  └── 📂 data/              (Upload directory)"
     echo ""
     print_status "Next steps:"
-    echo "  1️⃣  Run the analyzer: ./run_analyzer.sh"
+    echo "  1️⃣  Run the analyzer: ./run.sh"
     echo "  2️⃣  Open browser to: http://localhost:8501"
     echo "  3️⃣  Upload your Open WebUI JSON export"
 fi

@@ -1,0 +1,15 @@
+[theme]
+base="light"
+primaryColor="#1976D2"
+backgroundColor="#FFFFFF"
+secondaryBackgroundColor="#F0F2F6"
+textColor="#212121"
+font="sans serif"
+
+[server]
+enableCORS=false
+enableXsrfProtection=false
+headless=true
+
+[ui]
+hideTopBar = true

@@ -42,105 +42,97 @@ st.markdown("""
     
     /* Color Variables - Professional Tech Palette */
     :root {
-        --primary-blue: #1E3A8A;        /* Deep professional blue */
-        --secondary-blue: #3B82F6;      /* Bright accent blue */
-        --light-blue: #DBEAFE;          /* Light blue backgrounds */
-        --accent-orange: #F59E0B;       /* Attention/CTA color */
-        --success-green: #10B981;       /* Success states */
-        --warning-yellow: #F59E0B;      /* Warning states */
-        --error-red: #EF4444;           /* Error states */
-        --neutral-900: #111827;         /* Primary text */
-        --neutral-700: #374151;         /* Secondary text */
-        --neutral-500: #6B7280;         /* Tertiary text */
-        --neutral-300: #D1D5DB;         /* Borders */
-        --neutral-100: #F3F4F6;         /* Light backgrounds */
-        --neutral-50: #F9FAFB;          /* Lightest backgrounds */
-        --white: #FFFFFF;
-        --gradient-primary: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%);
-        --gradient-accent: linear-gradient(135deg, #F59E0B 0%, #D97706 100%);
-        --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-    }
-    
+    --primary-blue: #0D47A1;        /* Richer, darker blue for strong contrast */
+    --secondary-blue: #1976D2;      /* Vibrant secondary accent blue */
+    --light-blue: #E3F2FD;          /* Lighter, softer background blue */
+    --accent-orange: #FF5722;       /* Modern, energetic accent color */
+    --success-green: #4CAF50;       /* Bright success indicator */
+    --warning-yellow: #FFC107;      /* Stronger warning indicator */
+    --error-red: #F44336;           /* Bold error indicator */
+    --neutral-900: #212121;         /* Deep primary text color for high contrast */
+    --neutral-700: #424242;         /* Secondary text for readability */
+    --neutral-500: #757575;         /* Muted tertiary text */
+    --neutral-300: #BDBDBD;         /* Subtle borders and dividers */
+    --neutral-100: #FAFAFA;         /* Soft background color for cards */
+    --neutral-50: #FFFFFF;          /* Clean background for app */
+    --white: #FFFFFF;
+    --gradient-primary: linear-gradient(135deg, #0D47A1 0%, #1976D2 100%);
+    --gradient-accent: linear-gradient(135deg, #FF5722 0%, #E64A19 100%);
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+    --shadow-md: 0 4px 6px rgba(0,0,0,0.16), 0 1px 3px rgba(0,0,0,0.1);
+    --shadow-lg: 0 10px 20px rgba(0,0,0,0.19), 0 3px 6px rgba(0,0,0,0.15);
+}
     /* Global Styles */
     .main {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         background: var(--neutral-50);
     }
-    
     /* Typography */
     h1, h2, h3, h4, h5, h6 {
         font-family: 'Inter', sans-serif;
         font-weight: 600;
         color: var(--neutral-900);
         line-height: 1.2;
-    }
-    
-    h1 {
-        background: var(--gradient-primary);
-        -webkit-background-clip: text;
-        background-clip: text;
-        font-size: 2.5rem;
-        font-weight: 700;
-        margin-bottom: 0.5rem;
-    }
-    
-    h2 {
-        color: var(--primary-blue);
-        font-size: 1.875rem;
         margin-bottom: 1rem;
-        border-bottom: 2px solid var(--light-blue);
-        padding-bottom: 0.5rem;
     }
-    
+h1 {
+    font-size: 2.25rem;
+    font-weight: 700;
+    color: var(--neutral-900);
+    margin: 0 0 1rem 0; /* Remove top margin for consistency */
+    padding: 0;
+}
+h2 {
+    font-size: 1.75rem;
+    font-weight: 600;
+    color: var(--primary-blue);
+    margin: 0 0 0.75rem 0; /* Consistent bottom margin */
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--secondary-blue);
+}
     h3 {
         color: var(--neutral-700);
         font-size: 1.25rem;
         margin-bottom: 0.75rem;
     }
-    
     /* Header with brand styling */
-    .header-container {
-        background: var(--gradient-primary);
-        padding: 2rem 0;
-        margin: -1rem -1rem 2rem -1rem;
-        border-radius: 0 0 1rem 1rem;
-        text-align: center;
-        box-shadow: var(--shadow-lg);
-    }
-    
+.header-container {
+    background: var(--gradient-primary);
+    padding: 2rem; /* Slightly increased padding for a balanced look */
+    border-radius: 0.75rem;
+    text-align: center;
+    box-shadow: var(--shadow-md);
+    margin: 2rem 0; /* Uniform vertical spacing */
+    color: white;
+}
     .header-title {
         color: white;
         font-size: 2.5rem;
         font-weight: 700;
         margin-bottom: 0.5rem;
     }
-    
     .header-subtitle {
         color: rgba(255, 255, 255, 0.9);
         font-size: 1.125rem;
         font-weight: 400;
         margin: 0;
     }
-    
     /* Metric cards */
-    .metric-card {
-        background: var(--white);
-        padding: 1.5rem;
-        border-radius: 0.75rem;
-        border: 1px solid var(--neutral-300);
-        box-shadow: var(--shadow-sm);
-        transition: all 0.2s ease;
-        position: relative;
-        overflow: hidden;
-    }
-    
+.metric-card {
+    background: var(--white);
+    padding: 1.5rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--neutral-300);
+    box-shadow: var(--shadow-sm);
+    transition: all 0.2s ease;
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 1.5rem; /* Consistent vertical spacing */
+}
     .metric-card:hover {
         box-shadow: var(--shadow-md);
         transform: translateY(-2px);
     }
-    
     .metric-card::before {
         content: '';
         position: absolute;
@@ -150,14 +142,12 @@ st.markdown("""
         height: 3px;
         background: var(--gradient-accent);
     }
-    
     .metric-value {
         font-size: 2rem;
         font-weight: 700;
         color: var(--primary-blue);
         margin-bottom: 0.25rem;
     }
-    
     .metric-label {
         font-size: 0.875rem;
         color: var(--neutral-500);
@@ -165,7 +155,6 @@ st.markdown("""
         text-transform: uppercase;
         letter-spacing: 0.05em;
     }
-    
     /* Streamlit component overrides */
     .stTabs [data-baseweb="tab-list"] {
         background: var(--white);
@@ -174,7 +163,6 @@ st.markdown("""
         border: 1px solid var(--neutral-300);
         box-shadow: var(--shadow-sm);
     }
-    
     .stTabs [data-baseweb="tab"] {
         background: transparent;
         border-radius: 0.375rem;
@@ -184,81 +172,59 @@ st.markdown("""
         padding: 0.75rem 1rem;
         transition: all 0.2s ease;
     }
-    
     .stTabs [data-baseweb="tab"]:hover {
         background: var(--neutral-100);
         color: var(--primary-blue);
     }
-    
     .stTabs [data-baseweb="tab"][aria-selected="true"] {
         background: var(--gradient-primary);
         color: white;
         box-shadow: var(--shadow-sm);
     }
-    
     /* File uploader styling */
-    .stFileUploader > div {
-        background: var(--white);
-        border: 2px dashed var(--neutral-300);
-        border-radius: 0.75rem;
-        padding: 2rem;
-        text-align: center;
-        transition: all 0.2s ease;
-    }
-    
-    .stFileUploader > div:hover {
-        border-color: var(--secondary-blue);
-        background: var(--light-blue);
-    }
-    
+   .stFileUploader > div {
+    background: var(--neutral-100);
+    border: 2px dashed var(--neutral-300);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    text-align: center;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+.stFileUploader > div:hover {
+    border-color: var(--primary-blue);
+    background: var(--light-blue);
+}
     /* Button styling */
-    .stButton > button {
-        background: var(--gradient-primary);
-        color: white;
-        border: none;
-        border-radius: 0.5rem;
-        padding: 0.75rem 1.5rem;
-        font-weight: 500;
-        font-size: 0.875rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        transition: all 0.2s ease;
-        box-shadow: var(--shadow-sm);
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: var(--shadow-md);
-    }
-    
-    .stButton > button:active {
-        transform: translateY(0);
-    }
-    
+.stButton > button, .stDownloadButton > button {
+    background: var(--gradient-accent);
+    color: var(--white);
+    border: none;
+    border-radius: 0.5rem;
+    padding: 0.75rem 1.25rem;
+    font-weight: 600;
+    font-size: 0.875rem;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: var(--shadow-sm);
+    margin: 0.5rem 0; /* Consistent vertical margins */
+}
+.stButton > button:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+.stButton > button:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow-sm);
+}
     /* Download button styling */
-    .stDownloadButton > button {
-        background: var(--gradient-accent);
-        color: white;
-        border: none;
-        border-radius: 0.5rem;
-        padding: 0.75rem 1.5rem;
-        font-weight: 500;
-        font-size: 0.875rem;
-        transition: all 0.2s ease;
-        box-shadow: var(--shadow-sm);
-    }
-    
     .stDownloadButton > button:hover {
         transform: translateY(-1px);
         box-shadow: var(--shadow-md);
     }
-    
     /* Sidebar styling */
     .css-1d391kg {
         background: var(--white);
         border-right: 1px solid var(--neutral-300);
     }
-    
     /* Expander styling */
     .streamlit-expanderHeader {
         background: var(--neutral-100);
@@ -267,63 +233,54 @@ st.markdown("""
         font-weight: 500;
         color: var(--neutral-700);
     }
-    
     .streamlit-expanderContent {
         background: var(--white);
         border: 1px solid var(--neutral-300);
         border-top: none;
         border-radius: 0 0 0.5rem 0.5rem;
     }
-    
     /* Info/Success/Warning/Error messages */
     .stAlert {
         border-radius: 0.5rem;
         border: none;
         box-shadow: var(--shadow-sm);
     }
-    
     .stAlert[data-baseweb="notification"] {
         background: var(--light-blue);
         color: var(--primary-blue);
         border-left: 4px solid var(--secondary-blue);
     }
-    
     /* Progress bars */
     .stProgress .css-1cpxqw2 {
         background: var(--gradient-primary);
         border-radius: 1rem;
     }
-    
     /* Selectbox and text input */
     .stSelectbox > div > div {
         background: var(--white);
         border: 1px solid var(--neutral-300);
         border-radius: 0.5rem;
     }
-    
     .stTextInput > div > div {
         background: var(--white);
         border: 1px solid var(--neutral-300);
         border-radius: 0.5rem;
     }
-    
     /* Data tables */
     .dataframe {
         border: 1px solid var(--neutral-300);
         border-radius: 0.5rem;
         background: var(--white);
     }
-    
     /* Custom info cards */
-    .info-card {
-        background: var(--white);
-        border: 1px solid var(--neutral-300);
-        border-radius: 0.75rem;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        box-shadow: var(--shadow-sm);
-    }
-    
+.info-card {
+    background: var(--white);
+    border: 1px solid var(--neutral-300);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    margin: 1.5rem 0; /* Consistent spacing */
+    box-shadow: var(--shadow-sm);
+}
     .info-card-header {
         color: var(--primary-blue);
         font-size: 1.125rem;
@@ -333,12 +290,10 @@ st.markdown("""
         align-items: center;
         gap: 0.5rem;
     }
-    
     .info-card-content {
         color: var(--neutral-700);
         line-height: 1.6;
     }
-    
     /* Status indicators */
     .status-indicator {
         display: inline-flex;
@@ -351,42 +306,37 @@ st.markdown("""
         text-transform: uppercase;
         letter-spacing: 0.05em;
     }
-    
     .status-success {
         background: rgba(16, 185, 129, 0.1);
         color: var(--success-green);
     }
-    
     .status-warning {
         background: rgba(245, 158, 11, 0.1);
         color: var(--warning-yellow);
     }
-    
     .status-error {
         background: rgba(239, 68, 68, 0.1);
         color: var(--error-red);
     }
-    
     /* Loading spinner override */
     .stSpinner > div {
         border-top-color: var(--secondary-blue);
     }
-    
-    /* Hide Streamlit branding */
+    /* 
+    Hide Streamlit branding and default headers.
+    The following lines explicitly hide Streamlit's default menu, footer, and header elements for a clean UI.
+    */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    
     /* Responsive design */
     @media (max-width: 768px) {
         .header-title {
             font-size: 2rem;
         }
-        
         .metric-card {
             padding: 1rem;
         }
-        
         .metric-value {
             font-size: 1.5rem;
         }

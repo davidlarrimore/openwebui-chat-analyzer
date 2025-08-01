@@ -62,6 +62,7 @@ run-dev: ## Run in development mode with source code mounted (legacy)
 		-p 8501:8501 \
 		-v $$(pwd)/openwebui_chat_analyzer.py:/app/openwebui_chat_analyzer.py \
 		-v $$(pwd)/data:/app/data \
+		-v $$(pwd)/.streamlit:/app/.streamlit:ro \
 		-e STREAMLIT_SERVER_FILE_WATCHER_TYPE=auto \
 		-e STREAMLIT_SERVER_RUN_ON_SAVE=true \
 		openwebui-chat-analyzer:latest

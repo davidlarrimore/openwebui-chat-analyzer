@@ -11,6 +11,7 @@ services:
       - ./data:/app/data:rw
       # Optional: Mount uploads directory 
       - ./uploads:/app/uploads:rw
+      - ./.streamlit:/app/.streamlit:ro
     environment:
       - STREAMLIT_SERVER_PORT=8501
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
@@ -62,6 +63,7 @@ services:
       # Data directories
       - ./data:/app/data:rw
       - ./uploads:/app/uploads:rw
+      - ./.streamlit:/app/.streamlit:ro
     environment:
       - STREAMLIT_SERVER_PORT=8501
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0

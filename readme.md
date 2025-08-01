@@ -309,7 +309,7 @@ openwebui-chat-analyzer/
 │   └── config.yaml            # Configuration settings
 ├── 🚀 Setup Scripts
 │   ├── setup.sh               # Automated Python setup
-│   └── run_analyzer.sh        # Python launcher script
+│   └── run.sh        # Python launcher script
 ├── 📁 Data Directories
 │   ├── data/                  # Upload directory (gitignored)
 │   └── sample_data/           # Example data for testing
