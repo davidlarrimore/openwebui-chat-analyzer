@@ -1,0 +1,144 @@
+# Open WebUI Chat Analyzer .gitignore
+# =====================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Streamlit
+.streamlit/
+streamlit_app.log
+
+# Chat Data Files (IMPORTANT: Keep your data private!)
+*.json
+data/
+exports/
+chat_exports/
+chat_data/
+uploaded_files/
+processed_data/
+
+# Generated Analysis Files
+*.csv
+*.xlsx
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+word_clouds/
+reports/
+analysis_output/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# IDE and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Cache directories
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.staging
+
+# Configuration files with secrets
+config.ini
+secrets.yaml
+credentials.json
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# System files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Node.js (if you add any frontend components)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Sample data (include examples but not real data)
+!sample_data/
+!example_data/
+sample_data/*.json
+example_data/*.json
