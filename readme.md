@@ -5,6 +5,7 @@ A simple dashboard for analyzing Open WebUI chat log data. Transform your conver
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![Streamlit](https://img.shields.io/badge/streamlit-1.28%2B-red.svg)
+![TailwindCSS](https://img.shields.io/badge/tailwindCss-2.2.19-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-ready-blue.svg)
 
 ## ✨ Features
