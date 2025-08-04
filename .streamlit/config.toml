@@ -1,15 +1,14 @@
 [theme]
-base="light"
-primaryColor="#1976D2"
-backgroundColor="#FFFFFF"
-secondaryBackgroundColor="#F0F2F6"
-textColor="#212121"
-font="sans serif"
+    primaryColor = "#E694FF"
+    backgroundColor = "#00172B"
+    secondaryBackgroundColor = "#0083B8"
+    textColor = "#C6CDD4"
+    font = "sans-serif"
 
 [server]
-enableCORS=false
-enableXsrfProtection=false
-headless=true
+    enableCORS=false
+    enableXsrfProtection=false
+    headless=true
 
 [ui]
-hideTopBar = true
+    hideTopBar = true

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Open WebUI Chat Data Analyzer
-A modern Streamlit dashboard for analyzing Open WebUI chat exports with TailwindCSS styling
+A modern Streamlit dashboard for analyzing Open WebUI chat export
 
 Installation:
 pip install streamlit pandas plotly wordcloud textblob networkx
@@ -34,332 +34,23 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Enhanced TailwindCSS-inspired styling
-st.markdown("""
-<link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
-<style>
-    /* Import Inter font for modern typography */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    
-    /* Global styles with Tailwind approach */
-    .stApp {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-    
-    /* Header styling */
-    .main-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 2rem;
-        border-radius: 1rem;
-        margin-bottom: 2rem;
-        color: white;
-        text-align: center;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-    }
-    
-    .main-header h1 {
-        font-size: 2.5rem;
-        font-weight: 700;
-        margin-bottom: 0.5rem;
-        text-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    
-    .main-header p {
-        font-size: 1.1rem;
-        opacity: 0.9;
-        font-weight: 300;
-    }
-    
-    /* Metric cards with Tailwind-inspired design */
-    .metric-card {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 1rem;
-        border: 1px solid #e5e7eb;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
-        transition: all 0.3s ease;
-        position: relative;
-        overflow: hidden;
-    }
-    
-    .metric-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
-    }
-    
-    .metric-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 4px;
-        background: linear-gradient(90deg, #3b82f6, #8b5cf6);
-    }
-    
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 0.5rem;
-        background: #f8fafc;
-        padding: 0.5rem;
-        border-radius: 0.75rem;
-        border: 1px solid #e2e8f0;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        height: 3rem;
-        padding: 0 1.5rem;
-        border-radius: 0.5rem;
-        font-weight: 500;
-        transition: all 0.2s ease;
-        border: none;
-        background: transparent;
-    }
-    
-    .stTabs [data-baseweb="tab"]:hover {
-        background: #e2e8f0;
-    }
-    
-    .stTabs [data-baseweb="tab"][aria-selected="true"] {
-        background: #3b82f6;
-        color: white;
-        box-shadow: 0 4px 6px rgba(59, 130, 246, 0.3);
-    }
-    
-    /* Upload area styling - simplified approach */
-    .upload-container {
-        background: #f8fafc;
-        border: 2px dashed #cbd5e1;
-        border-radius: 1rem;
-        padding: 2rem;
-        text-align: center;
-        margin: 2rem 0;
-        transition: all 0.3s ease;
-    }
-    
-    .upload-container:hover {
-        border-color: #3b82f6;
-        background: #eff6ff;
-    }
-    
-    /* Status indicators */
-    .status-success {
-        background: #dcfce7;
-        color: #166534;
-        padding: 0.75rem 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #22c55e;
-        margin: 1rem 0;
-    }
-    
-    .status-warning {
-        background: #fef3c7;
-        color: #92400e;
-        padding: 0.75rem 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #f59e0b;
-        margin: 1rem 0;
-    }
-    
-    .status-error {
-        background: #fee2e2;
-        color: #991b1b;
-        padding: 0.75rem 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #ef4444;
-        margin: 1rem 0;
-    }
-    
-    /* Section headers */
-    .section-header {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        margin: 2rem 0 1rem 0;
-        padding-bottom: 0.75rem;
-        border-bottom: 2px solid #e5e7eb;
-    }
-    
-    .section-header h2 {
-        font-size: 1.5rem;
-        font-weight: 600;
-        color: #1f2937;
-        margin: 0;
-    }
-    
-    .section-header .icon {
-        font-size: 1.5rem;
-    }
-    
-    /* Chart containers */
-    .chart-container {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 1rem;
-        border: 1px solid #e5e7eb;
-        margin: 1rem 0;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-    }
-    
-    /* Search interface */
-    .search-container {
-        background: white;
-        padding: 2rem;
-        border-radius: 1rem;
-        border: 1px solid #e5e7eb;
-        margin: 1rem 0;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-    }
-    
-    /* Button styling */
-    .stButton > button {
-        background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-        color: white;
-        border: none;
-        padding: 0.75rem 2rem;
-        border-radius: 0.75rem;
-        font-weight: 500;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 6px rgba(59, 130, 246, 0.3);
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 12px rgba(59, 130, 246, 0.4);
-    }
-    
-    /* Download button variant */
-    .download-btn {
-        background: linear-gradient(135deg, #10b981, #059669);
-        border: none;
-        padding: 0.75rem 2rem;
-        border-radius: 0.75rem;
-        color: white;
-        font-weight: 500;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 6px rgba(16, 185, 129, 0.3);
-    }
-    
-    .download-btn:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 12px rgba(16, 185, 129, 0.4);
-    }
-    
-    /* Sidebar styling */
-    .css-1d391kg {
-        background: #f8fafc;
-        border-right: 1px solid #e2e8f0;
-    }
-    
-    /* Info boxes */
-    .info-box {
-        background: #eff6ff;
-        border: 1px solid #bfdbfe;
-        border-radius: 0.75rem;
-        padding: 1.5rem;
-        margin: 1rem 0;
-    }
-    
-    .info-box h3 {
-        color: #1d4ed8;
-        font-weight: 600;
-        margin-bottom: 1rem;
-    }
-    
-    .info-box ul {
-        color: #1e40af;
-        line-height: 1.6;
-    }
-    
-    /* Word cloud container */
-    .wordcloud-container {
-        background: white;
-        padding: 2rem;
-        border-radius: 1rem;
-        border: 1px solid #e5e7eb;
-        text-align: center;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
-    }
-    
-    /* Expander styling */
-    .streamlit-expanderHeader {
-        background: #f8fafc;
-        border-radius: 0.5rem;
-        border: 1px solid #e2e8f0;
-        font-weight: 500;
-    }
-    
-    /* Custom scrollbar */
-    ::-webkit-scrollbar {
-        width: 8px;
-    }
-    
-    ::-webkit-scrollbar-track {
-        background: #f1f5f9;
-        border-radius: 4px;
-    }
-    
-    ::-webkit-scrollbar-thumb {
-        background: #cbd5e1;
-        border-radius: 4px;
-    }
-    
-    ::-webkit-scrollbar-thumb:hover {
-        background: #94a3b8;
-    }
-    
-    /* Responsive design */
-    @media (max-width: 768px) {
-        .main-header {
-            padding: 1.5rem;
-        }
-        
-        .main-header h1 {
-            font-size: 2rem;
-        }
-        
-        .metric-card {
-            margin-bottom: 1rem;
-        }
-    }
-    
-    /* Animation utilities */
-    @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(10px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-    
-    .fade-in {
-        animation: fadeIn 0.5s ease-out;
-    }
-    
-    /* Loading spinner */
-    .loading-spinner {
-        border: 3px solid #e5e7eb;
-        border-top: 3px solid #3b82f6;
-        border-radius: 50%;
-        width: 24px;
-        height: 24px;
-        animation: spin 1s linear infinite;
-        display: inline-block;
-        margin-right: 0.5rem;
-    }
-    
-    @keyframes spin {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
-    }
-</style>
-""", unsafe_allow_html=True)
+
+# Simplified Streamlit-compliant CSS injection
+def inject_custom_css():
+    st.markdown(
+        """
+        <style></style>
+
+        """,
+        unsafe_allow_html=True
+    )
+
+inject_custom_css()
+
 
 def create_header():
-    """Create modern header with gradient background"""
-    st.markdown("""
-    <div class="main-header fade-in">
-        <h1>💬 Open WebUI Chat Analyzer</h1>
-        <p>Transform your conversation data into actionable insights with beautiful visualizations</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.title("💬 Open WebUI Chat Analyzer")
+    st.subheader("Transform your conversation data into actionable insights with beautiful visualizations")
 
 def create_metric_card(title, value, icon="📊", change=None):
     """Create a modern metric card"""
@@ -522,23 +213,25 @@ def create_user_activity_chart(messages_df):
     heatmap_data = heatmap_data.reindex(day_order)
     
     fig = go.Figure(data=go.Heatmap(
-        z=heatmap_data.values,
-        x=list(range(24)),
-        y=heatmap_data.index,
-        colorscale='Blues',
-        hoverongaps=False,
-        hovertemplate='<b>%{y}</b><br>Hour: %{x}:00<br>Messages: %{z}<extra></extra>',
-        showscale=True,
-        colorbar=dict(
-            title="Messages",
-            side="right",
-            tickmode="linear",
-            tick0=0,
-            len=0.7,
-            thickness=15,
-            x=1.02
-        )
-    ))
+    z=heatmap_data.values,
+    x=list(range(24)),
+    y=heatmap_data.index,
+    colorscale='Blues',
+    hoverongaps=False,
+    hovertemplate='<b>%{y}</b><br>Hour: %{x}:00<br>Messages: %{z}<extra></extra>',
+    showscale=True,
+    colorbar=dict(
+        title="Messages",
+        tickmode="linear",
+        tick0=0,
+        len=0.7,
+        thickness=15,
+        x=1.02,             # positions it slightly outside the plot
+        xanchor='left',     # anchors colorbar's left edge to x-position
+        y=0.5,              # vertically centered
+        yanchor='middle'    # anchors colorbar vertically in the middle
+    )
+))
     
     fig.update_layout(
         title='Message Activity Heatmap',
@@ -754,34 +447,32 @@ def create_export_section(chats_df, messages_df):
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-        st.subheader("📊 Chat Data")
-        st.write(f"Export {len(chats_df)} conversations with metadata")
-        
-        csv_chats = chats_df.to_csv(index=False)
-        st.download_button(
-            label="📥 Download Chat Data CSV",
-            data=csv_chats,
-            file_name="openwebui_chat_data.csv",
-            mime="text/csv",
-            key="download_chats"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
+        with st.container():
+            st.subheader("📊 Chat Data")
+            st.write(f"Export {len(chats_df)} conversations with metadata")
+            
+            csv_chats = chats_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Chat Data CSV",
+                data=csv_chats,
+                file_name="openwebui_chat_data.csv",
+                mime="text/csv",
+                key="download_chats"
+            )
     
     with col2:
-        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-        st.subheader("💬 Message Data")
-        st.write(f"Export {len(messages_df)} individual messages")
-        
-        csv_messages = messages_df.to_csv(index=False)
-        st.download_button(
-            label="📥 Download Message Data CSV",
-            data=csv_messages,
-            file_name="openwebui_message_data.csv",
-            mime="text/csv",
-            key="download_messages"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
+        with st.container():
+            st.subheader("💬 Message Data")
+            st.write(f"Export {len(messages_df)} individual messages")
+            
+            csv_messages = messages_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Message Data CSV",
+                data=csv_messages,
+                file_name="openwebui_message_data.csv",
+                mime="text/csv",
+                key="download_messages"
+            )
 
 def create_instructions():
     """Create modern instructions section"""
@@ -975,22 +666,19 @@ def main():
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                    time_fig = create_time_series_chart(messages_df)
-                    st.plotly_chart(time_fig, use_container_width=True)
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    with st.container():
+                        time_fig = create_time_series_chart(messages_df)
+                        st.plotly_chart(time_fig, use_container_width=True)
                 
                 with col2:
-                    st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                    length_fig = create_conversation_length_distribution(messages_df)
-                    st.plotly_chart(length_fig, use_container_width=True)
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    with st.container():
+                        length_fig = create_conversation_length_distribution(messages_df)
+                        st.plotly_chart(length_fig, use_container_width=True)
                 
                 # Activity heatmap
-                st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                activity_fig = create_user_activity_chart(messages_df)
-                st.plotly_chart(activity_fig, use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
+                with st.container():
+                    activity_fig = create_user_activity_chart(messages_df)
+                    st.plotly_chart(activity_fig, use_container_width=True)
             
             with tab2:
                 st.markdown("""
@@ -1003,34 +691,32 @@ def main():
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
-                    st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                    model_fig = create_model_usage_chart(messages_df)
-                    st.plotly_chart(model_fig, use_container_width=True)
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    with st.container():
+                        model_fig = create_model_usage_chart(messages_df)
+                        st.plotly_chart(model_fig, use_container_width=True)
                 
                 with col2:
-                    st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                    if not messages_df[messages_df['model'] != ''].empty:
-                        model_stats = messages_df[messages_df['model'] != '']['model'].value_counts()
-                        st.subheader("📊 Model Statistics")
-                        
-                        for i, (model, count) in enumerate(model_stats.head(5).items()):
-                            percentage = (count / len(messages_df)) * 100
-                            # Create progress bar effect
-                            st.markdown(f"""
-                            <div style="margin: 1rem 0;">
-                                <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
-                                    <span style="font-weight: 500; color: #1f2937;">{model}</span>
-                                    <span style="color: #6b7280;">{count:,} ({percentage:.1f}%)</span>
+                    with st.container():
+                        if not messages_df[messages_df['model'] != ''].empty:
+                            model_stats = messages_df[messages_df['model'] != '']['model'].value_counts()
+                            st.subheader("📊 Model Statistics")
+                            
+                            for i, (model, count) in enumerate(model_stats.head(5).items()):
+                                percentage = (count / len(messages_df)) * 100
+                                # Create progress bar effect
+                                st.markdown(f"""
+                                <div style="margin: 1rem 0;">
+                                    <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                                        <span style="font-weight: 500; color: #1f2937;">{model}</span>
+                                        <span style="color: #6b7280;">{count:,} ({percentage:.1f}%)</span>
+                                    </div>
+                                    <div style="background: #e5e7eb; border-radius: 0.5rem; height: 8px;">
+                                        <div style="background: linear-gradient(90deg, #3b82f6, #8b5cf6); height: 100%; width: {percentage}%; border-radius: 0.5rem; transition: width 0.5s ease;"></div>
+                                    </div>
                                 </div>
-                                <div style="background: #e5e7eb; border-radius: 0.5rem; height: 8px;">
-                                    <div style="background: linear-gradient(90deg, #3b82f6, #8b5cf6); height: 100%; width: {percentage}%; border-radius: 0.5rem; transition: width 0.5s ease;"></div>
-                                </div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                    else:
-                        st.info("No model information available in the data")
-                    st.markdown('</div>', unsafe_allow_html=True)
+                                """, unsafe_allow_html=True)
+                        else:
+                            st.info("No model information available in the data")
             
             with tab3:
                 st.markdown("""
@@ -1062,51 +748,49 @@ def main():
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                        avg_length = messages_df.groupby('role')['content_length'].mean()
-                        fig = px.bar(
-                            x=avg_length.index,
-                            y=avg_length.values,
-                            title="Average Message Length by Role",
-                            color=avg_length.index,
-                            color_discrete_sequence=['#3b82f6', '#8b5cf6']
-                        )
-                        fig.update_layout(
-                            template='plotly_white',
-                            title_font_size=16,
-                            title_font_color='#1f2937',
-                            xaxis_title="Role",
-                            yaxis_title="Average Characters",
-                            font=dict(family="Inter, sans-serif"),
-                            showlegend=False,
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            margin=dict(t=50, l=50, r=50, b=50)
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                        st.markdown('</div>', unsafe_allow_html=True)
+                        with st.container():
+                            avg_length = messages_df.groupby('role')['content_length'].mean()
+                            fig = px.bar(
+                                x=avg_length.index,
+                                y=avg_length.values,
+                                title="Average Message Length by Role",
+                                color=avg_length.index,
+                                color_discrete_sequence=['#3b82f6', '#8b5cf6']
+                            )
+                            fig.update_layout(
+                                template='plotly_white',
+                                title_font_size=16,
+                                title_font_color='#1f2937',
+                                xaxis_title="Role",
+                                yaxis_title="Average Characters",
+                                font=dict(family="Inter, sans-serif"),
+                                showlegend=False,
+                                plot_bgcolor='rgba(0,0,0,0)',
+                                paper_bgcolor='rgba(0,0,0,0)',
+                                margin=dict(t=50, l=50, r=50, b=50)
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
                     
                     with col2:
-                        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                        fig = px.histogram(
-                            messages_df,
-                            x='content_length',
-                            title="Message Length Distribution",
-                            color_discrete_sequence=['#3b82f6']
-                        )
-                        fig.update_layout(
-                            template='plotly_white',
-                            title_font_size=16,
-                            title_font_color='#1f2937',
-                            xaxis_title="Message Length (characters)",
-                            yaxis_title="Number of Messages",
-                            font=dict(family="Inter, sans-serif"),
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            margin=dict(t=50, l=50, r=50, b=50)
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                        st.markdown('</div>', unsafe_allow_html=True)
+                        with st.container():
+                            fig = px.histogram(
+                                messages_df,
+                                x='content_length',
+                                title="Message Length Distribution",
+                                color_discrete_sequence=['#3b82f6']
+                            )
+                            fig.update_layout(
+                                template='plotly_white',
+                                title_font_size=16,
+                                title_font_color='#1f2937',
+                                xaxis_title="Message Length (characters)",
+                                yaxis_title="Number of Messages",
+                                font=dict(family="Inter, sans-serif"),
+                                plot_bgcolor='rgba(0,0,0,0)',
+                                paper_bgcolor='rgba(0,0,0,0)',
+                                margin=dict(t=50, l=50, r=50, b=50)
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
             
             with tab4:
                 st.markdown("""
@@ -1123,50 +807,48 @@ def main():
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                        sentiment_counts = sentiment_df['sentiment_category'].value_counts()
-                        fig = px.pie(
-                            values=sentiment_counts.values,
-                            names=sentiment_counts.index,
-                            title="Sentiment Distribution (User Messages)",
-                            color_discrete_sequence=['#ef4444', '#6b7280', '#22c55e']
-                        )
-                        fig.update_layout(
-                            template='plotly_white',
-                            title_font_size=16,
-                            title_font_color='#1f2937',
-                            font=dict(family="Inter, sans-serif"),
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            margin=dict(t=50, l=50, r=50, b=50)
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                        st.markdown('</div>', unsafe_allow_html=True)
+                        with st.container():
+                            sentiment_counts = sentiment_df['sentiment_category'].value_counts()
+                            fig = px.pie(
+                                values=sentiment_counts.values,
+                                names=sentiment_counts.index,
+                                title="Sentiment Distribution (User Messages)",
+                                color_discrete_sequence=['#ef4444', '#6b7280', '#22c55e']
+                            )
+                            fig.update_layout(
+                                template='plotly_white',
+                                title_font_size=16,
+                                title_font_color='#1f2937',
+                                font=dict(family="Inter, sans-serif"),
+                                plot_bgcolor='rgba(0,0,0,0)',
+                                paper_bgcolor='rgba(0,0,0,0)',
+                                margin=dict(t=50, l=50, r=50, b=50)
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
                     
                     with col2:
-                        st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                        sentiment_time = sentiment_df.groupby(sentiment_df['timestamp'].dt.date)['sentiment'].mean().reset_index()
-                        fig = px.line(
-                            sentiment_time,
-                            x='timestamp',
-                            y='sentiment',
-                            title="Average Sentiment Over Time"
-                        )
-                        fig.update_traces(line_color='#3b82f6', line_width=3)
-                        fig.add_hline(y=0, line_dash="dash", line_color="#6b7280", annotation_text="Neutral")
-                        fig.update_layout(
-                            template='plotly_white',
-                            title_font_size=16,
-                            title_font_color='#1f2937',
-                            xaxis_title="Date",
-                            yaxis_title="Average Sentiment",
-                            font=dict(family="Inter, sans-serif"),
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            margin=dict(t=50, l=50, r=50, b=50)
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                        st.markdown('</div>', unsafe_allow_html=True)
+                        with st.container():
+                            sentiment_time = sentiment_df.groupby(sentiment_df['timestamp'].dt.date)['sentiment'].mean().reset_index()
+                            fig = px.line(
+                                sentiment_time,
+                                x='timestamp',
+                                y='sentiment',
+                                title="Average Sentiment Over Time"
+                            )
+                            fig.update_traces(line_color='#3b82f6', line_width=3)
+                            fig.add_hline(y=0, line_dash="dash", line_color="#6b7280", annotation_text="Neutral")
+                            fig.update_layout(
+                                template='plotly_white',
+                                title_font_size=16,
+                                title_font_color='#1f2937',
+                                xaxis_title="Date",
+                                yaxis_title="Average Sentiment",
+                                font=dict(family="Inter, sans-serif"),
+                                plot_bgcolor='rgba(0,0,0,0)',
+                                paper_bgcolor='rgba(0,0,0,0)',
+                                margin=dict(t=50, l=50, r=50, b=50)
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
                     
                     # Sentiment statistics with modern cards
                     st.markdown("### Sentiment Breakdown")
