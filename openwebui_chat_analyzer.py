@@ -63,7 +63,8 @@ def load_and_process_data(uploaded_file):
                 'updated_at': pd.to_datetime(item.get('updated_at', 0), unit='s'),
                 'archived': item.get('archived', False),
                 'pinned': item.get('pinned', False),
-                'tags': item.get('meta', {}).get('tags', [])
+                'tags': item.get('meta', {}).get('tags', []),
+                'files_uploaded': len(item.get('chat', {}).get('files', [])),
             }
             chats.append(chat_info)
             
@@ -114,6 +115,25 @@ def calculate_engagement_metrics(chats_df, messages_df):
     conversations = messages_df.groupby('chat_id').size()
     avg_conversation_length = conversations.mean()
     
+    files_uploaded = chats_df['files_uploaded'].sum()
+
+    # Average output tokens per chat (assistant messages)
+    assistant_msgs = messages_df[messages_df['role'] == 'assistant'].copy()
+    assistant_msgs['token_count'] = assistant_msgs['content'].str.split().str.len()
+    output_tokens_per_chat = assistant_msgs.groupby('chat_id')['token_count'].sum()
+    avg_output_tokens_per_chat = output_tokens_per_chat.mean() if not output_tokens_per_chat.empty else 0
+
+    # Average input tokens per chat (user messages)
+    user_msgs = messages_df[messages_df['role'] == 'user'].copy()
+    user_msgs['token_count'] = user_msgs['content'].str.split().str.len()
+    input_tokens_per_chat = user_msgs.groupby('chat_id')['token_count'].sum()
+    avg_input_tokens_per_chat = input_tokens_per_chat.mean() if not input_tokens_per_chat.empty else 0
+
+    # Total tokens across all messages
+    total_input_tokens = input_tokens_per_chat.sum() if not input_tokens_per_chat.empty else 0
+    total_output_tokens = output_tokens_per_chat.sum() if not output_tokens_per_chat.empty else 0
+    total_tokens = total_input_tokens + total_output_tokens
+
     return {
         'total_chats': total_chats,
         'total_messages': total_messages,
@@ -121,7 +141,11 @@ def calculate_engagement_metrics(chats_df, messages_df):
         'avg_messages_per_chat': msg_per_chat,
         'user_messages': user_messages,
         'assistant_messages': assistant_messages,
-        'avg_conversation_length': avg_conversation_length
+        'avg_conversation_length': avg_conversation_length,
+        'avg_input_tokens_per_chat': avg_input_tokens_per_chat,
+        'avg_output_tokens_per_chat': avg_output_tokens_per_chat,
+        'total_tokens': total_tokens,
+        'files_uploaded': files_uploaded,
     }
 
 def create_time_series_chart(messages_df):
@@ -357,32 +381,60 @@ def perform_sentiment_analysis(messages_df):
     
     return user_messages
 
-def create_search_interface(messages_df):
-    """Create enhanced search interface"""
+def create_search_interface(chats_df, messages_df):
+    """Create enhanced search interface returning threads"""
     if messages_df.empty:
         return
-    
-    st.header("Search Messages")
-    
+
+    st.header("Search Conversations")
+
     col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
-        search_query = st.text_input("Search in message content:", placeholder="Enter search terms...", key="search_input")
+        search_query = st.text_input("Search in conversations:", placeholder="Enter search terms...", key="search_input")
     with col2:
         role_filter = st.selectbox("Filter by role:", ["All", "user", "assistant"])
     with col3:
-        max_results = st.selectbox("Max results:", [10, 25, 50, 100])
+        max_conversations = st.selectbox("Max conversations:", [5, 10, 15, 20])
+
     if search_query:
-        filtered_messages = messages_df[
-            messages_df['content'].str.contains(search_query, case=False, na=False)
-        ]
+        # Filter messages by query and optional role
+        filtered = messages_df[messages_df['content'].str.contains(search_query, case=False, na=False)]
         if role_filter != "All":
-            filtered_messages = filtered_messages[filtered_messages['role'] == role_filter]
-        st.success(f"✅ Found {len(filtered_messages)} messages containing '{search_query}'")
-        for i, (_, msg) in enumerate(filtered_messages.head(max_results).iterrows()):
-            with st.expander(f"#{i+1} {msg['role'].title()} - {msg['timestamp'].strftime('%Y-%m-%d %H:%M')}"):
-                st.write(msg['content'])
-                if msg['model']:
-                    st.caption(f"Model: {msg['model']}")
+            filtered = filtered[filtered['role'] == role_filter]
+        # Retrieve subject, date, and model for each conversation
+        # Identify matching conversations
+        conversation_ids = filtered['chat_id'].unique()
+        st.success(f"✅ Found {len(conversation_ids)} conversations containing '{search_query}'")
+        # Compile regex for highlighting
+        pattern = re.compile(re.escape(search_query), re.IGNORECASE)
+        # Display each conversation thread
+        for idx, cid in enumerate(conversation_ids[:max_conversations]):
+            conv_msgs = messages_df[messages_df['chat_id'] == cid].sort_values('timestamp')
+            # Gather chat metadata
+            chat_info = chats_df[chats_df['chat_id'] == cid].iloc[0]
+            subject = chat_info['title'] or cid
+            date = chat_info['created_at'].strftime('%Y-%m-%d')
+            models = [m for m in conv_msgs['model'].unique() if m]
+            model_name = models[0] if models else 'Unknown'
+            # Display expander with enriched title
+            with st.expander(f"Thread #{idx+1}: {subject} | Date: {date} | Model: {model_name}", expanded=False):
+                for _, msg in conv_msgs.iterrows():
+                    # Highlight search terms
+                    highlighted = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", str(msg['content']))
+                    timestamp = msg['timestamp'].strftime('%Y-%m-%d %H:%M')
+                    # Differentiate user vs assistant
+                    if msg['role'] == 'user':
+                        st.markdown(
+                            f"<div style='background-color:#e6f7ff; padding:8px; border-radius:5px; margin-bottom:4px;'>"
+                            f"<strong>User</strong> <span style='float:right;color:#555;'>{timestamp}</span><br>{highlighted}</div>",
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.markdown(
+                            f"<div style='background-color:#f0f0f0; padding:8px; border-radius:5px; margin-bottom:4px;'>"
+                            f"<strong>Assistant</strong> <span style='float:right;color:#555;'>{timestamp}</span><br>{highlighted}</div>",
+                            unsafe_allow_html=True
+                        )
 
 def create_export_section(chats_df, messages_df):
     """Create modern export section"""
@@ -450,39 +502,39 @@ def main():
             chats_df, messages_df = load_and_process_data(uploaded_file)
         
         if chats_df is not None and messages_df is not None:
-            st.success(f"✅ Data loaded successfully! Found {len(chats_df)} chats with {len(messages_df)} messages")
+            st.toast(f"Data loaded successfully!", icon="✅")
             metrics = calculate_engagement_metrics(chats_df, messages_df)
             st.header("Overview")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric(label="Total Chats", value=f"{metrics['total_chats']:,}")
+                st.metric(label="Total Chats", value=f"{metrics['total_chats']:,}")  
             with col2:
-                st.metric(label="Total Messages", value=f"{metrics['total_messages']:,}")
+                st.metric(label="Unique Users", value=f"{metrics['unique_users']:,}")                     
             with col3:
-                st.metric(label="Unique Users", value=f"{metrics['unique_users']:,}")
+                files_uploaded = metrics.get('files_uploaded', 0)
+                st.metric(label="User Files Uploaded", value=f"{files_uploaded:,}")    
             with col4:
-                st.metric(label="Avg Msgs/Chat", value=f"{metrics['avg_messages_per_chat']:.1f}")
+                st.metric(label="Avg Msgs/Chat", value=f"{metrics['avg_messages_per_chat']:.1f}")          
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                user_pct = (metrics['user_messages'] / metrics['total_messages']) * 100
-                st.metric(label="User Messages", value=f"{user_pct:.1f}%")
+                st.metric(label="Total Chats", value=f"{metrics['total_chats']:,}")
             with col2:
-                assistant_pct = (metrics['assistant_messages'] / metrics['total_messages']) * 100
-                st.metric(label="AI Messages", value=f"{assistant_pct:.1f}%")
+                avg_input_tokens = metrics.get('avg_input_tokens_per_chat', 0)
+                st.metric(label="Avg Input Tokens/Chat", value=f"{avg_input_tokens:.1f}")
             with col3:
-                st.metric(label="Avg Conv Length", value=f"{metrics['avg_conversation_length']:.1f}")
+                st.metric(label="Avg Output Tokens/Chat", value=f"{metrics['avg_output_tokens_per_chat']:.1f}")
             with col4:
-                if not messages_df.empty:
-                    active_days = messages_df['timestamp'].dt.date.nunique()
-                    st.metric(label="Active Days", value=f"{active_days:,}")
+                total_tokens = metrics.get('total_tokens', 0)
+                st.metric(label="Total Tokens", value=f"{total_tokens:,}")                
             
             # Create tabs for different analyses
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                "📈 Time Analysis", 
-                "🤖 Model Usage", 
-                "💭 Content Analysis", 
-                "😊 Sentiment", 
-                "🔍 Search"
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+                "📈 Time Analysis",
+                "🤖 Model Usage",
+                "💭 Content Analysis",
+                "😊 Sentiment",
+                "🔍 Search",
+                "🗂 Browse Data"
             ])
             
             with tab1:
@@ -627,7 +679,49 @@ def main():
                 else:
                     st.warning("⚠️ Sentiment analysis unavailable - No user messages found for analysis")
             with tab5:
-                create_search_interface(messages_df)
+                create_search_interface(chats_df, messages_df)
+            with tab6:
+                st.subheader("Browse Data")
+                if not messages_df.empty:
+                    # Compute the first user message timestamp per chat
+                    first_prompts = (
+                        messages_df[messages_df['role'] == 'user']
+                        .groupby('chat_id')['timestamp']
+                        .min()
+                        .reset_index()
+                    )
+                    # Merge with chat titles
+                    first_prompts = first_prompts.merge(
+                        chats_df[['chat_id', 'title']],
+                        on='chat_id',
+                        how='left'
+                    )
+                    # Sort descending by first prompt date
+                    first_prompts = first_prompts.sort_values('timestamp', ascending=False)
+                    # Display each thread in an expander
+                    for _, row in first_prompts.iterrows():
+                        thread_id = row['chat_id']
+                        title = row['title'] or thread_id
+                        date = row['timestamp'].strftime('%Y-%m-%d %H:%M')
+                        with st.expander(f"{title} (Started: {date})", expanded=False):
+                            thread_msgs = messages_df[messages_df['chat_id'] == thread_id].sort_values('timestamp')
+                            for _, msg in thread_msgs.iterrows():
+                                timestamp = msg['timestamp'].strftime('%Y-%m-%d %H:%M')
+                                content = msg['content'].replace('\n', '<br>')
+                                if msg['role'] == 'user':
+                                    st.markdown(
+                                        f"<div style='background-color:#e6f7ff; padding:8px; border-radius:5px; margin-bottom:4px;'>"
+                                        f"<strong>User</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    st.markdown(
+                                        f"<div style='background-color:#f0f0f0; padding:8px; border-radius:5px; margin-bottom:4px;'>"
+                                        f"<strong>Assistant</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                else:
+                    st.info("No messages to display.")
             create_export_section(chats_df, messages_df)
     
     else:
