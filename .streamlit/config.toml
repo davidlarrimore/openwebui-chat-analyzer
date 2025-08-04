@@ -1,14 +1,62 @@
 [theme]
-    primaryColor = "#E694FF"
-    backgroundColor = "#00172B"
-    secondaryBackgroundColor = "#0083B8"
-    textColor = "#C6CDD4"
-    font = "sans-serif"
+    primaryColor = "#3b82f6"
+    backgroundColor = "#f8fafc"
+    secondaryBackgroundColor = "#ffffff"
+    textColor = "#1f2937"
+    font = "sans serif"
 
 [server]
-    enableCORS=false
-    enableXsrfProtection=false
-    headless=true
+    headless = true
+    enableCORS = false
+    enableXsrfProtection = false
+    maxUploadSize = 500
+    maxMessageSize = 500
+    enableWebsocketCompression = true
+
+    fileWatcherType = "auto"           # Auto-detect file changes
+    runOnSave = true                   # Auto-reload on file changes (dev mode)
+
+    # Performance optimizations
+    fastReruns = true                  # Enable fast reruns for better UX
+    allowRunOnSave = true              # Allow auto-execution
+
+[browser]
+    # Browser behavior configuration
+    gatherUsageStats = false           # Disable usage statistics for privacy
+    showErrorDetails = true            # Show detailed errors for debugging
+    serverAddress = "localhost"        # Default server address
+    serverPort = 8501                  # Default port
 
 [ui]
-    hideTopBar = true
+    # UI configuration for clean appearance
+    hideTopBar = true                  # Hide Streamlit's top bar for cleaner look
+    hideSidebarNav = false             # Keep sidebar navigation visible
+
+[client]
+    # Client-side optimizations
+    caching = true                     # Enable client-side caching
+    showErrorDetails = true            # Show error details for debugging
+    toolbarMode = "minimal"            # Minimal toolbar for cleaner interface
+
+[runner]
+    # Runner configuration for better performance
+    magicEnabled = true                # Enable magic commands
+    installTracer = false              # Disable install tracer for performance
+    fixMatplotlib = true               # Fix matplotlib backend issues
+    postScriptGC = true                # Enable garbage collection after script runs
+    fastReruns = true                  # Enable fast reruns
+
+[logger]
+    # Logging configuration
+    level = "info"                     # Set logging level to info
+    messageFormat = "%(asctime)s %(message)s"  # Simple message format
+
+[deprecation]
+    # Handle deprecation warnings
+    showfileUploaderEncoding = false  # Hide encoding warnings
+    showPyplotGlobalUse = false        # Hide pyplot warnings
+
+[mapbox]
+    # Mapbox configuration (if needed for future features)
+    token = ""                         # Empty token for now
+    
