@@ -534,20 +534,30 @@ def main():
         if chats_df is not None and messages_df is not None:
             st.toast(f"Data loaded successfully!", icon="✅")
             metrics = calculate_engagement_metrics(chats_df, messages_df)
+            # Compute date range and total days from messages
+            if not messages_df.empty:
+                date_min_dt = messages_df['timestamp'].min()
+                date_max_dt = messages_df['timestamp'].max()
+                date_min = date_min_dt.strftime('%m/%d')
+                date_max = date_max_dt.strftime('%m/%d')
+                total_days = (date_max_dt.date() - date_min_dt.date()).days + 1
+                date_range = f"{date_min} - {date_max} ({total_days} days)"
+            else:
+                date_range = "N/A"
             st.header("Overview")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric(label="Total Chats", value=f"{metrics['total_chats']:,}")  
+                st.metric(label="Date Range", value=date_range)
             with col2:
-                st.metric(label="Unique Users", value=f"{metrics['unique_users']:,}")                     
+                st.metric(label="Total Chats", value=f"{metrics['total_chats']:,}")       
             with col3:
-                files_uploaded = metrics.get('files_uploaded', 0)
-                st.metric(label="User Files Uploaded", value=f"{files_uploaded:,}")    
+                st.metric(label="Unique Users", value=f"{metrics['unique_users']:,}")             
             with col4:
-                st.metric(label="Avg Msgs/Chat", value=f"{metrics['avg_messages_per_chat']:,.1f}")          
+                files_uploaded = metrics.get('files_uploaded', 0)
+                st.metric(label="User Files Uploaded", value=f"{files_uploaded:,}")  
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric(label="Total Chats", value=f"{metrics['total_chats']:,}")
+                st.metric(label="Avg Msgs/Chat", value=f"{metrics['avg_messages_per_chat']:,.1f}")          
             with col2:
                 avg_input_tokens = metrics.get('avg_input_tokens_per_chat', 0)
                 st.metric(label="Avg Input Tokens/Chat", value=f"{avg_input_tokens:,.1f}")
