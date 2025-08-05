@@ -1,66 +1,159 @@
-{
-  "id": "sample-123e4567-e89b-12d3-a456-426614174000",
-  "user_id": "74c93ed5-56df-49e2-8557-998a3b028315",
-  "title": "💬 Sample Chat Thread",
-  "created_at": 1754330000,
-  "updated_at": 1754330450,
-  "share_id": null,
-  "archived": false,
-  "pinned": false,
-  "meta": {
-    "tags": ["sample", "test", "demo"]
-  },
-  "folder_id": null,
-  "chat": {
-    "id": "sample-123e4567-e89b-12d3-a456-426614174000",
-    "title": "💬 Sample Chat Thread",
-    "models": ["amichat"],
-    "params": {
-      "temperature": 0.5,
-      "max_tokens": 200
+[
+  {
+    "id": "chat-001",
+    "user_id": "user-A1",
+    "title": "Project Kickoff Discussion",
+    "updated_at": 1691180000,
+    "created_at": 1691100000,
+    "share_id": null,
+    "archived": false,
+    "pinned": true,
+    "meta": {
+      "tags": ["project", "kickoff"]
     },
-    "timestamp": 1754330000,
-    "tags": ["demo", "json"],
-    "history": {},
-    "messages": [
-      {
-        "id": "msg-sample-001",
-        "parentId": null,
-        "childrenIds": ["msg-sample-002"],
-        "role": "user",
-        "content": "Hello, this is a sample user message.",
-        "timestamp": 1754330000,
-        "models": ["amichat"]
+    "folder_id": "folder-123",
+    "chat": {
+      "id": "chat-001",
+      "title": "Project Kickoff Discussion",
+      "models": ["gpt-4"],
+      "params": {
+        "temperature": 0.7,
+        "max_tokens": 2048
       },
-      {
-        "id": "msg-sample-002",
-        "parentId": "msg-sample-001",
-        "childrenIds": [],
-        "role": "assistant",
-        "content": "And this is a sample assistant reply.",
-        "timestamp": 1754330100,
-        "models": ["amichat"]
-      }
-    ],
-    "files": [
-      {
-        "type": "file",
-        "file": {
-          "id": "file-meta-sample-001",
-          "filename": "sample_document.txt",
-          "hash": "deadbeef1234abcd5678ef90",
-          "size": 1024,
-          "content_type": "text/plain"
+      "history": {
+        "messages": {
+          "msg-001": {
+            "id": "msg-001",
+            "parentId": null,
+            "childrenIds": ["msg-002"],
+            "role": "user",
+            "content": "Let's outline our project goals.",
+            "timestamp": 1691100001,
+            "models": []
+          },
+          "msg-002": {
+            "id": "msg-002",
+            "parentId": "msg-001",
+            "childrenIds": [],
+            "role": "assistant",
+            "content": "Sure! What are the main objectives?",
+            "timestamp": 1691100050,
+            "model": "gpt-4",
+            "modelName": "gpt-4",
+            "modelIdx": 0,
+            "userContext": null,
+            "statusHistory": ["complete"],
+            "sources": [],
+            "done": true
+          }
         },
-        "id": "file-sample-001",
-        "url": "https://example.com/downloads/sample_document.txt",
-        "name": "sample_document.txt",
-        "collection_name": "samples",
-        "status": "uploaded",
-        "size": 1024,
-        "error": null,
-        "itemId": "msg-sample-001"
-      }
-    ]
+        "currentId": "msg-002"
+      },
+      "messages": [
+        {
+          "id": "msg-001",
+          "parentId": null,
+          "childrenIds": ["msg-002"],
+          "role": "user",
+          "content": "Let's outline our project goals.",
+          "timestamp": 1691100001
+        },
+        {
+          "id": "msg-002",
+          "parentId": "msg-001",
+          "childrenIds": [],
+          "role": "assistant",
+          "content": "Sure! What are the main objectives?",
+          "timestamp": 1691100050,
+          "model": "gpt-4",
+          "modelName": "gpt-4",
+          "modelIdx": 0,
+          "userContext": null,
+          "statusHistory": ["complete"],
+          "sources": [],
+          "done": true
+        }
+      ],
+      "tags": ["kickoff"],
+      "timestamp": 1691100000,
+      "files": []
+    }
+  },
+  {
+    "id": "chat-002",
+    "user_id": "user-B2",
+    "title": "Budget Review",
+    "updated_at": 1691185000,
+    "created_at": 1691105000,
+    "share_id": null,
+    "archived": false,
+    "pinned": false,
+    "meta": {
+      "tags": ["finance"]
+    },
+    "folder_id": null,
+    "chat": {
+      "id": "chat-002",
+      "title": "Budget Review",
+      "models": ["gpt-3.5"],
+      "params": {},
+      "history": {
+        "messages": {
+          "msg-101": {
+            "id": "msg-101",
+            "parentId": null,
+            "childrenIds": ["msg-102"],
+            "role": "user",
+            "content": "Can you summarize our Q3 budget?",
+            "timestamp": 1691105001,
+            "models": []
+          },
+          "msg-102": {
+            "id": "msg-102",
+            "parentId": "msg-101",
+            "childrenIds": [],
+            "role": "assistant",
+            "content": "The total budget for Q3 is $1.2M with 40% allocated to R&D.",
+            "timestamp": 1691105050,
+            "model": "gpt-3.5",
+            "modelName": "gpt-3.5",
+            "modelIdx": 0,
+            "userContext": null,
+            "statusHistory": ["complete"],
+            "sources": [],
+            "done": true
+          }
+        },
+        "currentId": "msg-102"
+      },
+      "messages": [
+        {
+          "id": "msg-101",
+          "parentId": null,
+          "childrenIds": ["msg-102"],
+          "role": "user",
+          "content": "Can you summarize our Q3 budget?",
+          "timestamp": 1691105001
+        },
+        {
+          "id": "msg-102",
+          "parentId": "msg-101",
+          "childrenIds": [],
+          "role": "assistant",
+          "content": "The total budget for Q3 is $1.2M with 40% allocated to R&D.",
+          "timestamp": 1691105050,
+          "model": "gpt-3.5",
+          "modelName": "gpt-3.5",
+          "modelIdx": 0,
+          "userContext": null,
+          "statusHistory": ["complete"],
+          "sources": [],
+          "done": true
+        }
+      ],
+      "tags": [],
+      "timestamp": 1691105000,
+      "files": []
+    }
   }
-}
+]

@@ -18,6 +18,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
+import math
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
 import re
@@ -727,6 +728,24 @@ def main():
                     )
                     # Sort descending by first prompt date
                     first_prompts = first_prompts.sort_values('timestamp', ascending=False)
+                    # Pagination setup
+                    total_threads = len(first_prompts)
+                    # Initialize session state for current page
+                    if "page" not in st.session_state:
+                        st.session_state.page = 1
+                    # Threads per page selector
+                    threads_per_page = st.selectbox(
+                        "Threads per page",
+                        [5, 10, 20, 50],
+                        index=1,
+                        key="threads_per_page"
+                    )
+                    # Calculate total pages and slice for current page
+                    total_pages = math.ceil(total_threads / st.session_state.threads_per_page)
+                    page = st.session_state.page
+                    start_idx = (page - 1) * st.session_state.threads_per_page
+                    end_idx = start_idx + st.session_state.threads_per_page
+                    first_prompts = first_prompts.iloc[start_idx:end_idx]
                     # Display each thread in an expander
                     for _, row in first_prompts.iterrows():
                         thread_id = row['chat_id']
@@ -776,6 +795,16 @@ def main():
                             for file_item in chat_info.get('files', []):
                                 file_name = file_item.get('filename') or file_item.get('name')
                                 st.markdown(f"📎 {file_name}")
+                    # Page navigation controls
+                    col_prev, col_info, col_next = st.columns([1, 2, 1])
+                    with col_prev:
+                        if st.button("Previous", key="prev_page") and st.session_state.page > 1:
+                            st.session_state.page -= 1
+                    with col_info:
+                        st.write(f"Page {st.session_state.page} of {total_pages}")
+                    with col_next:
+                        if st.button("Next", key="next_page") and st.session_state.page < total_pages:
+                            st.session_state.page += 1
                 else:
                     st.info("No messages to display.")
             create_export_section(chats_df, messages_df)
