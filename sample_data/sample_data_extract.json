@@ -1,0 +1,66 @@
+{
+  "id": "sample-123e4567-e89b-12d3-a456-426614174000",
+  "user_id": "74c93ed5-56df-49e2-8557-998a3b028315",
+  "title": "💬 Sample Chat Thread",
+  "created_at": 1754330000,
+  "updated_at": 1754330450,
+  "share_id": null,
+  "archived": false,
+  "pinned": false,
+  "meta": {
+    "tags": ["sample", "test", "demo"]
+  },
+  "folder_id": null,
+  "chat": {
+    "id": "sample-123e4567-e89b-12d3-a456-426614174000",
+    "title": "💬 Sample Chat Thread",
+    "models": ["amichat"],
+    "params": {
+      "temperature": 0.5,
+      "max_tokens": 200
+    },
+    "timestamp": 1754330000,
+    "tags": ["demo", "json"],
+    "history": {},
+    "messages": [
+      {
+        "id": "msg-sample-001",
+        "parentId": null,
+        "childrenIds": ["msg-sample-002"],
+        "role": "user",
+        "content": "Hello, this is a sample user message.",
+        "timestamp": 1754330000,
+        "models": ["amichat"]
+      },
+      {
+        "id": "msg-sample-002",
+        "parentId": "msg-sample-001",
+        "childrenIds": [],
+        "role": "assistant",
+        "content": "And this is a sample assistant reply.",
+        "timestamp": 1754330100,
+        "models": ["amichat"]
+      }
+    ],
+    "files": [
+      {
+        "type": "file",
+        "file": {
+          "id": "file-meta-sample-001",
+          "filename": "sample_document.txt",
+          "hash": "deadbeef1234abcd5678ef90",
+          "size": 1024,
+          "content_type": "text/plain"
+        },
+        "id": "file-sample-001",
+        "url": "https://example.com/downloads/sample_document.txt",
+        "name": "sample_document.txt",
+        "collection_name": "samples",
+        "status": "uploaded",
+        "size": 1024,
+        "error": null,
+        "itemId": "msg-sample-001"
+      }
+    ]
+  }
+}

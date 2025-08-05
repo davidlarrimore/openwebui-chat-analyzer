@@ -1,477 +1,164 @@
 # 💬 Open WebUI Chat Analyzer
 
-A simple dashboard for analyzing Open WebUI chat log data. Transform your conversation data into actionable insights with beautiful visualizations and comprehensive analytics.
+**Privacy-first analytics dashboard for Open WebUI chat exports. Transform your conversation data into actionable insights with interactive visualizations.**
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![Streamlit](https://img.shields.io/badge/streamlit-1.28%2B-red.svg)
 ![Docker](https://img.shields.io/badge/docker-ready-blue.svg)
 
-## ✨ Features
+## ✨ Key Features
 
-### 📊 **Comprehensive Analytics**
+### **📊 Comprehensive Analytics**
 
-- **Overview Metrics**: Total chats, messages, unique users, and engagement statistics
-- **Time Analysis**: Daily activity trends, peak usage hours, and conversation patterns
-- **Model Performance**: AI model usage distribution and performance insights
-- **Content Analysis**: Word clouds, message length analysis, and topic identification
-- **Sentiment Analysis**: User satisfaction tracking with positive/negative/neutral ratios
-- **Search & Filter**: Full-text search across all messages with advanced filtering
+- **Engagement Metrics**: Total chats, messages, users, token usage, and file uploads
+- **Time Analysis**: Daily activity trends, usage heatmaps, peak conversation periods
+- **Model Performance**: AI model usage distribution and effectiveness tracking
+- **Content Intelligence**: Word clouds, message length patterns, topic identification
+- **Sentiment Analysis**: User satisfaction tracking with temporal trends
 
-### 🚀 **Easy to Use**
+### **🔍 Advanced Search & Navigation**
 
-- **Zero Configuration**: Just upload your JSON export and start analyzing
-- **Interactive Dashboards**: Real-time charts and visualizations
-- **Export Ready**: Download processed data as CSV for further analysis
+- **Thread-based Search**: Full-text search with conversation context and highlighted results
+- **Smart Filtering**: Filter by role (user/assistant), date ranges, and message attributes
+- **Individual Thread Export**: Download specific conversations as JSON with metadata
+- **Browse Interface**: Chronological conversation browsing with file attachment indicators
 
-## 🎯 Quick Start
+### **📤 Export Capabilities**
 
-### Prerequisites
+- **CSV Export**: Processed chat and message data for external analysis
+- **Thread Export**: Individual conversations with complete metadata
+- **Filtered Results**: Export search results and custom datasets
 
-**Choose your preferred method:**
-- **🐳 Docker** (Recommended): Docker Desktop installed
-- **🐍 Python**: Python 3.8+ (macOS, Linux, or Windows)
+## 🚀 Quick Start
 
-### Option A: Docker (Recommended - Zero Configuration)
+### Docker (Recommended)
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
 cd openwebui-chat-analyzer
-
-# 2. Start with Docker (one command!)
 make up
-# OR: docker-compose up -d
-
-# 3. Access the application
-open http://localhost:8501
+# Access at http://localhost:8501
 ```
 
-**That's it!** Skip to step 4 below.
-
-### Option B: Python Setup
+### Python Setup
 
 ```bash
-# 1. Clone & Setup
 git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
 cd openwebui-chat-analyzer
-
-# 2. Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# 3. Install dependencies
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# 4. Run the analyzer
 streamlit run openwebui_chat_analyzer.py
 ```
 
-### Get Your Data (Both Methods)
+### Getting Your Data
 
-1. Open your Open WebUI instance
-2. Navigate to **Settings** → **Data & Privacy**
-3. Click **"Export All Chats"**
-4. Save the downloaded JSON file
+1. Open WebUI → Settings → Data & Privacy → Export All Chats
+2. Upload the JSON file to the analyzer interface
+3. Start exploring your conversation insights
 
-### Analyze Your Data
+## 📈 Use Cases
 
-1. Upload your JSON export file to the web interface
-2. Explore the interactive dashboards
-3. Export insights as needed
+### **Personal Productivity Analysis**
 
-## 📸 Screenshots
+- Track your AI usage patterns and peak productivity hours
+- Identify which models work best for different types of tasks
+- Monitor conversation quality and satisfaction trends
+- Analyze file upload patterns and multimodal interaction trends
 
-### Overview Dashboard
+### **Content Research & Discovery**
 
-Get instant insights into your chat activity with key metrics and trends.
+- Search across all conversations to find specific information
+- Export relevant conversation threads for documentation
+- Identify recurring topics and conversation themes
+- Track how your questions and interaction style evolve
 
-### Time Analysis
+### **Usage Optimization**
 
-Discover your usage patterns with activity heatmaps and trend analysis.
+- Understand token usage patterns for cost optimization
+- Compare model performance across different conversation types
+- Identify underutilized features (file uploads, specific models)
+- Optimize conversation strategies based on sentiment analysis
 
-### Content Analysis
+### **Data Export & Integration**
 
-Explore conversation topics with word clouds and message analysis.
+- Export conversation data for external analysis tools
+- Create backups of important conversation threads
+- Generate reports for team or organizational insights
+- Integrate with existing workflow and documentation systems
 
-### Sentiment Tracking
-
-Monitor user satisfaction and sentiment trends over time.
-
-## 🛠️ Installation Options
-
-### Option 1: Docker (Recommended)
-
-**Why Docker?** Zero configuration, consistent environment, easy updates, and production-ready.
-
-```bash
-# Quick start
-git clone https://github.com/yourusername/openwebui-chat-analyzer.git
-cd openwebui-chat-analyzer
-make up
-
-# Alternative Docker commands
-docker-compose up -d
-# OR
-docker build -t openwebui-chat-analyzer . && docker run -d -p 8501:8501 openwebui-chat-analyzer
-```
-
-**Docker Features:**
-- 🚀 One-command deployment
-- 🔒 Security hardened (non-root user, read-only filesystem)
-- 📊 Resource management and health checks
-- 🔄 Easy updates and backups
-- 🌐 Production-ready with nginx proxy option
-
-**Docker Management:**
-```bash
-make help        # Show all available commands
-make logs        # View application logs
-make shell       # Open container shell
-make backup      # Backup data
-make clean       # Clean up containers
-```
-
-### Option 2: Automated Setup (Python)
+## 🐳 Docker Management
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yourusername/openwebui-chat-analyzer/main/setup.sh | bash
+make help           # Show all available commands
+make up             # Start services
+make down           # Stop services
+make logs           # View application logs
+make dev            # Development mode with live reload
+make backup         # Create data backup
+make clean          # Clean up containers
 ```
 
-### Option 3: Manual Installation (Python)
+## 📊 Analytics Overview
 
-```bash
-# Clone repository
-git clone https://github.com/yourusername/openwebui-chat-analyzer.git
-cd openwebui-chat-analyzer
+The analyzer processes your Open WebUI JSON export to provide:
 
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
+- **Overview Dashboard**: Key metrics, token usage, and engagement statistics
+- **Time Analysis**: Activity trends, usage heatmaps, conversation patterns
+- **Model Usage**: Distribution charts and performance comparisons
+- **Content Analysis**: Word clouds, message patterns, length distributions
+- **Sentiment Tracking**: User satisfaction trends and conversation quality
+- **Search Interface**: Full-text search with thread context and export
+- **Browse Data**: Chronological conversation exploration
 
-# Install requirements
-pip install streamlit pandas plotly wordcloud textblob networkx
+## 🔧 Technical Details
 
-# Download language data
-python -c "import nltk; nltk.download('punkt')"
+### **Data Processing**
 
-# Run the application
-streamlit run openwebui_chat_analyzer.py
+- Handles large JSON files (500MB+) efficiently
+- Local processing only - no external API calls
+- Pandas-based data transformation with caching
+- Support for chat metadata, message content, and file attachments
+
+### **Supported Data Format**
+
+Open WebUI JSON export containing:
+```json
+[{
+  "id": "chat_id", "user_id": "user_id", "title": "Chat Title",
+  "chat": {
+    "messages": [{
+      "role": "user|assistant", "content": "text", 
+      "timestamp": epoch, "model": "model_name"
+    }]
+  }
+}]
 ```
 
-## 📊 Analytics Features
+### **Deployment Options**
 
-### **Overview Metrics**
+- **Docker**: Production-ready with health checks and resource management
+- **Development Mode**: Live code reloading for customization
+- **Python**: Traditional virtual environment setup
+- **Production**: Nginx proxy support for server deployment
 
-- Total conversations and messages
-- Unique user count
-- Average messages per conversation
-- User vs AI message ratios
+## 🔒 Privacy & Security
 
-### **Time-Based Analysis**
-
-- Daily, weekly, and monthly activity trends
-- Peak usage hours and days
-- Conversation duration patterns
-- Activity heatmaps
-
-### **Model Performance**
-
-- AI model usage distribution
-- Response time analysis (if available)
-- Model preference trends
-- Performance comparisons
-
-### **Content Intelligence**
-
-- Word frequency analysis
-- Topic modeling and clustering
-- Message length distributions
-- Content category identification
-
-### **Sentiment Analysis**
-
-- Positive, negative, neutral message classification
-- Sentiment trends over time
-- User satisfaction indicators
-- Emotional journey mapping
-
-### **Search & Discovery**
-
-- Full-text search across all messages
-- Advanced filtering by date, user, model
-- Conversation thread exploration
-- Export search results
-
-## 🔧 Configuration
-
-### Environment Variables
-
-**Docker:**
-```bash
-# Customize Docker deployment
-docker run -d \
-  -e STREAMLIT_SERVER_PORT=8501 \
-  -e TZ=America/New_York \
-  -p 8501:8501 \
-  openwebui-chat-analyzer
-```
-
-**Python:**
-
-```bash
-# Optional: Customize port and host
-export STREAMLIT_SERVER_PORT=8501
-export STREAMLIT_SERVER_ADDRESS=localhost
-
-# Optional: Enable debug mode
-export STREAMLIT_LOGGER_LEVEL=debug
-```
-
-### Config File
-
-Create `config.yaml` for advanced settings:
-
-```yaml
-analytics:
-  sentiment_threshold: 0.1
-  max_wordcloud_words: 100
-  default_timezone: "UTC"
-
-visualization:
-  theme: "plotly_white"
-  color_palette: "viridis"
-  chart_height: 400
-```
-
-## 📦 Dependencies
-
-### Core Requirements
-
-```text
-streamlit>=1.28.0
-pandas>=2.0.0
-plotly>=5.15.0
-wordcloud>=1.9.2
-textblob>=0.17.1
-networkx>=3.1
-numpy>=1.24.0
-```
-
-### Optional Enhancements
-
-```text
-jupyter>=1.0.0          # For notebook analysis
-scikit-learn>=1.3.0     # Advanced ML features
-spacy>=3.6.0           # Enhanced NLP
-```
-
-## 🚀 Usage Examples
-
-### Basic Analysis
-
-```python
-# Load your data
-python openwebui_chat_analyzer.py
-
-# Upload JSON file through the web interface
-# Explore the generated dashboards
-```
-
-### Advanced Search
-
-```python
-# Search for specific topics
-# Filter by date ranges
-# Export filtered results
-```
-
-### Custom Analysis
-
-```python
-# Extend the analyzer with custom metrics
-# Add new visualization types
-# Integrate with external tools
-```
-
-## 📁 Project Structure
-
-```text
-openwebui-chat-analyzer/
-├── 🐳 Docker Files
-│   ├── Dockerfile              # Multi-stage production build
-│   ├── docker-compose.yml      # Orchestration configuration
-│   ├── .dockerignore           # Docker ignore rules
-│   └── Makefile               # Docker management commands
-├── 📊 Application
-│   ├── openwebui_chat_analyzer.py   # Main Streamlit application
-│   ├── requirements.txt        # Python dependencies
-│   └── config.yaml            # Configuration settings
-├── 🚀 Setup Scripts
-│   ├── setup.sh               # Automated Python setup
-│   └── run.sh        # Python launcher script
-├── 📁 Data Directories
-│   ├── data/                  # Upload directory (gitignored)
-│   └── sample_data/           # Example data for testing
-├── 📖 Documentation
-│   ├── README.md              # This file
-│   └── docs/                  # Additional documentation
-└── 🧪 Testing
-    └── tests/                 # Test files
-```
+- **Local Processing**: All analysis happens on your machine
+- **No External Dependencies**: No API calls or data transmission
+- **Data Control**: Full control over data storage and cleanup
 
 ## 🤝 Contributing
 
-We welcome contributions! Here's how to get started:
-
-### Development Setup
-
-```bash
-# Fork the repository
-git clone https://github.com/yourusername/openwebui-chat-analyzer.git
-cd openwebui-chat-analyzer
-
-# Create development environment
-python -m venv dev-env
-source dev-env/bin/activate
-
-# Install development dependencies
-pip install -r requirements-dev.txt
-
-# Run tests
-pytest tests/
-```
-
-### Code Style
-
-- Follow PEP 8 guidelines
-- Use type hints where possible
-- Add docstrings to functions
-- Write tests for new features
-
-### Pull Request Process
-
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-#### Docker Issues
-
-**Docker not running:**
-
-```bash
-# Start Docker Desktop (Mac/Windows) or Docker service (Linux)
-# Mac: Open Docker Desktop app
-# Linux: sudo systemctl start docker
-```
-
-**Port already in use:**
-
-```bash
-# Docker will automatically find an available port
-# Check logs: make logs or docker-compose logs
-```
-
-**Permission errors with volumes:**
-
-```bash
-# Fix data directory permissions
-sudo chown -R $USER:$USER ./data
-# Or use Docker: make backup && make restore BACKUP=filename
-```
-
-#### Python Issues
-
-##### Port Already in Use
-
-```bash
-# Streamlit will automatically find an available port
-# Check terminal output for the actual URL
-```
-
-##### Memory Issues with Large Files
-
-```bash
-# For very large exports (>100MB), consider:
-# 1. Use Docker with increased memory: docker run --memory="4g"
-# 2. Split the JSON file into smaller chunks
-# 3. Use the streaming processor mode
-```
-
-##### Missing Dependencies
-
-```bash
-# Reinstall requirements
-pip install --force-reinstall -r requirements.txt
-
-# Update pip
-pip install --upgrade pip
-```
-
-##### TextBlob Data Missing
-
-```bash
-# Download required NLTK data
-python -c "import nltk; nltk.download('punkt'); nltk.download('brown')"
-```
-
-### Performance Tips
-
-- Use smaller date ranges for faster processing
-- Close unused browser tabs to free memory
-- Consider using the batch processing mode for large datasets
+2. Create a feature branch
+3. Test with various data sizes and formats
+4. Submit a pull request with clear description
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Streamlit](https://streamlit.io/) for the amazing app framework
-- [Plotly](https://plotly.com/) for interactive visualizations
-- [Open WebUI](https://openwebui.com/) for the inspiration and data format
-- The open-source community for invaluable tools and libraries
-
-## 📞 Support
-
-### Getting Help
-
-- 📖 Check the [Documentation](docs/)
-- 🐛 Report issues on [GitHub Issues](https://github.com/yourusername/openwebui-chat-analyzer/issues)
-- 💬 Join our [Discord Community](https://discord.gg/your-server)
-- 📧 Email: dlarrimore@amivero.com
-
-### FAQ
-
-**Q: Which installation method should I choose?**
-A: Docker is recommended for most users - it's faster to set up and more reliable. Use Python setup if you need to modify the code or don't have Docker.
-
-**Q: Is my chat data secure?**
-A: Yes! All processing happens locally on your machine. Docker adds an extra security layer with isolated containers and non-root users.
-
-**Q: Can I run this on a server?**
-A: Yes! Use `make deploy-prod` for production deployment with nginx proxy and SSL support.
-
-**Q: How do I update to the latest version?**
-A: Docker: `make update` | Python: `git pull && pip install -r requirements.txt`
-
-**Q: What if I have a very large JSON file?**
-A: Docker handles large files better due to optimized memory management. Use `docker run --memory="4g"` for files >500MB.
+MIT License - see LICENSE file for details.
 
 ---
 
-<div align="center">
-
-**⭐ Star this repository if you found it helpful!**
-
-Made with ❤️ for the Open WebUI community
-
-[🚀 Get Started](#-quick-start) • [📊 Features](#-features) • [🤝 Contribute](#-contributing) • [📞 Support](#-support)
-
-</div>
+**Made for privacy-conscious Open WebUI users who want to understand their AI interaction patterns.**

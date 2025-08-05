@@ -36,7 +36,6 @@ ENV/
 streamlit_app.log
 
 # Chat Data Files (IMPORTANT: Keep your data private!)
-*.json
 data/
 exports/
 chat_exports/
@@ -139,5 +138,4 @@ yarn-error.log*
 # Sample data (include examples but not real data)
 !sample_data/
 !example_data/
-sample_data/*.json
-example_data/*.json
+
