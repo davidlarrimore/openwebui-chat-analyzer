@@ -13,6 +13,7 @@ streamlit run openwebui_chat_analyzer.py
 import streamlit as st
 import pandas as pd
 import json
+import requests
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -65,6 +66,7 @@ def load_and_process_data(uploaded_file):
                 'pinned': item.get('pinned', False),
                 'tags': item.get('meta', {}).get('tags', []),
                 'files_uploaded': len(item.get('chat', {}).get('files', [])),
+                'files': item.get('chat', {}).get('files', []),
             }
             chats.append(chat_info)
             
@@ -117,15 +119,15 @@ def calculate_engagement_metrics(chats_df, messages_df):
     
     files_uploaded = chats_df['files_uploaded'].sum()
 
-    # Average output tokens per chat (assistant messages)
+    # Average output tokens per chat (assistant messages) based on character length
     assistant_msgs = messages_df[messages_df['role'] == 'assistant'].copy()
-    assistant_msgs['token_count'] = assistant_msgs['content'].str.split().str.len()
+    assistant_msgs['token_count'] = assistant_msgs['content'].str.len()
     output_tokens_per_chat = assistant_msgs.groupby('chat_id')['token_count'].sum()
     avg_output_tokens_per_chat = output_tokens_per_chat.mean() if not output_tokens_per_chat.empty else 0
 
-    # Average input tokens per chat (user messages)
+    # Average input tokens per chat (user messages) based on character length
     user_msgs = messages_df[messages_df['role'] == 'user'].copy()
-    user_msgs['token_count'] = user_msgs['content'].str.split().str.len()
+    user_msgs['token_count'] = user_msgs['content'].str.len()
     input_tokens_per_chat = user_msgs.groupby('chat_id')['token_count'].sum()
     avg_input_tokens_per_chat = input_tokens_per_chat.mean() if not input_tokens_per_chat.empty else 0
 
@@ -416,8 +418,10 @@ def create_search_interface(chats_df, messages_df):
             date = chat_info['created_at'].strftime('%Y-%m-%d')
             models = [m for m in conv_msgs['model'].unique() if m]
             model_name = models[0] if models else 'Unknown'
+            # Determine icon for attachments
+            file_upload_flag = "📎" if chat_info.get('files_uploaded', 0) > 0 else ""
             # Display expander with enriched title
-            with st.expander(f"Thread #{idx+1}: {subject} | Date: {date} | Model: {model_name}", expanded=False):
+            with st.expander(f"Thread #{idx+1}: {subject} | Date: {date} | Model: {model_name} | {file_upload_flag} ", expanded=False):
                 for _, msg in conv_msgs.iterrows():
                     # Highlight search terms
                     highlighted = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", str(msg['content']))
@@ -435,6 +439,31 @@ def create_search_interface(chats_df, messages_df):
                             f"<strong>Assistant</strong> <span style='float:right;color:#555;'>{timestamp}</span><br>{highlighted}</div>",
                             unsafe_allow_html=True
                         )
+                # Export full thread JSON
+                full_thread = {
+                    'chat_id': chat_info['chat_id'],
+                    'user_id': chat_info['user_id'],
+                    'title': chat_info['title'],
+                    'created_at': chat_info['created_at'].isoformat(),
+                    'updated_at': chat_info['updated_at'].isoformat(),
+                    'archived': bool(chat_info['archived']),
+                    'pinned': bool(chat_info['pinned']),
+                    'tags': chat_info['tags'],
+                    'files': chat_info.get('files', []),
+                    'messages': json.loads(conv_msgs.to_json(orient='records', date_format='iso'))
+                }
+                thread_json = json.dumps(full_thread, indent=2)
+                st.download_button(
+                    label="📥 Download Thread (JSON)",
+                    data=thread_json,
+                    file_name=f"thread_{cid}.json",
+                    mime="application/json",
+                    key=f"download_thread_{cid}"
+                )
+                # List attachments
+                for file_item in chat_info.get('files', []):
+                    file_name = file_item.get('filename') or file_item.get('name')
+                    st.markdown(f"📎 {file_name}")
 
 def create_export_section(chats_df, messages_df):
     """Create modern export section"""
@@ -514,15 +543,15 @@ def main():
                 files_uploaded = metrics.get('files_uploaded', 0)
                 st.metric(label="User Files Uploaded", value=f"{files_uploaded:,}")    
             with col4:
-                st.metric(label="Avg Msgs/Chat", value=f"{metrics['avg_messages_per_chat']:.1f}")          
+                st.metric(label="Avg Msgs/Chat", value=f"{metrics['avg_messages_per_chat']:,.1f}")          
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric(label="Total Chats", value=f"{metrics['total_chats']:,}")
             with col2:
                 avg_input_tokens = metrics.get('avg_input_tokens_per_chat', 0)
-                st.metric(label="Avg Input Tokens/Chat", value=f"{avg_input_tokens:.1f}")
+                st.metric(label="Avg Input Tokens/Chat", value=f"{avg_input_tokens:,.1f}")
             with col3:
-                st.metric(label="Avg Output Tokens/Chat", value=f"{metrics['avg_output_tokens_per_chat']:.1f}")
+                st.metric(label="Avg Output Tokens/Chat", value=f"{metrics['avg_output_tokens_per_chat']:,.1f}")
             with col4:
                 total_tokens = metrics.get('total_tokens', 0)
                 st.metric(label="Total Tokens", value=f"{total_tokens:,}")                
@@ -703,7 +732,9 @@ def main():
                         thread_id = row['chat_id']
                         title = row['title'] or thread_id
                         date = row['timestamp'].strftime('%Y-%m-%d %H:%M')
-                        with st.expander(f"{title} (Started: {date})", expanded=False):
+                        chat_info = chats_df[chats_df['chat_id'] == thread_id].iloc[0]
+                        file_upload_flag = "📎" if chat_info.get('files_uploaded', 0) > 0 else ""
+                        with st.expander(f"{title} (Started: {date}) {file_upload_flag}", expanded=False):
                             thread_msgs = messages_df[messages_df['chat_id'] == thread_id].sort_values('timestamp')
                             for _, msg in thread_msgs.iterrows():
                                 timestamp = msg['timestamp'].strftime('%Y-%m-%d %H:%M')
@@ -720,6 +751,31 @@ def main():
                                         f"<strong>Assistant</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
                                         unsafe_allow_html=True
                                     )
+                            # Export full thread JSON
+                            full_thread = {
+                                'chat_id': chat_info['chat_id'],
+                                'user_id': chat_info['user_id'],
+                                'title': chat_info['title'],
+                                'created_at': chat_info['created_at'].isoformat(),
+                                'updated_at': chat_info['updated_at'].isoformat(),
+                                'archived': bool(chat_info['archived']),
+                                'pinned': bool(chat_info['pinned']),
+                                'tags': chat_info['tags'],
+                                'files': chat_info.get('files', []),
+                                'messages': json.loads(thread_msgs.to_json(orient='records', date_format='iso'))
+                            }
+                            thread_json = json.dumps(full_thread, indent=2)
+                            st.download_button(
+                                label="📥 Download Thread (JSON)",
+                                data=thread_json,
+                                file_name=f"thread_{thread_id}.json",
+                                mime="application/json",
+                                key=f"browse_download_{thread_id}"
+                            )
+                            # List attachments
+                            for file_item in chat_info.get('files', []):
+                                file_name = file_item.get('filename') or file_item.get('name')
+                                st.markdown(f"📎 {file_name}")
                 else:
                     st.info("No messages to display.")
             create_export_section(chats_df, messages_df)
