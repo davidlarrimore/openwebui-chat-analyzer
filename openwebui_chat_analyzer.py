@@ -437,7 +437,7 @@ def create_search_interface(chats_df, messages_df):
                     else:
                         st.markdown(
                             f"<div style='background-color:#f0f0f0; padding:8px; border-radius:5px; margin-bottom:4px;'>"
-                            f"<strong>Assistant</strong> <span style='float:right;color:#555;'>{timestamp}</span><br>{highlighted}</div>",
+                            f"<strong>🤖 Assistant ({msg['model']})</strong> <span style='float:right;color:#555;'>{timestamp}</span><br>{highlighted}</div>",
                             unsafe_allow_html=True
                         )
                 # Export full thread JSON
@@ -767,7 +767,7 @@ def main():
                                 else:
                                     st.markdown(
                                         f"<div style='background-color:#f0f0f0; padding:8px; border-radius:5px; margin-bottom:4px;'>"
-                                        f"<strong>Assistant</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
+                                        f"<strong>🤖 Assistant ({msg['model']})</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
                                         unsafe_allow_html=True
                                     )
                             # Export full thread JSON
