@@ -545,9 +545,10 @@ def main():
             else:
                 date_range = "N/A"
             st.header("Overview")
+            st.caption(f"Date Range: {date_min} - {date_max}")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric(label="Date Range", value=date_range)
+                st.metric(label="Days", value=total_days)
             with col2:
                 st.metric(label="Total Chats", value=f"{metrics['total_chats']:,}")       
             with col3:
