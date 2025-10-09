@@ -7,6 +7,8 @@ services:
     ports:
       - "8501:8501"
     volumes:
+      # Mount the latest application code for immediate updates without rebuilds
+      - ./openwebui_chat_analyzer.py:/app/openwebui_chat_analyzer.py:ro
       # Optional: Mount local data directory for persistent storage
       - ./data:/app/data:rw
       # Optional: Mount uploads directory 

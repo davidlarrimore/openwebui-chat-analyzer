@@ -45,79 +45,85 @@ def create_header():
     st.subheader("Transform your conversation data into actionable insights with beautiful visualizations")
 
 
+def _read_file_source_bytes(file_source):
+    """Return raw bytes for multiple supported file input types."""
+    if file_source is None:
+        return None
+    if isinstance(file_source, Path):
+        return file_source.read_bytes()
+    if isinstance(file_source, str):
+        return Path(file_source).read_bytes()
+    if isinstance(file_source, bytes):
+        return file_source
+    if hasattr(file_source, "getvalue"):
+        raw = file_source.getvalue()
+        return raw if isinstance(raw, bytes) else raw.encode("utf-8")
+    if hasattr(file_source, "read"):
+        raw = file_source.read()
+        if hasattr(file_source, "seek"):
+            file_source.seek(0)
+        return raw if isinstance(raw, bytes) else raw.encode("utf-8")
+    raise ValueError("Unsupported file source type")
+
+
 @st.cache_data
-def load_and_process_data(file_source):
-    """Load and process Open WebUI JSON data"""
-    try:
-        # Normalize input into raw JSON text
-        raw_content = None
-        if isinstance(file_source, Path):
-            raw_content = file_source.read_bytes()
-        elif isinstance(file_source, str):
-            raw_content = Path(file_source).read_bytes()
-        elif isinstance(file_source, bytes):
-            raw_content = file_source
-        elif hasattr(file_source, "getvalue"):
-            raw_content = file_source.getvalue()
-        elif hasattr(file_source, "read"):
-            raw_content = file_source.read()
-            if hasattr(file_source, "seek"):
-                file_source.seek(0)
-        else:
-            raise ValueError("Unsupported file source type for JSON loading")
+def _parse_chat_export(raw_bytes):
+    """Parse raw chat export bytes into chat and message DataFrames."""
+    if raw_bytes is None:
+        raise ValueError("No data found in provided file source")
 
-        if raw_content is None:
-            raise ValueError("No data found in provided file source")
+    text = raw_bytes.decode("utf-8")
+    data = json.loads(text)
 
-        if isinstance(raw_content, bytes):
-            raw_content = raw_content.decode("utf-8")
+    # Initialize lists for different data types
+    chats = []
+    messages = []
 
-        # Load JSON data
-        data = json.loads(raw_content)
-        
-        # Initialize lists for different data types
-        chats = []
-        messages = []
-        
-        # Process each chat
-        for item in data:
-            chat_info = {
+    # Process each chat
+    for item in data:
+        chat_info = {
+            'chat_id': item.get('id', ''),
+            'user_id': item.get('user_id', ''),
+            'title': item.get('title', ''),
+            'created_at': pd.to_datetime(item.get('created_at', 0), unit='s'),
+            'updated_at': pd.to_datetime(item.get('updated_at', 0), unit='s'),
+            'archived': item.get('archived', False),
+            'pinned': item.get('pinned', False),
+            'tags': item.get('meta', {}).get('tags', []),
+            'files_uploaded': len(item.get('chat', {}).get('files', [])),
+            'files': item.get('chat', {}).get('files', []),
+        }
+        chats.append(chat_info)
+
+        # Process messages in this chat
+        chat_data = item.get('chat', {})
+        chat_messages = chat_data.get('messages', [])
+
+        for msg in chat_messages:
+            message_info = {
                 'chat_id': item.get('id', ''),
-                'user_id': item.get('user_id', ''),
-                'title': item.get('title', ''),
-                'created_at': pd.to_datetime(item.get('created_at', 0), unit='s'),
-                'updated_at': pd.to_datetime(item.get('updated_at', 0), unit='s'),
-                'archived': item.get('archived', False),
-                'pinned': item.get('pinned', False),
-                'tags': item.get('meta', {}).get('tags', []),
-                'files_uploaded': len(item.get('chat', {}).get('files', [])),
-                'files': item.get('chat', {}).get('files', []),
+                'message_id': msg.get('id', ''),
+                'parent_id': msg.get('parentId'),
+                'role': msg.get('role', ''),
+                'content': msg.get('content', ''),
+                'timestamp': pd.to_datetime(msg.get('timestamp', 0), unit='s'),
+                'model': msg.get('model', ''),
+                'models': msg.get('models', [])
             }
-            chats.append(chat_info)
-            
-            # Process messages in this chat
-            chat_data = item.get('chat', {})
-            chat_messages = chat_data.get('messages', [])
-            
-            for msg in chat_messages:
-                message_info = {
-                    'chat_id': item.get('id', ''),
-                    'message_id': msg.get('id', ''),
-                    'parent_id': msg.get('parentId'),
-                    'role': msg.get('role', ''),
-                    'content': msg.get('content', ''),
-                    'timestamp': pd.to_datetime(msg.get('timestamp', 0), unit='s'),
-                    'model': msg.get('model', ''),
-                    'models': msg.get('models', [])
-                }
-                messages.append(message_info)
-        
-        # Create DataFrames
-        chats_df = pd.DataFrame(chats)
-        messages_df = pd.DataFrame(messages)
-        
-        return chats_df, messages_df
-    
+            messages.append(message_info)
+
+    # Create DataFrames
+    chats_df = pd.DataFrame(chats)
+    messages_df = pd.DataFrame(messages)
+
+    return chats_df, messages_df
+
+
+def load_and_process_data(file_source):
+    """Load and process Open WebUI JSON data."""
+    try:
+        raw_bytes = _read_file_source_bytes(file_source)
+        return _parse_chat_export(raw_bytes)
     except Exception as e:
         st.error(f"Error processing data: {str(e)}")
         return None, None
@@ -140,61 +146,49 @@ def find_default_chat_export():
     return exports[0] if exports else None
 
 @st.cache_data
+def _parse_user_csv(raw_bytes):
+    """Parse raw CSV bytes into a normalized users DataFrame."""
+    if raw_bytes is None:
+        raise ValueError("No data found in provided CSV source")
+
+    csv_buffer = BytesIO(raw_bytes)
+    users_df = pd.read_csv(csv_buffer)
+    if users_df.empty:
+        return pd.DataFrame(columns=["user_id", "name"])
+
+    users_df.columns = [str(col).strip().lower() for col in users_df.columns]
+    id_col = None
+    for candidate in ("user_id", "id"):
+        if candidate in users_df.columns:
+            id_col = candidate
+            break
+    if id_col is None:
+        raise ValueError("CSV must contain a 'user_id' or 'id' column")
+
+    name_col = None
+    for candidate in ("name", "full_name", "display_name", "username"):
+        if candidate in users_df.columns:
+            name_col = candidate
+            break
+
+    if name_col is None:
+        raise ValueError("CSV must contain a column with user names (e.g. 'name')")
+
+    users_df = users_df[[id_col, name_col]].rename(columns={id_col: "user_id", name_col: "name"})
+    users_df = users_df.dropna(subset=["user_id"]).drop_duplicates(subset=["user_id"], keep="first")
+    users_df["user_id"] = users_df["user_id"].astype(str)
+    users_df["name"] = users_df["name"].astype(str).str.strip()
+    return users_df
+
+
 def load_user_data(file_source):
     """Load optional user metadata from CSV."""
     if file_source is None:
         return pd.DataFrame(columns=["user_id", "name"])
 
     try:
-        if isinstance(file_source, Path):
-            raw_bytes = file_source.read_bytes()
-        elif isinstance(file_source, str):
-            raw_bytes = Path(file_source).read_bytes()
-        elif hasattr(file_source, "getvalue"):
-            raw_bytes = file_source.getvalue()
-        elif hasattr(file_source, "read"):
-            raw_bytes = file_source.read()
-            if hasattr(file_source, "seek"):
-                file_source.seek(0)
-        else:
-            raise ValueError("Unsupported file source type for CSV loading")
-
-        if raw_bytes is None:
-            raise ValueError("No data found in provided CSV source")
-
-        if isinstance(raw_bytes, bytes):
-            csv_buffer = BytesIO(raw_bytes)
-        else:
-            csv_buffer = BytesIO(raw_bytes.encode("utf-8"))
-
-        users_df = pd.read_csv(csv_buffer)
-        if users_df.empty:
-            return pd.DataFrame(columns=["user_id", "name"])
-
-        # Normalize column names to simplify mapping
-        users_df.columns = [str(col).strip().lower() for col in users_df.columns]
-        id_col = None
-        for candidate in ("user_id", "id"):
-            if candidate in users_df.columns:
-                id_col = candidate
-                break
-        if id_col is None:
-            raise ValueError("CSV must contain a 'user_id' or 'id' column")
-
-        name_col = None
-        for candidate in ("name", "full_name", "display_name", "username"):
-            if candidate in users_df.columns:
-                name_col = candidate
-                break
-
-        if name_col is None:
-            raise ValueError("CSV must contain a column with user names (e.g. 'name')")
-
-        users_df = users_df[[id_col, name_col]].rename(columns={id_col: "user_id", name_col: "name"})
-        users_df = users_df.dropna(subset=["user_id"]).drop_duplicates(subset=["user_id"], keep="first")
-        users_df["user_id"] = users_df["user_id"].astype(str)
-        users_df["name"] = users_df["name"].astype(str).str.strip()
-        return users_df
+        raw_bytes = _read_file_source_bytes(file_source)
+        return _parse_user_csv(raw_bytes)
     except Exception as e:
         st.warning(f"Unable to load user CSV: {e}")
         return pd.DataFrame(columns=["user_id", "name"])
@@ -973,9 +967,13 @@ def main():
                 st.subheader("Content Analysis")
                 wordcloud = generate_word_cloud(filtered_messages)
                 if wordcloud:
-                    st.markdown("### ☁️ Word Cloud (User Messages)")
-                    img = wordcloud.to_image()
-                    st.image(img, use_container_width=True)
+                    col_left, col_wordcloud, col_right = st.columns([1, 6, 1])
+                    with col_wordcloud:
+                        st.markdown("### ☁️ Word Cloud (User Messages)")
+                        img = wordcloud.to_image()
+                        st.image(img, use_container_width=True)
+                    col_left.empty()
+                    col_right.empty()
                 else:
                     # Provide a more actionable warning based on what data is present
                     if filtered_messages is None or filtered_messages.empty:

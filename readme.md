@@ -1,164 +1,108 @@
 # 💬 Open WebUI Chat Analyzer
 
-**Privacy-first analytics dashboard for Open WebUI chat exports. Transform your conversation data into actionable insights with interactive visualizations.**
+Streamlit dashboard for exploring Open WebUI chat exports locally.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
-![Streamlit](https://img.shields.io/badge/streamlit-1.28%2B-red.svg)
-![Docker](https://img.shields.io/badge/docker-ready-blue.svg)
+## Highlights
 
-## ✨ Key Features
+- Works entirely offline; your exports never leave your machine
+- Auto-loads the latest `all-chats-export-*.json` from `data/` and supports an optional `users.csv` for friendly names
+- Overview metrics for chats, messages, per-role activity, file uploads, and approximate token volume
+- Filters every visualization by Open WebUI user and model
+- Time analysis (daily trend, conversation length, hour-by-day heatmap) and content analysis (word cloud, message length)
+- Sentiment breakdown with TextBlob plus full-text search, paginated browsing, and per-thread JSON downloads
+- CSV exports for both chat metadata and individual messages
 
-### **📊 Comprehensive Analytics**
+## Input Data
 
-- **Engagement Metrics**: Total chats, messages, users, token usage, and file uploads
-- **Time Analysis**: Daily activity trends, usage heatmaps, peak conversation periods
-- **Model Performance**: AI model usage distribution and effectiveness tracking
-- **Content Intelligence**: Word clouds, message length patterns, topic identification
-- **Sentiment Analysis**: User satisfaction tracking with temporal trends
+- `all-chats-export-*.json` from Open WebUI: Admin Panel → **Settings → Data & Privacy → Export All Chats**
+- Optional `users.csv` from Admin Panel → **Settings → Database → Export Users** — needs `user_id` and a name column
+- Place files in `data/` to auto-load on startup or upload them through the interface; uploads land under `uploads/`
 
-### **🔍 Advanced Search & Navigation**
+## Quick Start
 
-- **Thread-based Search**: Full-text search with conversation context and highlighted results
-- **Smart Filtering**: Filter by role (user/assistant), date ranges, and message attributes
-- **Individual Thread Export**: Download specific conversations as JSON with metadata
-- **Browse Interface**: Chronological conversation browsing with file attachment indicators
-
-### **📤 Export Capabilities**
-
-- **CSV Export**: Processed chat and message data for external analysis
-- **Thread Export**: Individual conversations with complete metadata
-- **Filtered Results**: Export search results and custom datasets
-
-## 🚀 Quick Start
-
-### Docker (Recommended)
+### Option A – Docker (recommended)
 
 ```bash
 git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
 cd openwebui-chat-analyzer
-make up
-# Access at http://localhost:8501
+make up            # or: docker compose up -d
 ```
 
-### Python Setup
+The app listens on `http://localhost:8501`. Use `make down` to stop, `make logs` to tail the container, and `make help` for the complete command catalog.
+The compose stack now bind-mounts `openwebui_chat_analyzer.py`, so code changes land immediately without rebuilding the image.
+
+### Handy Make Commands
+
+- `make help` – List every available helper target with a short description.
+- `make up` / `make down` – Start or stop the docker compose stack.
+- `make logs` / `make logs-dev` – Follow logs for the production or dev containers.
+- `make dev` / `make dev-detached` – Launch the live-reload development profile (foreground/background).
+- `make restart` / `make quick-fix` – Restart containers or rebuild + restart when things get stuck.
+- `make status` / `make ps` – Show container status at a glance.
+- `make backup` / `make restore BACKUP=...` – Snapshot and restore the mounted data directory.
+- `make clean` / `make clean-all` – Remove containers, with the latter also pruning volumes and images.
+- `make update` – Pull latest sources and rebuild the compose stack.
+- `make fix-permissions` – Reset `matplotlib` and data directory ownership inside running containers.
+
+Run `make help` for the full list (build, deploy, debug, tooling helpers, etc.).
+
+### Option B – Local Python environment
 
 ```bash
 git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
 cd openwebui-chat-analyzer
 python3 -m venv venv && source venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
+python -m textblob.download_corpora   # first run only
 streamlit run openwebui_chat_analyzer.py
 ```
 
-### Getting Your Data
+### Option C – Guided setup scripts
 
-1. Open WebUI → Settings → Data & Privacy → Export All Chats
-2. Upload the JSON file to the analyzer interface
-3. Start exploring your conversation insights
+Run `scripts/setup.sh` for an interactive wizard that can prepare either Docker or the virtual environment. Companion scripts (`scripts/up.sh`, `scripts/down.sh`, `scripts/restart.sh`) wrap the common lifecycle commands.
 
-## 📈 Use Cases
+## Dashboard Tour
 
-### **Personal Productivity Analysis**
+- **File uploader**: Detects the latest export under `data/` automatically and lets you add a `users.csv` to replace raw IDs with friendly names.
+- **Overview metrics**: Totals and averages for chats, messages, per-role counts, file uploads, and approximate input/output token volumes (derived from character length).
+- **Model usage**: Horizontal bar chart plus quick stats for each model encountered across the filtered dataset.
+- **Filters**: Slice all visuals by Open WebUI user and model; filter changes reset pagination so the browse experience stays predictable.
+- **Tabs**:
+  - `🧾 Overview`: Metrics recomputed for the active filters.
+  - `📈 Time Analysis`: Daily activity timeline, conversation-length histogram, and hour-by-day heatmap.
+  - `💭 Content Analysis`: Word cloud for user messages, average message length by role, and length distribution.
+  - `😊 Sentiment`: TextBlob polarity grouped into positive/neutral/negative segments with a time series and supporting metrics.
+  - `🔍 Search`: Full-text search with role filter, highlighted matches, attachment badges, and per-thread JSON downloads.
+  - `🗂 Browse Data`: Paginated conversation browser with expanders, attachment indicators, and download buttons.
+- **Export section**: Download enriched chat metadata and message tables as CSV for external analysis.
 
-- Track your AI usage patterns and peak productivity hours
-- Identify which models work best for different types of tasks
-- Monitor conversation quality and satisfaction trends
-- Analyze file upload patterns and multimodal interaction trends
+## Working With the Data
 
-### **Content Research & Discovery**
+- CSV downloads contain the same columns the dashboard uses, making follow-on analysis in pandas, spreadsheets, or BI tools straightforward.
+- Per-thread JSON downloads include metadata, ISO timestamps, attachments, and every message shown in the interface.
+- Sentiment scores and token estimates are heuristic: tokens are inferred from character counts, and sentiment uses TextBlob’s polarity scale (−1 to 1).
 
-- Search across all conversations to find specific information
-- Export relevant conversation threads for documentation
-- Identify recurring topics and conversation themes
-- Track how your questions and interaction style evolve
+## Sample Data
 
-### **Usage Optimization**
+`sample_data/sample_data_extract.json` and `sample_data/sample_users.csv` let you explore the dashboard without waiting for a fresh export. Copy them to `data/` or upload them through the UI to see the charts populate immediately.
 
-- Understand token usage patterns for cost optimization
-- Compare model performance across different conversation types
-- Identify underutilized features (file uploads, specific models)
-- Optimize conversation strategies based on sentiment analysis
+## Development Notes
 
-### **Data Export & Integration**
+- `docker-compose.yml` defines production, development (live reload), and optional Nginx proxy profiles. Use `docker compose --profile development up openwebui-chat-analyzer-dev` or `make dev` for auto-reload.
+- The `Makefile` centralizes build, run, backup, and diagnostic commands — start with `make help`.
+- Python dependencies live in `requirements.txt`. The Dockerfile pre-installs TextBlob corpora and runs the app as a non-root user.
 
-- Export conversation data for external analysis tools
-- Create backups of important conversation threads
-- Generate reports for team or organizational insights
-- Integrate with existing workflow and documentation systems
+## Privacy & Storage
 
-## 🐳 Docker Management
+The analyzer never makes network calls; everything happens on your machine. Uploaded files stay under the repository (`data/` and `uploads/`) until you remove them.
 
-```bash
-make help           # Show all available commands
-make up             # Start services
-make down           # Stop services
-make logs           # View application logs
-make dev            # Development mode with live reload
-make backup         # Create data backup
-make clean          # Clean up containers
-```
+## Troubleshooting
 
-## 📊 Analytics Overview
+- If Streamlit crashes during sentiment analysis, install the TextBlob corpora with `python -m textblob.download_corpora`.
+- Some environments need a font package for `wordcloud`; installing system fonts (for example `sudo apt-get install fonts-dejavu`) fixes blank visuals.
+- Adjust `STREAMLIT_SERVER_PORT` or the Docker port mapping if 8501 is already in use.
 
-The analyzer processes your Open WebUI JSON export to provide:
+## License
 
-- **Overview Dashboard**: Key metrics, token usage, and engagement statistics
-- **Time Analysis**: Activity trends, usage heatmaps, conversation patterns
-- **Model Usage**: Distribution charts and performance comparisons
-- **Content Analysis**: Word clouds, message patterns, length distributions
-- **Sentiment Tracking**: User satisfaction trends and conversation quality
-- **Search Interface**: Full-text search with thread context and export
-- **Browse Data**: Chronological conversation exploration
-
-## 🔧 Technical Details
-
-### **Data Processing**
-
-- Handles large JSON files (500MB+) efficiently
-- Local processing only - no external API calls
-- Pandas-based data transformation with caching
-- Support for chat metadata, message content, and file attachments
-
-### **Supported Data Format**
-
-Open WebUI JSON export containing:
-```json
-[{
-  "id": "chat_id", "user_id": "user_id", "title": "Chat Title",
-  "chat": {
-    "messages": [{
-      "role": "user|assistant", "content": "text", 
-      "timestamp": epoch, "model": "model_name"
-    }]
-  }
-}]
-```
-
-### **Deployment Options**
-
-- **Docker**: Production-ready with health checks and resource management
-- **Development Mode**: Live code reloading for customization
-- **Python**: Traditional virtual environment setup
-- **Production**: Nginx proxy support for server deployment
-
-## 🔒 Privacy & Security
-
-- **Local Processing**: All analysis happens on your machine
-- **No External Dependencies**: No API calls or data transmission
-- **Data Control**: Full control over data storage and cleanup
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Test with various data sizes and formats
-4. Submit a pull request with clear description
-
-## 📄 License
-
-MIT License - see LICENSE file for details.
-
----
-
-**Made for privacy-conscious Open WebUI users who want to understand their AI interaction patterns.**
+MIT — see `LICENSE` for the full text.
