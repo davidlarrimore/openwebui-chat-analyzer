@@ -27,6 +27,7 @@ from wordcloud import WordCloud
 import networkx as nx
 import base64
 from io import BytesIO
+from pathlib import Path
 
 # Configure page
 st.set_page_config(
@@ -45,11 +46,34 @@ def create_header():
 
 
 @st.cache_data
-def load_and_process_data(uploaded_file):
+def load_and_process_data(file_source):
     """Load and process Open WebUI JSON data"""
     try:
+        # Normalize input into raw JSON text
+        raw_content = None
+        if isinstance(file_source, Path):
+            raw_content = file_source.read_bytes()
+        elif isinstance(file_source, str):
+            raw_content = Path(file_source).read_bytes()
+        elif isinstance(file_source, bytes):
+            raw_content = file_source
+        elif hasattr(file_source, "getvalue"):
+            raw_content = file_source.getvalue()
+        elif hasattr(file_source, "read"):
+            raw_content = file_source.read()
+            if hasattr(file_source, "seek"):
+                file_source.seek(0)
+        else:
+            raise ValueError("Unsupported file source type for JSON loading")
+
+        if raw_content is None:
+            raise ValueError("No data found in provided file source")
+
+        if isinstance(raw_content, bytes):
+            raw_content = raw_content.decode("utf-8")
+
         # Load JSON data
-        data = json.load(uploaded_file)
+        data = json.loads(raw_content)
         
         # Initialize lists for different data types
         chats = []
@@ -97,6 +121,101 @@ def load_and_process_data(uploaded_file):
     except Exception as e:
         st.error(f"Error processing data: {str(e)}")
         return None, None
+
+
+ALL_USERS_OPTION = "__ALL_USERS__"
+ALL_MODELS_OPTION = "All Models"
+
+def find_default_chat_export():
+    """Locate the most recent default chat export in the data directory."""
+    data_dir = Path(__file__).parent / "data"
+    if not data_dir.exists():
+        return None
+
+    exports = sorted(
+        data_dir.glob("all-chats-export*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return exports[0] if exports else None
+
+@st.cache_data
+def load_user_data(file_source):
+    """Load optional user metadata from CSV."""
+    if file_source is None:
+        return pd.DataFrame(columns=["user_id", "name"])
+
+    try:
+        if isinstance(file_source, Path):
+            raw_bytes = file_source.read_bytes()
+        elif isinstance(file_source, str):
+            raw_bytes = Path(file_source).read_bytes()
+        elif hasattr(file_source, "getvalue"):
+            raw_bytes = file_source.getvalue()
+        elif hasattr(file_source, "read"):
+            raw_bytes = file_source.read()
+            if hasattr(file_source, "seek"):
+                file_source.seek(0)
+        else:
+            raise ValueError("Unsupported file source type for CSV loading")
+
+        if raw_bytes is None:
+            raise ValueError("No data found in provided CSV source")
+
+        if isinstance(raw_bytes, bytes):
+            csv_buffer = BytesIO(raw_bytes)
+        else:
+            csv_buffer = BytesIO(raw_bytes.encode("utf-8"))
+
+        users_df = pd.read_csv(csv_buffer)
+        if users_df.empty:
+            return pd.DataFrame(columns=["user_id", "name"])
+
+        # Normalize column names to simplify mapping
+        users_df.columns = [str(col).strip().lower() for col in users_df.columns]
+        id_col = None
+        for candidate in ("user_id", "id"):
+            if candidate in users_df.columns:
+                id_col = candidate
+                break
+        if id_col is None:
+            raise ValueError("CSV must contain a 'user_id' or 'id' column")
+
+        name_col = None
+        for candidate in ("name", "full_name", "display_name", "username"):
+            if candidate in users_df.columns:
+                name_col = candidate
+                break
+
+        if name_col is None:
+            raise ValueError("CSV must contain a column with user names (e.g. 'name')")
+
+        users_df = users_df[[id_col, name_col]].rename(columns={id_col: "user_id", name_col: "name"})
+        users_df = users_df.dropna(subset=["user_id"]).drop_duplicates(subset=["user_id"], keep="first")
+        users_df["user_id"] = users_df["user_id"].astype(str)
+        users_df["name"] = users_df["name"].astype(str).str.strip()
+        return users_df
+    except Exception as e:
+        st.warning(f"Unable to load user CSV: {e}")
+        return pd.DataFrame(columns=["user_id", "name"])
+
+
+def find_default_users_file():
+    """Locate a default users.csv file in the data directory if present."""
+    data_dir = Path(__file__).parent / "data"
+    if not data_dir.exists():
+        return None
+    users_file = data_dir / "users.csv"
+    return users_file if users_file.exists() else None
+
+
+def reset_model_filter():
+    st.session_state["model_filter"] = ALL_MODELS_OPTION
+    st.session_state["page"] = 1
+
+
+def reset_browse_page():
+    st.session_state["page"] = 1
 
 def calculate_engagement_metrics(chats_df, messages_df):
     """Calculate user engagement metrics"""
@@ -316,13 +435,20 @@ def create_conversation_length_distribution(messages_df):
 
 def generate_word_cloud(messages_df):
     """Generate word cloud from user messages"""
-    if messages_df.empty:
+    if messages_df is None or messages_df.empty:
         return None
-    
-    # Get user messages only
-    user_messages = messages_df[messages_df['role'] == 'user']['content']
-    
-    if len(user_messages) == 0:
+
+    # Normalize role column to string and lowercase for robust matching
+    if 'role' in messages_df.columns:
+        roles = messages_df['role'].fillna('').astype(str).str.lower()
+    else:
+        roles = pd.Series([''] * len(messages_df))
+
+    # Get user messages only (case-insensitive match for 'user')
+    user_mask = roles == 'user'
+    user_messages = messages_df.loc[user_mask, 'content'] if user_mask.any() else pd.Series([], dtype=object)
+
+    if user_messages.empty:
         return None
     
     # Combine all text
@@ -338,8 +464,8 @@ def generate_word_cloud(messages_df):
     # Generate word cloud with modern colors
     try:
         wordcloud = WordCloud(
-            width=800, 
-            height=400, 
+            width=800,
+            height=400,
             background_color='white',
             max_words=100,
             relative_scaling=0.5,
@@ -347,9 +473,10 @@ def generate_word_cloud(messages_df):
             font_path=None,
             prefer_horizontal=0.9
         ).generate(text)
-        
+
         return wordcloud
-    except:
+    except Exception:
+        # If anything fails, return None so the caller can show a friendly warning
         return None
 
 def perform_sentiment_analysis(messages_df):
@@ -384,20 +511,34 @@ def perform_sentiment_analysis(messages_df):
     
     return user_messages
 
-def create_search_interface(chats_df, messages_df):
+def create_search_interface(chats_df, messages_df, chat_user_map=None, widget_prefix="default"):
     """Create enhanced search interface returning threads"""
     if messages_df.empty:
         return
+
+    chat_user_map = chat_user_map or {}
 
     st.header("Search Conversations")
 
     col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
-        search_query = st.text_input("Search in conversations:", placeholder="Enter search terms...", key="search_input")
+        search_query = st.text_input(
+            "Search in conversations:",
+            placeholder="Enter search terms...",
+            key=f"search_input_{widget_prefix}"
+        )
     with col2:
-        role_filter = st.selectbox("Filter by role:", ["All", "user", "assistant"])
+        role_filter = st.selectbox(
+            "Filter by role:",
+            ["All", "user", "assistant"],
+            key=f"role_filter_{widget_prefix}"
+        )
     with col3:
-        max_conversations = st.selectbox("Max conversations:", [5, 10, 15, 20])
+        max_conversations = st.selectbox(
+            "Max conversations:",
+            [5, 10, 15, 20],
+            key=f"max_conversations_{widget_prefix}"
+        )
 
     if search_query:
         # Filter messages by query and optional role
@@ -414,11 +555,15 @@ def create_search_interface(chats_df, messages_df):
         for idx, cid in enumerate(conversation_ids[:max_conversations]):
             conv_msgs = messages_df[messages_df['chat_id'] == cid].sort_values('timestamp')
             # Gather chat metadata
-            chat_info = chats_df[chats_df['chat_id'] == cid].iloc[0]
+            chat_info_rows = chats_df[chats_df['chat_id'] == cid]
+            if chat_info_rows.empty:
+                continue
+            chat_info = chat_info_rows.iloc[0]
             subject = chat_info['title'] or cid
             date = chat_info['created_at'].strftime('%Y-%m-%d')
             models = [m for m in conv_msgs['model'].unique() if m]
             model_name = models[0] if models else 'Unknown'
+            user_display = chat_user_map.get(cid, chat_info.get('user_display', chat_info.get('user_id', 'User')))
             # Determine icon for attachments
             file_upload_flag = "📎" if chat_info.get('files_uploaded', 0) > 0 else ""
             # Display expander with enriched title
@@ -429,9 +574,10 @@ def create_search_interface(chats_df, messages_df):
                     timestamp = msg['timestamp'].strftime('%Y-%m-%d %H:%M')
                     # Differentiate user vs assistant
                     if msg['role'] == 'user':
+                        user_label = chat_user_map.get(msg['chat_id'], user_display)
                         st.markdown(
                             f"<div style='background-color:#e6f7ff; padding:8px; border-radius:5px; margin-bottom:4px;'>"
-                            f"<strong>User</strong> <span style='float:right;color:#555;'>{timestamp}</span><br>{highlighted}</div>",
+                            f"<strong>{user_label}</strong> <span style='float:right;color:#555;'>{timestamp}</span><br>{highlighted}</div>",
                             unsafe_allow_html=True
                         )
                     else:
@@ -444,6 +590,7 @@ def create_search_interface(chats_df, messages_df):
                 full_thread = {
                     'chat_id': chat_info['chat_id'],
                     'user_id': chat_info['user_id'],
+                    'user_name': user_display,
                     'title': chat_info['title'],
                     'created_at': chat_info['created_at'].isoformat(),
                     'updated_at': chat_info['updated_at'].isoformat(),
@@ -468,6 +615,8 @@ def create_search_interface(chats_df, messages_df):
 
 def create_export_section(chats_df, messages_df):
     """Create modern export section"""
+    # Visual divider above export section
+    st.markdown('---')
     st.header("Export Data")
     col1, col2 = st.columns(2)
     with col1:
@@ -518,21 +667,116 @@ def main():
     # Create modern header
     create_header()
     
-    
-    uploaded_file = st.file_uploader(
-        "Select JSON file",
-        type=['json'],
-        help="Upload the JSON file exported from your Open WebUI instance",
-        label_visibility="collapsed"
-    )
-    
+    default_export_path = find_default_chat_export()
+    default_users_path = find_default_users_file()
+
+    chat_upload_state = st.session_state.get("chat_file_uploader")
+    chat_loaded = (default_export_path is not None) or (chat_upload_state is not None)
+    expander_label = "📁 Upload Files"
+    if chat_loaded:
+        expander_label = "📁 Upload Files ✅"
+
+    with st.expander(expander_label, expanded=not chat_loaded):
+        st.write(
+            "Load chat exports here to explore your conversations.\n\n"
+            "**Download instructions**:\n"
+            "- **Chats**: Admin Panel → Settings → Database → Export All Chats (All Users)\n"
+            "- **Users**: Admin Panel → Settings → Database → Export Users\n\n"
+            "To auto-load on startup, place the downloaded files in the `/data` directory, "
+            "or upload them directly using the inputs below."
+        )
+
+        upload_col, users_col = st.columns([3, 2])
+        with upload_col:
+            chat_has_file = (default_export_path is not None) or (st.session_state.get("chat_file_uploader") is not None)
+            chat_subheader = "Upload Chats ✅" if chat_has_file else "Upload Chats"
+            st.subheader(chat_subheader)
+            uploaded_file = st.file_uploader(
+                "Select JSON file",
+                type=['json'],
+                help="Upload the JSON file exported from your Open WebUI instance",
+                label_visibility="collapsed",
+                key="chat_file_uploader"
+            )
+            if uploaded_file is None and default_export_path is not None:
+                st.info(f"Loaded default export from `data/{default_export_path.name}`")
+        with users_col:
+            users_has_file = (default_users_path is not None) or (st.session_state.get("users_csv_uploader") is not None)
+            user_subheader = "Upload Users ✅" if users_has_file else "Upload Users"
+            st.subheader(user_subheader)
+            uploaded_users_file = st.file_uploader(
+                "Optional users CSV",
+                type=['csv'],
+                help="Upload a CSV with `user_id` and `name` columns to map chats to user names",
+                label_visibility="collapsed",
+                key="users_csv_uploader"
+            )
+            if uploaded_users_file is None and default_users_path is not None:
+                st.info(f"Loaded user directory from `data/{default_users_path.name}`")
+
+    data_source = None
+    data_label = ""
+    loaded_from_default = False
+    user_data_source = None
+    user_data_label = ""
+    user_loaded_from_default = False
+
     if uploaded_file is not None:
+        data_source = uploaded_file
+        data_label = getattr(uploaded_file, "name", "uploaded file")
+    elif default_export_path is not None:
+        data_source = default_export_path
+        data_label = default_export_path.name
+        loaded_from_default = True
+
+    if uploaded_users_file is not None:
+        user_data_source = uploaded_users_file
+        user_data_label = getattr(uploaded_users_file, "name", "uploaded users file")
+    elif default_users_path is not None:
+        user_data_source = default_users_path
+        user_data_label = default_users_path.name
+        user_loaded_from_default = True
+    
+    if data_source is not None:
         # Load and process data with enhanced loading state
         with st.spinner("🔄 Processing chat data..."):
-            chats_df, messages_df = load_and_process_data(uploaded_file)
+            chats_df, messages_df = load_and_process_data(data_source)
         
         if chats_df is not None and messages_df is not None:
+            users_df = load_user_data(user_data_source)
+            if user_data_source is not None and not users_df.empty:
+                if not user_loaded_from_default:
+                    st.toast("User data loaded successfully!", icon="🧑")
+            elif user_data_source is not None and users_df.empty:
+                st.warning("User CSV was provided but no usable records were found.")
+
             st.toast(f"Data loaded successfully!", icon="✅")
+
+            chats_df['user_id'] = chats_df['user_id'].fillna('').astype(str)
+            fallback_ids = chats_df['user_id'].replace({'nan': '', 'None': ''})
+            user_display_map = {}
+            if not users_df.empty:
+                users_df['user_id'] = users_df['user_id'].astype(str)
+                user_display_map = dict(zip(users_df['user_id'], users_df['name']))
+            chats_df['user_display'] = chats_df['user_id'].map(user_display_map)
+            chats_df['user_display'] = chats_df['user_display'].fillna(fallback_ids)
+            chats_df.loc[chats_df['user_display'].isin(['', 'nan', 'None']), 'user_display'] = "User"
+            chat_user_display_map_all = chats_df.set_index('chat_id')['user_display'].to_dict()
+            messages_df['chat_user_display'] = messages_df['chat_id'].map(chat_user_display_map_all)
+            messages_df['chat_user_display'] = messages_df['chat_user_display'].fillna("User")
+            messages_df['model'] = messages_df['model'].fillna('')
+
+            dataset_signature = (
+                data_label or "",
+                len(chats_df),
+                len(messages_df)
+            )
+            if st.session_state.get("dataset_signature") != dataset_signature:
+                st.session_state.user_filter = ALL_USERS_OPTION
+                st.session_state.model_filter = ALL_MODELS_OPTION
+                st.session_state.page = 1
+            st.session_state.dataset_signature = dataset_signature
+
             metrics = calculate_engagement_metrics(chats_df, messages_df)
             # Compute date range and total days from messages
             if not messages_df.empty:
@@ -567,57 +811,204 @@ def main():
             with col4:
                 total_tokens = metrics.get('total_tokens', 0)
                 st.metric(label="Total Tokens", value=f"{total_tokens:,}")                
-            
-            # Create tabs for different analyses
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            # Visual divider between overview and analysis
+            st.markdown('---')
+
+            st.subheader("Model Usage Analysis")
+            model_data = messages_df[messages_df['model'] != '']
+            if model_data.empty:
+                st.warning("ℹ️ No model information available in the uploaded data")
+            else:
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    model_fig = create_model_usage_chart(messages_df)
+                    st.plotly_chart(model_fig, use_container_width=True, key="model_usage_chart")
+                with col2:
+                    st.subheader("Model Statistics")
+                    model_stats = model_data['model'].value_counts()
+                    for model, count in model_stats.head(5).items():
+                        percentage = (count / len(messages_df)) * 100 if len(messages_df) else 0
+                        st.write(f"{model}: {count:,} ({percentage:.1f}%)")
+
+            # Visual divider between model usage and model selection
+            st.markdown('---')
+
+            # Chat Analysis header + filter controls
+            st.markdown('### Chat Analysis')
+            user_display_lookup = (
+                chats_df[['user_id', 'user_display']]
+                .drop_duplicates(subset=['user_id'])
+                .set_index('user_id')['user_display']
+                .to_dict()
+            )
+            user_ids = [
+                uid for uid in chats_df['user_id'].astype(str).unique().tolist()
+                if uid not in ('', 'nan', 'None')
+            ]
+            user_ids_sorted = sorted(
+                user_ids,
+                key=lambda uid: str(user_display_lookup.get(uid) or uid or "User").lower()
+            )
+            user_options = [ALL_USERS_OPTION] + user_ids_sorted
+            if "user_filter" not in st.session_state:
+                st.session_state.user_filter = ALL_USERS_OPTION
+            if st.session_state.user_filter not in user_options:
+                st.session_state.user_filter = ALL_USERS_OPTION
+            if "model_filter" not in st.session_state:
+                st.session_state.model_filter = ALL_MODELS_OPTION
+
+            col_user, col_model = st.columns(2)
+            with col_user:
+                user_index = user_options.index(st.session_state.user_filter)
+                st.selectbox(
+                    'Select user',
+                    options=user_options,
+                    index=user_index,
+                    format_func=lambda uid: "All Users" if uid == ALL_USERS_OPTION else str(user_display_lookup.get(uid, uid)),
+                    key='user_filter',
+                    on_change=reset_model_filter
+                )
+            user_filter_value = st.session_state.user_filter
+            user_filter = None if user_filter_value == ALL_USERS_OPTION else user_filter_value
+
+            if user_filter is None:
+                relevant_chats = chats_df.copy()
+                relevant_messages = messages_df.copy()
+            else:
+                relevant_chats = chats_df[chats_df['user_id'] == user_filter].copy()
+                relevant_chat_ids = relevant_chats['chat_id'].unique().tolist()
+                relevant_messages = messages_df[messages_df['chat_id'].isin(relevant_chat_ids)].copy()
+
+            model_options = [ALL_MODELS_OPTION] + sorted(
+                [m for m in relevant_messages['model'].unique() if m]
+            ) if not relevant_messages.empty else [ALL_MODELS_OPTION]
+
+            if st.session_state.model_filter not in model_options:
+                st.session_state.model_filter = ALL_MODELS_OPTION
+
+            with col_model:
+                model_index = model_options.index(st.session_state.model_filter)
+                st.selectbox(
+                    'Select model',
+                    options=model_options,
+                    index=model_index,
+                    key='model_filter',
+                    on_change=reset_browse_page
+                )
+            model_filter = st.session_state.model_filter
+
+            filtered_messages = relevant_messages
+            filtered_chats = relevant_chats
+
+            if model_filter and model_filter != ALL_MODELS_OPTION:
+                chat_ids_model = filtered_messages[filtered_messages['model'] == model_filter]['chat_id'].unique().tolist()
+                if chat_ids_model:
+                    filtered_messages = filtered_messages[filtered_messages['chat_id'].isin(chat_ids_model)].copy()
+                    filtered_chats = filtered_chats[filtered_chats['chat_id'].isin(chat_ids_model)].copy()
+                else:
+                    filtered_messages = filtered_messages.iloc[0:0].copy()
+                    filtered_chats = filtered_chats.iloc[0:0].copy()
+
+            filtered_chat_user_map = filtered_chats.set_index('chat_id')['user_display'].to_dict() if not filtered_chats.empty else {}
+            model_key = model_filter if model_filter else ALL_MODELS_OPTION
+            user_key = "AllUsers" if user_filter_value == ALL_USERS_OPTION else user_filter
+            raw_filter_key = f"{model_key}_{user_key}"
+            filter_key = re.sub(r'\W+', '_', str(raw_filter_key))
+
+            if "page" not in st.session_state:
+                st.session_state.page = 1
+            previous_filter_key = st.session_state.get("last_filter_key")
+            if previous_filter_key != filter_key:
+                st.session_state.page = 1
+                st.session_state.last_filter_key = filter_key
+
+            # Create tabs for different analyses (add a model-filtered Overview tab)
+            tab_overview, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "🧾 Overview",
                 "📈 Time Analysis",
-                "🤖 Model Usage",
                 "💭 Content Analysis",
                 "😊 Sentiment",
                 "🔍 Search",
                 "🗂 Browse Data"
             ])
-            
+
+            # Filtered Overview tab (uses the same metrics as the top overview but respects the model filter)
+            with tab_overview:
+                st.subheader("Overview (Filtered)")
+                metrics_filtered = calculate_engagement_metrics(filtered_chats, filtered_messages)
+                if not metrics_filtered:
+                    st.info("No data available for the selected model / filter.")
+                else:
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric(label="Total Messages", value=f"{metrics_filtered.get('total_messages', 0):,}")
+                    with col2:
+                        st.metric(label="Total Chats", value=f"{metrics_filtered.get('total_chats', 0):,}")
+                    with col3:
+                        st.metric(label="Unique Users", value=f"{metrics_filtered.get('unique_users', 0):,}")
+                    with col4:
+                        st.metric(label="User Files Uploaded", value=f"{metrics_filtered.get('files_uploaded', 0):,}")
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric(label="Avg Msgs/Chat", value=f"{metrics_filtered.get('avg_messages_per_chat', 0):,.1f}")
+                    with col2:
+                        st.metric(label="Avg Input Tokens/Chat", value=f"{metrics_filtered.get('avg_input_tokens_per_chat', 0):,.1f}")
+                    with col3:
+                        st.metric(label="Avg Output Tokens/Chat", value=f"{metrics_filtered.get('avg_output_tokens_per_chat', 0):,.1f}")
+                    with col4:
+                        st.metric(label="Total Tokens", value=f"{metrics_filtered.get('total_tokens', 0):,}")
+
             with tab1:
                 st.subheader("Time-based Analysis")
                 col1, col2 = st.columns(2)
                 with col1:
-                    time_fig = create_time_series_chart(messages_df)
-                    st.plotly_chart(time_fig, use_container_width=True)
+                    time_fig = create_time_series_chart(filtered_messages)
+                    st.plotly_chart(time_fig, use_container_width=True, key=f"time_series_chart_{filter_key}")
                 with col2:
-                    length_fig = create_conversation_length_distribution(messages_df)
-                    st.plotly_chart(length_fig, use_container_width=True)
-                activity_fig = create_user_activity_chart(messages_df)
-                st.plotly_chart(activity_fig, use_container_width=True)
+                    length_fig = create_conversation_length_distribution(filtered_messages)
+                    st.plotly_chart(length_fig, use_container_width=True, key=f"conversation_length_chart_{filter_key}")
+                activity_fig = create_user_activity_chart(filtered_messages)
+                st.plotly_chart(activity_fig, use_container_width=True, key=f"activity_heatmap_{filter_key}")
             with tab2:
-                st.subheader("Model Usage Analysis")
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    model_fig = create_model_usage_chart(messages_df)
-                    st.plotly_chart(model_fig, use_container_width=True)
-                with col2:
-                    if not messages_df[messages_df['model'] != ''].empty:
-                        model_stats = messages_df[messages_df['model'] != '']['model'].value_counts()
-                        st.subheader("Model Statistics")
-                        for i, (model, count) in enumerate(model_stats.head(5).items()):
-                            percentage = (count / len(messages_df)) * 100
-                            st.write(f"{model}: {count:,} ({percentage:.1f}%)")
-                    else:
-                        st.warning("ℹ️ No model information available in the uploaded data")
-            with tab3:
                 st.subheader("Content Analysis")
-                wordcloud = generate_word_cloud(messages_df)
+                wordcloud = generate_word_cloud(filtered_messages)
                 if wordcloud:
                     st.markdown("### ☁️ Word Cloud (User Messages)")
                     img = wordcloud.to_image()
                     st.image(img, use_container_width=True)
                 else:
-                    st.warning("⚠️ Word cloud unavailable - No user messages found or text processing failed")
-                if not messages_df.empty:
-                    messages_df['content_length'] = messages_df['content'].str.len()
+                    # Provide a more actionable warning based on what data is present
+                    if filtered_messages is None or filtered_messages.empty:
+                        st.warning("⚠️ Word cloud unavailable - No messages available. Try uploading a JSON export or connect to an environment first.")
+                    else:
+                        # Check if there are any user messages with non-empty content
+                        roles = filtered_messages.get('role')
+                        contents = filtered_messages.get('content')
+                        has_user = False
+                        has_text = False
+                        if roles is not None:
+                            try:
+                                has_user = any(roles.fillna('').astype(str).str.lower() == 'user')
+                            except Exception:
+                                has_user = False
+                        if contents is not None:
+                            try:
+                                has_text = any(contents.astype(str).str.strip() != '')
+                            except Exception:
+                                has_text = False
+
+                        if not has_text:
+                            st.warning("⚠️ Word cloud unavailable - Messages are present but no textual content was found.")
+                        elif not has_user:
+                            st.warning("⚠️ Word cloud unavailable - No messages labeled with role 'user' were found. Check the data's 'role' field.")
+                        else:
+                            st.warning("⚠️ Word cloud unavailable - Text processing failed or no significant terms were extracted.")
+                if not filtered_messages.empty:
+                    filtered_messages['content_length'] = filtered_messages['content'].str.len()
                     col1, col2 = st.columns(2)
                     with col1:
-                        avg_length = messages_df.groupby('role')['content_length'].mean()
+                        # Use the filtered dataset here — content_length was added to filtered_messages
+                        avg_length = filtered_messages.groupby('role')['content_length'].mean()
                         fig = px.bar(
                             x=avg_length.index,
                             y=avg_length.values,
@@ -638,10 +1029,10 @@ def main():
                             paper_bgcolor='rgba(0,0,0,0)',
                             margin=dict(t=60, l=50, r=50, b=50)
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True, key=f"avg_message_length_chart_{filter_key}")
                     with col2:
                         fig = px.histogram(
-                            messages_df,
+                            filtered_messages,
                             x='content_length',
                             title="Message Length Distribution",
                             color_discrete_sequence=['#3b82f6']
@@ -658,10 +1049,10 @@ def main():
                             paper_bgcolor='rgba(0,0,0,0)',
                             margin=dict(t=60, l=50, r=50, b=50)
                         )
-                        st.plotly_chart(fig, use_container_width=True)
-            with tab4:
+                        st.plotly_chart(fig, use_container_width=True, key=f"message_length_hist_{filter_key}")
+            with tab3:
                 st.subheader("Sentiment Analysis")
-                sentiment_df = perform_sentiment_analysis(messages_df)
+                sentiment_df = perform_sentiment_analysis(filtered_messages)
                 if not sentiment_df.empty:
                     col1, col2 = st.columns(2)
                     with col1:
@@ -682,7 +1073,7 @@ def main():
                             paper_bgcolor='rgba(0,0,0,0)',
                             margin=dict(t=60, l=50, r=50, b=50)
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True, key=f"sentiment_distribution_chart_{filter_key}")
                     with col2:
                         sentiment_time = sentiment_df.groupby(sentiment_df['timestamp'].dt.date)['sentiment'].mean().reset_index()
                         fig = px.line(
@@ -705,7 +1096,7 @@ def main():
                             paper_bgcolor='rgba(0,0,0,0)',
                             margin=dict(t=60, l=50, r=50, b=50)
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True, key=f"sentiment_time_chart_{filter_key}")
                     st.markdown("### Sentiment Breakdown")
                     col1, col2, col3 = st.columns(3)
                     with col1:
@@ -719,21 +1110,27 @@ def main():
                         st.metric(label="Negative Messages", value=f"{negative_pct:.1f}%")
                 else:
                     st.warning("⚠️ Sentiment analysis unavailable - No user messages found for analysis")
+            with tab4:
+                create_search_interface(
+                    filtered_chats,
+                    filtered_messages,
+                    filtered_chat_user_map,
+                    widget_prefix=filter_key
+                )
             with tab5:
-                create_search_interface(chats_df, messages_df)
-            with tab6:
                 st.subheader("Browse Data")
-                if not messages_df.empty:
+                if not filtered_messages.empty:
                     # Compute the first user message timestamp per chat
+                    chat_user_map = filtered_chats.set_index('chat_id')['user_display'].to_dict()
                     first_prompts = (
-                        messages_df[messages_df['role'] == 'user']
+                        filtered_messages[filtered_messages['role'] == 'user']
                         .groupby('chat_id')['timestamp']
                         .min()
                         .reset_index()
                     )
                     # Merge with chat titles
                     first_prompts = first_prompts.merge(
-                        chats_df[['chat_id', 'title']],
+                        filtered_chats[['chat_id', 'title']],
                         on='chat_id',
                         how='left'
                     )
@@ -741,9 +1138,6 @@ def main():
                     first_prompts = first_prompts.sort_values('timestamp', ascending=False)
                     # Pagination setup
                     total_threads = len(first_prompts)
-                    # Initialize session state for current page
-                    if "page" not in st.session_state:
-                        st.session_state.page = 1
                     # Threads per page selector
                     threads_per_page = st.selectbox(
                         "Threads per page",
@@ -752,27 +1146,35 @@ def main():
                         key="threads_per_page"
                     )
                     # Calculate total pages and slice for current page
-                    total_pages = math.ceil(total_threads / st.session_state.threads_per_page)
+                    total_pages = math.ceil(total_threads / threads_per_page) if total_threads else 1
+                    if st.session_state.page > total_pages:
+                        st.session_state.page = total_pages
+                    if st.session_state.page < 1:
+                        st.session_state.page = 1
                     page = st.session_state.page
-                    start_idx = (page - 1) * st.session_state.threads_per_page
-                    end_idx = start_idx + st.session_state.threads_per_page
+                    start_idx = (page - 1) * threads_per_page
+                    end_idx = start_idx + threads_per_page
                     first_prompts = first_prompts.iloc[start_idx:end_idx]
                     # Display each thread in an expander
                     for _, row in first_prompts.iterrows():
                         thread_id = row['chat_id']
                         title = row['title'] or thread_id
                         date = row['timestamp'].strftime('%Y-%m-%d %H:%M')
-                        chat_info = chats_df[chats_df['chat_id'] == thread_id].iloc[0]
+                        chat_rows = filtered_chats[filtered_chats['chat_id'] == thread_id]
+                        if chat_rows.empty:
+                            continue
+                        chat_info = chat_rows.iloc[0]
                         file_upload_flag = "📎" if chat_info.get('files_uploaded', 0) > 0 else ""
+                        user_display = chat_user_map.get(thread_id, chat_info.get('user_id', 'User'))
                         with st.expander(f"{title} (Started: {date}) {file_upload_flag}", expanded=False):
-                            thread_msgs = messages_df[messages_df['chat_id'] == thread_id].sort_values('timestamp')
+                            thread_msgs = filtered_messages[filtered_messages['chat_id'] == thread_id].sort_values('timestamp')
                             for _, msg in thread_msgs.iterrows():
                                 timestamp = msg['timestamp'].strftime('%Y-%m-%d %H:%M')
                                 content = msg['content'].replace('\n', '<br>')
                                 if msg['role'] == 'user':
                                     st.markdown(
                                         f"<div style='background-color:#e6f7ff; padding:8px; border-radius:5px; margin-bottom:4px;'>"
-                                        f"<strong>User</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
+                                        f"<strong>{user_display}</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
                                         unsafe_allow_html=True
                                     )
                                 else:
@@ -785,6 +1187,7 @@ def main():
                             full_thread = {
                                 'chat_id': chat_info['chat_id'],
                                 'user_id': chat_info['user_id'],
+                                'user_name': user_display,
                                 'title': chat_info['title'],
                                 'created_at': chat_info['created_at'].isoformat(),
                                 'updated_at': chat_info['updated_at'].isoformat(),
@@ -821,7 +1224,10 @@ def main():
             create_export_section(chats_df, messages_df)
     
     else:
-        st.warning("Please upload your Open WebUI JSON export file to begin analysis")
+        if default_export_path is None:
+            st.warning("Please upload your Open WebUI JSON export file to begin analysis")
+        else:
+            st.error("Unable to load chat data.")
         create_instructions()
 
 if __name__ == "__main__":

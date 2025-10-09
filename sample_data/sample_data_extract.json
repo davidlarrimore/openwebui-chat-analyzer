@@ -1,158 +1,504 @@
 [
   {
-    "id": "chat-001",
-    "user_id": "user-A1",
-    "title": "Project Kickoff Discussion",
-    "updated_at": 1691180000,
-    "created_at": 1691100000,
-    "share_id": null,
-    "archived": false,
-    "pinned": true,
-    "meta": {
-      "tags": ["project", "kickoff"]
-    },
-    "folder_id": "folder-123",
-    "chat": {
-      "id": "chat-001",
-      "title": "Project Kickoff Discussion",
-      "models": ["gpt-4"],
-      "params": {
-        "temperature": 0.7,
-        "max_tokens": 2048
-      },
-      "history": {
-        "messages": {
-          "msg-001": {
-            "id": "msg-001",
-            "parentId": null,
-            "childrenIds": ["msg-002"],
-            "role": "user",
-            "content": "Let's outline our project goals.",
-            "timestamp": 1691100001,
-            "models": []
-          },
-          "msg-002": {
-            "id": "msg-002",
-            "parentId": "msg-001",
-            "childrenIds": [],
-            "role": "assistant",
-            "content": "Sure! What are the main objectives?",
-            "timestamp": 1691100050,
-            "model": "gpt-4",
-            "modelName": "gpt-4",
-            "modelIdx": 0,
-            "userContext": null,
-            "statusHistory": ["complete"],
-            "sources": [],
-            "done": true
-          }
-        },
-        "currentId": "msg-002"
-      },
-      "messages": [
-        {
-          "id": "msg-001",
-          "parentId": null,
-          "childrenIds": ["msg-002"],
-          "role": "user",
-          "content": "Let's outline our project goals.",
-          "timestamp": 1691100001
-        },
-        {
-          "id": "msg-002",
-          "parentId": "msg-001",
-          "childrenIds": [],
-          "role": "assistant",
-          "content": "Sure! What are the main objectives?",
-          "timestamp": 1691100050,
-          "model": "gpt-4",
-          "modelName": "gpt-4",
-          "modelIdx": 0,
-          "userContext": null,
-          "statusHistory": ["complete"],
-          "sources": [],
-          "done": true
-        }
-      ],
-      "tags": ["kickoff"],
-      "timestamp": 1691100000,
-      "files": []
-    }
-  },
-  {
-    "id": "chat-002",
-    "user_id": "user-B2",
-    "title": "Budget Review",
-    "updated_at": 1691185000,
-    "created_at": 1691105000,
+    "id": "chat-A01",
+    "user_id": "user-XYZ",
+    "title": "SOW Milestone Extraction",
+    "updated_at": 1760017691,
+    "created_at": 1760017691,
     "share_id": null,
     "archived": false,
     "pinned": false,
     "meta": {
-      "tags": ["finance"]
+      "tags": [
+        "documents",
+        "milestones"
+      ]
+    },
+    "folder_id": "folder-proposals",
+    "chat": {
+      "id": "chat-A01",
+      "title": "SOW Milestone Extraction",
+      "models": [
+        "gpt-4"
+      ],
+      "params": {
+        "temperature": 0.2,
+        "max_tokens": 4096
+      },
+      "history": {
+        "messages": {
+          "A-001": {
+            "id": "A-001",
+            "parentId": null,
+            "childrenIds": [],
+            "role": "user",
+            "content": "Please analyze the SOW and extract milestones.",
+            "timestamp": 1760017691
+          },
+          "A-002": {
+            "id": "A-002",
+            "parentId": "A-001",
+            "childrenIds": [],
+            "role": "assistant",
+            "content": "Uploading the SOW. I'll extract milestones next.",
+            "timestamp": 1760017691,
+            "model": "gpt-4",
+            "modelName": "gpt-4",
+            "modelIdx": 0,
+            "statusHistory": [
+              "complete"
+            ],
+            "sources": [],
+            "done": true
+          },
+          "A-003": {
+            "id": "A-003",
+            "parentId": "A-001",
+            "childrenIds": [],
+            "role": "assistant",
+            "content": "Here are the milestones I found:\n1) Kickoff  \n2) Beta  \n3) GA",
+            "timestamp": 1760017691,
+            "model": "gpt-4",
+            "modelName": "gpt-4",
+            "modelIdx": 0,
+            "statusHistory": [
+              "complete"
+            ],
+            "sources": [
+              {
+                "title": "SOW_v3.pdf",
+                "page": 5
+              }
+            ],
+            "done": true
+          }
+        },
+        "currentId": "A-003"
+      },
+      "messages": [
+        {
+          "id": "A-001",
+          "parentId": null,
+          "childrenIds": [],
+          "role": "user",
+          "content": "Please analyze the SOW and extract milestones.",
+          "timestamp": 1760017691
+        },
+        {
+          "id": "A-002",
+          "parentId": "A-001",
+          "childrenIds": [],
+          "role": "assistant",
+          "content": "Uploading the SOW. I'll extract milestones next.",
+          "timestamp": 1760017691,
+          "model": "gpt-4",
+          "modelName": "gpt-4",
+          "modelIdx": 0,
+          "statusHistory": [
+            "complete"
+          ],
+          "sources": [],
+          "done": true
+        },
+        {
+          "id": "A-003",
+          "parentId": "A-001",
+          "childrenIds": [],
+          "role": "assistant",
+          "content": "Here are the milestones I found:\n1) Kickoff  \n2) Beta  \n3) GA",
+          "timestamp": 1760017691,
+          "model": "gpt-4",
+          "modelName": "gpt-4",
+          "modelIdx": 0,
+          "statusHistory": [
+            "complete"
+          ],
+          "sources": [
+            {
+              "title": "SOW_v3.pdf",
+              "page": 5
+            }
+          ],
+          "done": true
+        }
+      ],
+      "tags": [
+        "analysis"
+      ],
+      "timestamp": 1760017691,
+      "files": [
+        {
+          "id": "file-001",
+          "name": "SOW_v3.pdf",
+          "content_type": "application/pdf",
+          "size": 2345678
+        },
+        {
+          "id": "file-002",
+          "name": "Pricing.xlsx",
+          "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "size": 128774
+        }
+      ]
+    }
+  },
+  {
+    "id": "chat-B02",
+    "user_id": "user-XYZ",
+    "title": "Client Email Draft",
+    "updated_at": 1760017691,
+    "created_at": 1760017691,
+    "share_id": null,
+    "archived": false,
+    "pinned": true,
+    "meta": {
+      "tags": [
+        "communications"
+      ]
     },
     "folder_id": null,
     "chat": {
-      "id": "chat-002",
-      "title": "Budget Review",
-      "models": ["gpt-3.5"],
-      "params": {},
+      "id": "chat-B02",
+      "title": "Client Email Draft",
+      "models": [
+        "gpt-4"
+      ],
+      "params": {
+        "temperature": 0.5
+      },
       "history": {
         "messages": {
-          "msg-101": {
-            "id": "msg-101",
+          "B-001": {
+            "id": "B-001",
             "parentId": null,
-            "childrenIds": ["msg-102"],
+            "childrenIds": [],
             "role": "user",
-            "content": "Can you summarize our Q3 budget?",
-            "timestamp": 1691105001,
-            "models": []
+            "content": "Draft an email to the client about timeline changes.",
+            "timestamp": 1760017691
           },
-          "msg-102": {
-            "id": "msg-102",
-            "parentId": "msg-101",
+          "B-002": {
+            "id": "B-002",
+            "parentId": "B-001",
             "childrenIds": [],
             "role": "assistant",
-            "content": "The total budget for Q3 is $1.2M with 40% allocated to R&D.",
-            "timestamp": 1691105050,
-            "model": "gpt-3.5",
-            "modelName": "gpt-3.5",
+            "content": "Here's a draft email you can use...",
+            "timestamp": 1760017691,
+            "model": "gpt-4",
+            "modelName": "gpt-4",
             "modelIdx": 0,
-            "userContext": null,
-            "statusHistory": ["complete"],
+            "statusHistory": [
+              "complete"
+            ],
             "sources": [],
             "done": true
           }
         },
-        "currentId": "msg-102"
+        "currentId": "B-002"
       },
       "messages": [
         {
-          "id": "msg-101",
+          "id": "B-001",
           "parentId": null,
-          "childrenIds": ["msg-102"],
+          "childrenIds": [],
           "role": "user",
-          "content": "Can you summarize our Q3 budget?",
-          "timestamp": 1691105001
+          "content": "Draft an email to the client about timeline changes.",
+          "timestamp": 1760017691
         },
         {
-          "id": "msg-102",
-          "parentId": "msg-101",
+          "id": "B-002",
+          "parentId": "B-001",
           "childrenIds": [],
           "role": "assistant",
-          "content": "The total budget for Q3 is $1.2M with 40% allocated to R&D.",
-          "timestamp": 1691105050,
-          "model": "gpt-3.5",
-          "modelName": "gpt-3.5",
+          "content": "Here's a draft email you can use...",
+          "timestamp": 1760017691,
+          "model": "gpt-4",
+          "modelName": "gpt-4",
           "modelIdx": 0,
-          "userContext": null,
-          "statusHistory": ["complete"],
+          "statusHistory": [
+            "complete"
+          ],
           "sources": [],
           "done": true
         }
       ],
+      "tags": [
+        "email"
+      ],
+      "timestamp": 1760017691,
+      "files": []
+    }
+  },
+  {
+    "id": "chat-C03",
+    "user_id": "user-ABC",
+    "title": "Finance Basics",
+    "updated_at": 1760017691,
+    "created_at": 1760017691,
+    "share_id": null,
+    "archived": false,
+    "pinned": false,
+    "meta": {
+      "tags": [
+        "finance",
+        "education"
+      ]
+    },
+    "folder_id": "folder-learning",
+    "chat": {
+      "id": "chat-C03",
+      "title": "Finance Basics",
+      "models": [
+        "gpt-3.5"
+      ],
+      "params": {},
+      "history": {
+        "messages": {
+          "C-001": {
+            "id": "C-001",
+            "parentId": null,
+            "childrenIds": [],
+            "role": "user",
+            "content": "What is the formula for compound interest?",
+            "timestamp": 1760017691
+          },
+          "C-002": {
+            "id": "C-002",
+            "parentId": "C-001",
+            "childrenIds": [],
+            "role": "assistant",
+            "content": "Compound interest formula is A = P(1 + r/n)^(nt).",
+            "timestamp": 1760017691,
+            "model": "gpt-3.5",
+            "modelName": "gpt-3.5",
+            "modelIdx": 0,
+            "statusHistory": [
+              "complete"
+            ],
+            "sources": [],
+            "done": true
+          }
+        },
+        "currentId": "C-002"
+      },
+      "messages": [
+        {
+          "id": "C-001",
+          "parentId": null,
+          "childrenIds": [],
+          "role": "user",
+          "content": "What is the formula for compound interest?",
+          "timestamp": 1760017691
+        },
+        {
+          "id": "C-002",
+          "parentId": "C-001",
+          "childrenIds": [],
+          "role": "assistant",
+          "content": "Compound interest formula is A = P(1 + r/n)^(nt).",
+          "timestamp": 1760017691,
+          "model": "gpt-3.5",
+          "modelName": "gpt-3.5",
+          "modelIdx": 0,
+          "statusHistory": [
+            "complete"
+          ],
+          "sources": [],
+          "done": true
+        }
+      ],
+      "tags": [
+        "quick-answer"
+      ],
+      "timestamp": 1760017691,
+      "files": []
+    }
+  },
+  {
+    "id": "chat-D04",
+    "user_id": "user-HR",
+    "title": "\ud83c\udfd6\ufe0f HR PTO Balance Redirect (dev room)",
+    "updated_at": 1760017691,
+    "created_at": 1760017691,
+    "share_id": null,
+    "archived": false,
+    "pinned": false,
+    "meta": {
+      "tags": [
+        "general"
+      ]
+    },
+    "folder_id": null,
+    "chat": {
+      "id": "chat-D04",
+      "title": "\ud83c\udfd6\ufe0f HR PTO Balance Redirect (dev room)",
+      "models": [
+        "developer-copilot"
+      ],
+      "params": {},
+      "history": {
+        "messages": {
+          "D-001": {
+            "id": "D-001",
+            "parentId": null,
+            "childrenIds": [],
+            "role": "user",
+            "content": "PTO balance?",
+            "timestamp": 1760017691
+          },
+          "D-002": {
+            "id": "D-002",
+            "parentId": "D-001",
+            "childrenIds": [],
+            "role": "assistant",
+            "content": "That's an HR question. Please switch to HR Chat.",
+            "timestamp": 1760017691,
+            "model": "developer-copilot",
+            "modelName": "Engineer Chat",
+            "modelIdx": 0,
+            "statusHistory": [
+              "complete"
+            ],
+            "sources": [],
+            "done": true,
+            "lastSentence": "Please switch to HR Chat.",
+            "followUps": [
+              "How to build a PTO API?",
+              "Design a leave DB schema?"
+            ]
+          }
+        },
+        "currentId": "D-002"
+      },
+      "messages": [
+        {
+          "id": "D-001",
+          "parentId": null,
+          "childrenIds": [],
+          "role": "user",
+          "content": "PTO balance?",
+          "timestamp": 1760017691
+        },
+        {
+          "id": "D-002",
+          "parentId": "D-001",
+          "childrenIds": [],
+          "role": "assistant",
+          "content": "That's an HR question. Please switch to HR Chat.",
+          "timestamp": 1760017691,
+          "model": "developer-copilot",
+          "modelName": "Engineer Chat",
+          "modelIdx": 0,
+          "statusHistory": [
+            "complete"
+          ],
+          "sources": [],
+          "done": true,
+          "lastSentence": "Please switch to HR Chat.",
+          "followUps": [
+            "How to build a PTO API?",
+            "Design a leave DB schema?"
+          ]
+        }
+      ],
       "tags": [],
-      "timestamp": 1691105000,
+      "timestamp": 1760017691,
+      "files": []
+    }
+  },
+  {
+    "id": "chat-E05",
+    "user_id": "user-HR",
+    "title": "\ud83d\udcc5 PTO Balance Check",
+    "updated_at": 1760017691,
+    "created_at": 1760017691,
+    "share_id": null,
+    "archived": false,
+    "pinned": false,
+    "meta": {
+      "tags": [
+        "hr",
+        "pto"
+      ]
+    },
+    "folder_id": null,
+    "chat": {
+      "id": "chat-E05",
+      "title": "\ud83d\udcc5 PTO Balance Check",
+      "models": [
+        "amichat---hr-chat"
+      ],
+      "params": {},
+      "history": {
+        "messages": {
+          "E-001": {
+            "id": "E-001",
+            "parentId": null,
+            "childrenIds": [],
+            "role": "user",
+            "content": "How do I check my PTO balance?",
+            "timestamp": 1760017691
+          },
+          "E-002": {
+            "id": "E-002",
+            "parentId": "E-001",
+            "childrenIds": [],
+            "role": "assistant",
+            "content": "PTO balances can be viewed in Unanet. Log in and click 'Leave Balance'.",
+            "timestamp": 1760017691,
+            "model": "amichat---hr-chat",
+            "modelName": "HR Chat",
+            "modelIdx": 0,
+            "statusHistory": [
+              "complete"
+            ],
+            "sources": [
+              {
+                "collection": "Amivero Employee Knowledgebase",
+                "doc": "Amivero_Handbook_v4.4.md",
+                "section": "PTO"
+              }
+            ],
+            "done": true
+          }
+        },
+        "currentId": "E-002"
+      },
+      "messages": [
+        {
+          "id": "E-001",
+          "parentId": null,
+          "childrenIds": [],
+          "role": "user",
+          "content": "How do I check my PTO balance?",
+          "timestamp": 1760017691
+        },
+        {
+          "id": "E-002",
+          "parentId": "E-001",
+          "childrenIds": [],
+          "role": "assistant",
+          "content": "PTO balances can be viewed in Unanet. Log in and click 'Leave Balance'.",
+          "timestamp": 1760017691,
+          "model": "amichat---hr-chat",
+          "modelName": "HR Chat",
+          "modelIdx": 0,
+          "statusHistory": [
+            "complete"
+          ],
+          "sources": [
+            {
+              "collection": "Amivero Employee Knowledgebase",
+              "doc": "Amivero_Handbook_v4.4.md",
+              "section": "PTO"
+            }
+          ],
+          "done": true
+        }
+      ],
+      "tags": [
+        "hrkb"
+      ],
+      "timestamp": 1760017691,
       "files": []
     }
   }
