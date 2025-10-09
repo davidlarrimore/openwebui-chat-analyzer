@@ -60,7 +60,7 @@ streamlit run openwebui_chat_analyzer.py
 
 ### Option C – Guided setup scripts
 
-Run `scripts/setup.sh` for an interactive wizard that can prepare either Docker or the virtual environment. Companion scripts (`scripts/up.sh`, `scripts/down.sh`, `scripts/restart.sh`) wrap the common lifecycle commands.
+Run `scripts/setup.sh` for an interactive wizard that can prepare either Docker or the virtual environment. After setup, use the `make` targets (`make up`, `make down`, `make logs`, etc.) for day-to-day lifecycle commands.
 
 ## Dashboard Tour
 
