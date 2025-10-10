@@ -596,7 +596,9 @@ def compute_top_users(chats_df, messages_df, top_n=10):
         ascending=False
     ).drop(columns="token_count")
 
-    return summary.head(top_n)
+    summary = summary.head(top_n).reset_index(drop=True)
+
+    return summary
 
 def create_user_adoption_chart(chats_df, messages_df, date_min=None, date_max=None):
     """Create a cumulative user adoption chart based on first user message."""
@@ -632,7 +634,6 @@ def create_user_adoption_chart(chats_df, messages_df, date_min=None, date_max=No
         first_message_dates,
         x="timestamp",
         y="cumulative_users",
-        title="User Adoption Over Time",
         markers=True
     )
     fig.update_traces(line_color="#10b981", line_width=3)
@@ -640,15 +641,12 @@ def create_user_adoption_chart(chats_df, messages_df, date_min=None, date_max=No
         template="plotly_white",
         hovermode="x unified",
         showlegend=False,
-        title_font_size=18,
-        title_font_color="#1f2937",
-        title_font_weight=600,
         xaxis_title="First Message Date",
         yaxis_title="Cumulative Users",
         font=dict(family="Inter, sans-serif"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(t=60, l=50, r=50, b=50)
+        margin=dict(t=30, l=50, r=50, b=50)
     )
 
     if date_min is not None and date_max is not None:
@@ -1074,6 +1072,7 @@ def main():
             # Visual divider between overview and analysis
             st.markdown('---')
 
+            st.subheader("Model Usage Analysis")
             model_data = messages_df[
                 (messages_df['role'] == 'assistant') & (messages_df['model'] != '')
             ]
@@ -1082,19 +1081,20 @@ def main():
             else:
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.subheader("Model Usage Analysis")
                     model_fig = create_model_usage_chart(messages_df)
                     st.plotly_chart(model_fig, use_container_width=True, key="model_usage_chart")
                 with col2:
-                    st.subheader("Model Statistics")
                     model_stats_fig = create_model_usage_pie(messages_df)
                     st.plotly_chart(model_stats_fig, use_container_width=True, key="model_usage_pie")
+
+            st.markdown('---')
 
             st.subheader("User Analysis")
             top_users_df = compute_top_users(chats_df, messages_df, top_n=10)
             adoption_fig = create_user_adoption_chart(chats_df, messages_df, date_min_dt, date_max_dt)
             col_users, col_chart = st.columns([1.2, 1])
             with col_users:
+                st.markdown("#### Top 10 Users")
                 if top_users_df.empty:
                     st.info("No user activity found for analysis.")
                 else:
@@ -1104,6 +1104,8 @@ def main():
                         "message_count": "Messages",
                         "token_percentage": "Token %"
                     })
+                    display_df.index = display_df.index + 1
+                    display_df.index.name = "Rank"
                     formatted_df = display_df.style.format({
                         "Chats": "{:,.0f}",
                         "Messages": "{:,.0f}",
@@ -1111,6 +1113,7 @@ def main():
                     })
                     st.dataframe(formatted_df, use_container_width=True)
             with col_chart:
+                st.markdown("#### User Adoption Over Time")
                 if adoption_fig is None:
                     st.info("Need user messages with timestamps to plot adoption.")
                 else:
