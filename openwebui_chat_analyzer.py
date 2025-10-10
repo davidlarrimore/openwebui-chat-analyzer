@@ -268,10 +268,25 @@ def create_time_series_chart(messages_df):
     """Create time series visualization with modern styling"""
     if messages_df.empty:
         return go.Figure()
-    
-    # Group messages by date
-    daily_messages = messages_df.groupby(messages_df['timestamp'].dt.date).size().reset_index()
-    daily_messages.columns = ['date', 'message_count']
+
+    timestamp_series = messages_df["timestamp"].dropna()
+    if timestamp_series.empty:
+        return go.Figure()
+
+    tz = timestamp_series.dt.tz
+    now = pd.Timestamp.now(tz=tz) if tz is not None else pd.Timestamp.now()
+    end_date = now.normalize()
+    start_date = end_date - pd.Timedelta(days=29)
+
+    normalized_dates = messages_df["timestamp"].dt.normalize()
+    recent_dates = normalized_dates[
+        (normalized_dates >= start_date) & (normalized_dates <= end_date)
+    ]
+    date_index = pd.date_range(start=start_date, end=end_date, freq="D", tz=tz)
+    daily_counts = recent_dates.value_counts().reindex(date_index, fill_value=0).sort_index()
+
+    daily_messages = daily_counts.reset_index()
+    daily_messages.columns = ["date", "message_count"]
     
     fig = px.line(daily_messages, x='date', y='message_count',
                   title='Daily Message Activity')
@@ -358,43 +373,287 @@ def create_user_activity_chart(messages_df):
     return fig
 
 def create_model_usage_chart(messages_df):
-    """Create model usage visualization with modern styling"""
+    """Create model usage trend chart showing chats by model over time."""
     if messages_df.empty:
         return go.Figure()
-    
-    # Count model usage
-    model_counts = messages_df[messages_df['model'] != '']['model'].value_counts()
-    
-    if len(model_counts) == 0:
+
+    assistant_msgs = messages_df[
+        (messages_df["role"] == "assistant") & (messages_df["model"] != "")
+    ].dropna(subset=["timestamp"]).copy()
+    if assistant_msgs.empty:
         return go.Figure()
-    
-    # Create color palette
-    colors = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#6366f1', '#ec4899']
-    
-    fig = px.bar(
-        x=model_counts.values,
-        y=model_counts.index,
-        orientation='h',
-        title='Model Usage Distribution',
-        color=model_counts.index,
-        color_discrete_sequence=colors
+
+    assistant_msgs["timestamp"] = pd.to_datetime(assistant_msgs["timestamp"])
+    first_model_use = (
+        assistant_msgs.groupby(["chat_id", "model"])["timestamp"]
+        .min()
+        .reset_index()
     )
-    
+    if first_model_use.empty:
+        return go.Figure()
+
+    first_model_use["date"] = first_model_use["timestamp"].dt.normalize()
+    daily_counts = (
+        first_model_use.groupby(["date", "model"])["chat_id"]
+        .nunique()
+        .rename("chat_count")
+        .reset_index()
+    )
+
+    if daily_counts.empty:
+        return go.Figure()
+
+    tz_info = daily_counts["date"].dt.tz
+    date_min = daily_counts["date"].min()
+    date_max = daily_counts["date"].max()
+    date_range = pd.date_range(date_min, date_max, freq="D", tz=tz_info)
+    models = sorted(daily_counts["model"].unique())
+    complete_index = pd.MultiIndex.from_product(
+        [date_range, models], names=["date", "model"]
+    )
+    daily_counts = (
+        daily_counts.set_index(["date", "model"])
+        .reindex(complete_index, fill_value=0)
+        .reset_index()
+    )
+    daily_counts["date"] = daily_counts["date"].dt.normalize()
+
+    fig = px.line(
+        daily_counts,
+        x="date",
+        y="chat_count",
+        color="model",
+        title="Chats by Model Over Time",
+        markers=True
+    )
+    fig.update_traces(line_width=3)
     fig.update_layout(
-        template='plotly_white',
-        yaxis={'categoryorder': 'total ascending'},
+        template="plotly_white",
+        hovermode="x unified",
         title_font_size=18,
-        title_font_color='#1f2937',
+        title_font_color="#1f2937",
         title_font_weight=600,
-        xaxis_title="Number of Messages",
-        yaxis_title="Model",
+        xaxis_title="Date",
+        yaxis_title="Chats",
         font=dict(family="Inter, sans-serif"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=60, l=50, r=50, b=50),
+        legend_title_text="Model",
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.25,
+            xanchor="center",
+            x=0.5
+        )
+    )
+    fig.update_xaxes(tickformat="%Y-%m-%d", dtick=86400000.0)
+
+    return fig
+
+def create_model_usage_pie(messages_df):
+    """Create a pie chart of overall model usage."""
+    if messages_df.empty:
+        return go.Figure()
+
+    assistant_msgs = messages_df[
+        (messages_df["role"] == "assistant") & (messages_df["model"] != "")
+    ]
+    if assistant_msgs.empty:
+        return go.Figure()
+
+    model_counts = assistant_msgs["model"].value_counts()
+    fig = px.pie(
+        names=model_counts.index,
+        values=model_counts.values,
+        title="Model Usage Share"
+    )
+    fig.update_layout(
+        template="plotly_white",
+        title_font_size=18,
+        title_font_color="#1f2937",
+        title_font_weight=600,
+        margin=dict(t=60, l=20, r=20, b=20),
+        showlegend=True,
+        font=dict(family="Inter, sans-serif"),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.25,
+            xanchor="center",
+            x=0.5
+        )
+    )
+    fig.update_traces(textinfo="percent+label")
+    return fig
+
+def create_token_consumption_chart(messages_df):
+    """Create a slim line chart showing total token consumption per day."""
+    if messages_df.empty:
+        return go.Figure()
+
+    token_df = messages_df.dropna(subset=["timestamp"]).copy()
+    if token_df.empty:
+        return go.Figure()
+
+    token_df["token_count"] = token_df["content"].astype(str).str.len()
+    token_df["date"] = token_df["timestamp"].dt.normalize()
+    daily_tokens = (
+        token_df.groupby("date")["token_count"]
+        .sum()
+        .reset_index()
+        .sort_values("date")
+    )
+    if daily_tokens.empty:
+        return go.Figure()
+
+    tz_info = daily_tokens["date"].dt.tz
+    full_range = pd.date_range(
+        daily_tokens["date"].min(),
+        daily_tokens["date"].max(),
+        freq="D",
+        tz=tz_info
+    )
+    daily_tokens = (
+        daily_tokens.set_index("date")
+        .reindex(full_range, fill_value=0)
+        .rename_axis("date")
+        .reset_index()
+        .rename(columns={"index": "date"})
+    )
+
+    fig = px.line(
+        daily_tokens,
+        x="date",
+        y="token_count",
+        title="Daily Token Consumption Over Time",
+        markers=True
+    )
+    fig.update_traces(line_color="#6366f1", line_width=2)
+    fig.update_layout(
+        template="plotly_white",
+        hovermode="x unified",
         showlegend=False,
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
+        title_font_size=16,
+        title_font_color="#1f2937",
+        title_font_weight=600,
+        xaxis_title="Date",
+        yaxis_title="Tokens",
+        font=dict(family="Inter, sans-serif"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=40, l=40, r=40, b=40),
+        height=260
+    )
+    fig.update_xaxes(
+        tickformat="%Y-%m-%d",
+        tickmode="linear",
+        dtick=86400000.0
+    )
+
+    return fig
+
+def compute_top_users(chats_df, messages_df, top_n=10):
+    """Return aggregated metrics for the most active users."""
+    if chats_df.empty or messages_df.empty:
+        return pd.DataFrame(columns=["user", "chat_count", "message_count", "token_percentage"])
+
+    chat_lookup = (
+        chats_df[["chat_id", "user_display"]]
+        .dropna(subset=["chat_id"])
+        .drop_duplicates(subset=["chat_id"])
+    )
+    messages_with_users = messages_df.merge(chat_lookup, on="chat_id", how="left")
+    messages_with_users["user_display"] = messages_with_users["user_display"].fillna("Unknown User")
+
+    # Approximate tokens by character count for all messages in the user's chats
+    messages_with_users["token_count"] = messages_with_users["content"].astype(str).str.len()
+    tokens_per_user = messages_with_users.groupby("user_display")["token_count"].sum()
+    total_tokens = tokens_per_user.sum()
+
+    chat_counts = (
+        chats_df.groupby("user_display")["chat_id"]
+        .nunique()
+        .reindex(tokens_per_user.index, fill_value=0)
+    )
+    message_counts = messages_with_users.groupby("user_display").size()
+
+    summary = pd.DataFrame({
+        "user": tokens_per_user.index,
+        "chat_count": chat_counts.values,
+        "message_count": message_counts.values,
+        "token_percentage": np.where(
+            total_tokens > 0,
+            (tokens_per_user.values / total_tokens) * 100,
+            0.0
+        ),
+        "token_count": tokens_per_user.values,
+    })
+
+    summary = summary.sort_values(
+        by=["token_count", "chat_count", "message_count"],
+        ascending=False
+    ).drop(columns="token_count")
+
+    return summary.head(top_n)
+
+def create_user_adoption_chart(chats_df, messages_df, date_min=None, date_max=None):
+    """Create a cumulative user adoption chart based on first user message."""
+    if chats_df.empty or messages_df.empty:
+        return None
+
+    chat_lookup = (
+        chats_df[["chat_id", "user_display"]]
+        .dropna(subset=["chat_id"])
+        .drop_duplicates(subset=["chat_id"])
+    )
+    user_messages = (
+        messages_df[messages_df["role"] == "user"]
+        .merge(chat_lookup, on="chat_id", how="left")
+    )
+    user_messages = user_messages.dropna(subset=["timestamp"])
+    if user_messages.empty:
+        return None
+
+    first_message_dates = (
+        user_messages.groupby("user_display")["timestamp"]
+        .min()
+        .dropna()
+        .reset_index()
+        .sort_values("timestamp")
+    )
+    if first_message_dates.empty:
+        return None
+
+    first_message_dates["cumulative_users"] = np.arange(1, len(first_message_dates) + 1)
+
+    fig = px.line(
+        first_message_dates,
+        x="timestamp",
+        y="cumulative_users",
+        title="User Adoption Over Time",
+        markers=True
+    )
+    fig.update_traces(line_color="#10b981", line_width=3)
+    fig.update_layout(
+        template="plotly_white",
+        hovermode="x unified",
+        showlegend=False,
+        title_font_size=18,
+        title_font_color="#1f2937",
+        title_font_weight=600,
+        xaxis_title="First Message Date",
+        yaxis_title="Cumulative Users",
+        font=dict(family="Inter, sans-serif"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
         margin=dict(t=60, l=50, r=50, b=50)
     )
-    
+
+    if date_min is not None and date_max is not None:
+        fig.update_xaxes(range=[date_min, date_max])
+
     return fig
 
 def create_conversation_length_distribution(messages_df):
@@ -773,14 +1032,16 @@ def main():
 
             metrics = calculate_engagement_metrics(chats_df, messages_df)
             # Compute date range and total days from messages
-            if not messages_df.empty:
-                date_min_dt = messages_df['timestamp'].min()
-                date_max_dt = messages_df['timestamp'].max()
+            date_min_dt = messages_df['timestamp'].min() if not messages_df.empty else None
+            date_max_dt = messages_df['timestamp'].max() if not messages_df.empty else None
+            if date_min_dt is not None and date_max_dt is not None:
                 date_min = date_min_dt.strftime('%m/%d')
                 date_max = date_max_dt.strftime('%m/%d')
                 total_days = (date_max_dt.date() - date_min_dt.date()).days + 1
                 date_range = f"{date_min} - {date_max} ({total_days} days)"
             else:
+                date_min = date_max = "N/A"
+                total_days = 0
                 date_range = "N/A"
             st.header("Overview")
             st.caption(f"Date Range: {date_min} - {date_max}")
@@ -805,24 +1066,55 @@ def main():
             with col4:
                 total_tokens = metrics.get('total_tokens', 0)
                 st.metric(label="Total Tokens", value=f"{total_tokens:,}")                
+            token_fig = create_token_consumption_chart(messages_df)
+            if token_fig and len(token_fig.data) > 0:
+                st.plotly_chart(token_fig, use_container_width=True, key="token_consumption_chart")
+            else:
+                st.info("Token consumption chart unavailable - insufficient timestamped data.")
             # Visual divider between overview and analysis
             st.markdown('---')
 
-            st.subheader("Model Usage Analysis")
-            model_data = messages_df[messages_df['model'] != '']
+            model_data = messages_df[
+                (messages_df['role'] == 'assistant') & (messages_df['model'] != '')
+            ]
             if model_data.empty:
                 st.warning("ℹ️ No model information available in the uploaded data")
             else:
-                col1, col2 = st.columns([2, 1])
+                col1, col2 = st.columns(2)
                 with col1:
+                    st.subheader("Model Usage Analysis")
                     model_fig = create_model_usage_chart(messages_df)
                     st.plotly_chart(model_fig, use_container_width=True, key="model_usage_chart")
                 with col2:
                     st.subheader("Model Statistics")
-                    model_stats = model_data['model'].value_counts()
-                    for model, count in model_stats.head(5).items():
-                        percentage = (count / len(messages_df)) * 100 if len(messages_df) else 0
-                        st.write(f"{model}: {count:,} ({percentage:.1f}%)")
+                    model_stats_fig = create_model_usage_pie(messages_df)
+                    st.plotly_chart(model_stats_fig, use_container_width=True, key="model_usage_pie")
+
+            st.subheader("User Analysis")
+            top_users_df = compute_top_users(chats_df, messages_df, top_n=10)
+            adoption_fig = create_user_adoption_chart(chats_df, messages_df, date_min_dt, date_max_dt)
+            col_users, col_chart = st.columns([1.2, 1])
+            with col_users:
+                if top_users_df.empty:
+                    st.info("No user activity found for analysis.")
+                else:
+                    display_df = top_users_df.rename(columns={
+                        "user": "User",
+                        "chat_count": "Chats",
+                        "message_count": "Messages",
+                        "token_percentage": "Token %"
+                    })
+                    formatted_df = display_df.style.format({
+                        "Chats": "{:,.0f}",
+                        "Messages": "{:,.0f}",
+                        "Token %": "{:.1f}%"
+                    })
+                    st.dataframe(formatted_df, use_container_width=True)
+            with col_chart:
+                if adoption_fig is None:
+                    st.info("Need user messages with timestamps to plot adoption.")
+                else:
+                    st.plotly_chart(adoption_fig, use_container_width=True, key="user_adoption_chart")
 
             # Visual divider between model usage and model selection
             st.markdown('---')
