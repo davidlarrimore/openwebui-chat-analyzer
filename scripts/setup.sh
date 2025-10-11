@@ -231,7 +231,7 @@ check_docker_setup() {
 
 # Check for Python setup
 check_python_setup() {
-    if [ -d "venv" ] && [ -f "openwebui_chat_analyzer.py" ]; then
+    if [ -d "venv" ] && [ -f "frontend/app.py" ]; then
         return 0
     fi
     return 1
@@ -242,7 +242,7 @@ start_docker_make() {
     print_info "🐳 Starting with Docker using Make..."
     
     # Check if already running
-    if docker ps --filter name=openwebui-chat-analyzer --format "table {{.Names}}" | grep -q openwebui-chat-analyzer; then
+    if docker ps --filter name=openwebui-chat-analyzer-frontend --format "table {{.Names}}" | grep -q openwebui-chat-analyzer-frontend; then
         print_warning "Container already running. Checking status..."
         make logs
         return 0
@@ -272,9 +272,9 @@ start_docker_compose() {
     print_info "🐳 Starting with Docker Compose..."
     
     # Check if already running
-    if docker ps --filter name=openwebui-chat-analyzer --format "table {{.Names}}" | grep -q openwebui-chat-analyzer; then
-        print_warning "Container already running at http://localhost:8501"
-        docker-compose logs --tail=20 openwebui-chat-analyzer
+    if docker ps --filter name=openwebui-chat-analyzer-frontend --format "table {{.Names}}" | grep -q openwebui-chat-analyzer-frontend; then
+        print_warning "Frontend container already running at http://localhost:8501"
+        docker compose logs --tail=20 openwebui-chat-analyzer-frontend 2>/dev/null || docker-compose logs --tail=20 openwebui-chat-analyzer-frontend
         return 0
     fi
     
@@ -317,9 +317,9 @@ start_python() {
     source venv/bin/activate
 
     # Check if the main Python file exists
-    if [ ! -f "openwebui_chat_analyzer.py" ]; then
-        print_error "openwebui_chat_analyzer.py not found!"
-        echo "Please ensure the analyzer file is in the same directory as this script."
+    if [ ! -f "frontend/app.py" ]; then
+        print_error "frontend/app.py not found!"
+        echo "Please ensure the frontend application is present."
         exit 1
     fi
 
@@ -338,10 +338,11 @@ start_python() {
     # Start the Streamlit app
     print_status "🚀 Starting Open WebUI Chat Analyzer..."
     print_info "📊 Dashboard will open at: http://localhost:8501"
+    print_info "⚙️  Start the FastAPI backend separately with: uvicorn backend.app:app --reload --port 8502"
     print_info "🛑 Press Ctrl+C to stop the server"
     echo ""
 
-    streamlit run openwebui_chat_analyzer.py \
+    streamlit run frontend/app.py \
         --server.address=localhost \
         --server.port=8501 \
         --server.headless=true \
@@ -497,7 +498,7 @@ else
     print_info "Project structure:"
     echo "  📁 $(pwd)"
     echo "  ├── 🐍 venv/              (Python virtual environment)"
-    echo "  ├── 📊 openwebui_chat_analyzer.py (Main application)"
+    echo "  ├── 📊 frontend/app.py (Streamlit frontend)"
     echo "  ├── 🚀 run.sh    (Launcher script)"
     echo "  ├── 📋 requirements.txt   (Dependencies)"
     echo "  ├── ⚙️  config.yaml       (Configuration)"

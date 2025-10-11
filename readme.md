@@ -4,19 +4,28 @@ Streamlit dashboard for exploring Open WebUI chat exports locally.
 
 ## Highlights
 
-- Works entirely offline; your exports never leave your machine
-- Auto-loads the latest `all-chats-export-*.json` from `data/` and supports an optional `users.csv` for friendly names
+- Local FastAPI backend plus Streamlit UI—your exports never leave your machine
+- Backend auto-loads the latest `all-chats-export-*.json` from `data/` and supports an optional `users.csv` for friendly names
 - Overview metrics for chats, messages, per-role activity, file uploads, and approximate token volume
 - Filters every visualization by Open WebUI user and model
 - Time analysis (daily trend, conversation length, hour-by-day heatmap) and content analysis (word cloud, message length)
 - Sentiment breakdown with TextBlob plus full-text search, paginated browsing, and per-thread JSON downloads
 - CSV exports for both chat metadata and individual messages
 
+## Configuration
+
+1. Copy `.env.example` to `.env`.
+2. Adjust values as needed:
+   - `OWUI_API_BASE_URL` – URL the Streamlit UI should use. Use `http://localhost:8502` for local runs or `http://backend:8502` when using Docker Compose.
+   - `OWUI_API_ALLOWED_ORIGINS` – Comma-separated list of origins permitted to call the FastAPI backend.
+   - `OWUI_DATA_DIR` – Directory where default exports live (relative to the project root).
+3. Restart the backend (and Streamlit) after changing environment variables.
+
 ## Input Data
 
 - `all-chats-export-*.json` from Open WebUI: Admin Panel → **Settings → Data & Privacy → Export All Chats**
 - Optional `users.csv` from Admin Panel → **Settings → Database → Export Users** — needs `user_id` and a name column
-- Place files in `data/` to auto-load on startup or upload them through the interface; uploads land under `uploads/`
+- Place files in `data/` for the backend to auto-load on startup or upload them through the interface; uploads are forwarded to the API and stored under `uploads/`
 
 ## Quick Start
 
@@ -25,24 +34,23 @@ Streamlit dashboard for exploring Open WebUI chat exports locally.
 ```bash
 git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
 cd openwebui-chat-analyzer
+cp .env.example .env          # optional: set OWUI_API_BASE_URL to http://backend:8502 for docker compose
 make up            # or: docker compose up -d
 ```
 
-The app listens on `http://localhost:8501`. Use `make down` to stop, `make logs` to tail the container, and `make help` for the complete command catalog.
-The compose stack now bind-mounts `openwebui_chat_analyzer.py`, so code changes land immediately without rebuilding the image.
+The Streamlit UI listens on `http://localhost:8501` and the FastAPI backend on `http://localhost:8502`. Use `make down` to stop, `make logs` to tail the container, and `make help` for the complete command catalog.
+The compose stack now bind-mounts the `frontend/` directory, so Streamlit changes land immediately without rebuilding.
 
 ### Handy Make Commands
 
 - `make help` – List every available helper target with a short description.
-- `make up` / `make down` – Start or stop the docker compose stack.
-- `make logs` / `make logs-dev` – Follow logs for the production or dev containers.
-- `make dev` / `make dev-detached` – Launch the live-reload development profile (foreground/background).
-- `make restart` / `make quick-fix` – Restart containers or rebuild + restart when things get stuck.
-- `make status` / `make ps` – Show container status at a glance.
-- `make backup` / `make restore BACKUP=...` – Snapshot and restore the mounted data directory.
-- `make clean` / `make clean-all` – Remove containers, with the latter also pruning volumes and images.
-- `make update` – Pull latest sources and rebuild the compose stack.
-- `make fix-permissions` – Reset `matplotlib` and data directory ownership inside running containers.
+- `make up` / `make down` – Start or stop both backend and frontend services.
+- `make up-frontend` / `make up-backend` – Launch a single service.
+- `make build` / `make rebuild` – Build images (all) or rebuild and restart.
+- `make destroy` – Remove all services, volumes, and orphan containers.
+- `make logs` / `make logs-frontend` / `make logs-backend` – Tail logs.
+- `make restart` / `make restart-frontend` / `make restart-backend` – Restart running services.
+- `make dev` – Start the backend plus the hot-reload frontend profile.
 
 Run `make help` for the full list (build, deploy, debug, tooling helpers, etc.).
 
@@ -54,13 +62,28 @@ cd openwebui-chat-analyzer
 python3 -m venv venv && source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+cp .env.example .env
 python -m textblob.download_corpora   # first run only
-streamlit run openwebui_chat_analyzer.py
+uvicorn backend.app:app --reload --port 8502  # terminal 1
+streamlit run frontend/app.py
 ```
+
+Run the backend and Streamlit UI in separate terminals (or background the FastAPI process) so the dashboard can reach `http://localhost:8502`.
 
 ### Option C – Guided setup scripts
 
 Run `scripts/setup.sh` for an interactive wizard that can prepare either Docker or the virtual environment. After setup, use the `make` targets (`make up`, `make down`, `make logs`, etc.) for day-to-day lifecycle commands.
+
+## Backend API
+
+The Streamlit front-end now talks to a FastAPI service that normalizes and serves the chat exports. Key endpoints:
+
+- `GET /api/v1/datasets/meta` – current dataset identifier, row counts, source label, and last updated timestamp.
+- `GET /api/v1/chats` / `GET /api/v1/messages` / `GET /api/v1/users` – hydrated chat metadata, messages, and optional user directory.
+- `POST /api/v1/uploads/chat-export` – upload a new `all-chats-export*.json`; replaces the in-memory dataset and bumps the dataset id.
+- `POST /api/v1/uploads/users` – upload a companion `users.csv` for friendly display names.
+
+Run `uvicorn backend.app:app --reload` during development to keep the API available to the dashboard.
 
 ## Dashboard Tour
 
@@ -89,19 +112,20 @@ Run `scripts/setup.sh` for an interactive wizard that can prepare either Docker 
 
 ## Development Notes
 
-- `docker-compose.yml` defines production, development (live reload), and optional Nginx proxy profiles. Use `docker compose --profile development up openwebui-chat-analyzer-dev` or `make dev` for auto-reload.
-- The `Makefile` centralizes build, run, backup, and diagnostic commands — start with `make help`.
-- Python dependencies live in `requirements.txt`. The Dockerfile pre-installs TextBlob corpora and runs the app as a non-root user.
+- `docker-compose.yml` defines production, development (live reload), and optional Nginx proxy profiles. Use `docker compose --profile development up frontend-dev` or `make dev` for auto-reload.
+- The `Makefile` centralizes build and lifecycle commands — start with `make help`.
+- Python dependencies are split between `backend/requirements.txt` and `frontend/requirements.txt` (aggregate via root `requirements.txt`). The multi-stage Dockerfile builds dedicated images for each service and downloads the TextBlob corpora for the Streamlit frontend.
 
 ## Privacy & Storage
 
-The analyzer never makes network calls; everything happens on your machine. Uploaded files stay under the repository (`data/` and `uploads/`) until you remove them.
+All requests stay on your machine—the Streamlit UI only talks to the bundled FastAPI service. Uploaded files remain under the repository (`data/` and `uploads/`) until you remove them.
 
 ## Troubleshooting
 
 - If Streamlit crashes during sentiment analysis, install the TextBlob corpora with `python -m textblob.download_corpora`.
 - Some environments need a font package for `wordcloud`; installing system fonts (for example `sudo apt-get install fonts-dejavu`) fixes blank visuals.
 - Adjust `STREAMLIT_SERVER_PORT` or the Docker port mapping if 8501 is already in use.
+- Seeing “Unable to connect to the backend API”? Make sure `uvicorn backend.app:app --port 8502` (or the Docker `backend` service) is running and reachable.
 
 ## License
 

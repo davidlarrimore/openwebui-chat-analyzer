@@ -7,27 +7,36 @@ Installation:
 pip install streamlit pandas plotly wordcloud textblob networkx
 
 Usage:
-streamlit run openwebui_chat_analyzer.py
+streamlit run frontend/app.py
 """
 
-import streamlit as st
-import pandas as pd
+import base64
+import html
 import json
-import requests
+import math
+import os
+import re
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta
+from urllib.parse import urlparse
+
+import networkx as nx
+import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
+import streamlit as st
 from plotly.subplots import make_subplots
-import numpy as np
-import math
-from datetime import datetime, timedelta
-from collections import Counter, defaultdict
-import re
 from textblob import TextBlob
 from wordcloud import WordCloud
-import networkx as nx
-import base64
-from io import BytesIO
-from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from a `.env` file if present.
+load_dotenv()
+
+OPENWEBUI_DEFAULT_HOST = os.getenv("OWUI_DIRECT_HOST", "http://localhost:3000").strip() or "http://localhost:3000"
+OPENWEBUI_DEFAULT_API_KEY = os.getenv("OWUI_DIRECT_API_KEY", "").strip()
 
 # Configure page
 st.set_page_config(
@@ -45,162 +54,174 @@ def create_header():
     st.subheader("Transform your conversation data into actionable insights with beautiful visualizations")
 
 
-def _read_file_source_bytes(file_source):
-    """Return raw bytes for multiple supported file input types."""
-    if file_source is None:
-        return None
-    if isinstance(file_source, Path):
-        return file_source.read_bytes()
-    if isinstance(file_source, str):
-        return Path(file_source).read_bytes()
-    if isinstance(file_source, bytes):
-        return file_source
-    if hasattr(file_source, "getvalue"):
-        raw = file_source.getvalue()
-        return raw if isinstance(raw, bytes) else raw.encode("utf-8")
-    if hasattr(file_source, "read"):
-        raw = file_source.read()
-        if hasattr(file_source, "seek"):
-            file_source.seek(0)
-        return raw if isinstance(raw, bytes) else raw.encode("utf-8")
-    raise ValueError("Unsupported file source type")
-
-
-@st.cache_data
-def _parse_chat_export(raw_bytes):
-    """Parse raw chat export bytes into chat and message DataFrames."""
-    if raw_bytes is None:
-        raise ValueError("No data found in provided file source")
-
-    text = raw_bytes.decode("utf-8")
-    data = json.loads(text)
-
-    # Initialize lists for different data types
-    chats = []
-    messages = []
-
-    # Process each chat
-    for item in data:
-        chat_info = {
-            'chat_id': item.get('id', ''),
-            'user_id': item.get('user_id', ''),
-            'title': item.get('title', ''),
-            'created_at': pd.to_datetime(item.get('created_at', 0), unit='s'),
-            'updated_at': pd.to_datetime(item.get('updated_at', 0), unit='s'),
-            'archived': item.get('archived', False),
-            'pinned': item.get('pinned', False),
-            'tags': item.get('meta', {}).get('tags', []),
-            'files_uploaded': len(item.get('chat', {}).get('files', [])),
-            'files': item.get('chat', {}).get('files', []),
-        }
-        chats.append(chat_info)
-
-        # Process messages in this chat
-        chat_data = item.get('chat', {})
-        chat_messages = chat_data.get('messages', [])
-
-        for msg in chat_messages:
-            message_info = {
-                'chat_id': item.get('id', ''),
-                'message_id': msg.get('id', ''),
-                'parent_id': msg.get('parentId'),
-                'role': msg.get('role', ''),
-                'content': msg.get('content', ''),
-                'timestamp': pd.to_datetime(msg.get('timestamp', 0), unit='s'),
-                'model': msg.get('model', ''),
-                'models': msg.get('models', [])
-            }
-            messages.append(message_info)
-
-    # Create DataFrames
-    chats_df = pd.DataFrame(chats)
-    messages_df = pd.DataFrame(messages)
-
-    return chats_df, messages_df
-
-
-def load_and_process_data(file_source):
-    """Load and process Open WebUI JSON data."""
-    try:
-        raw_bytes = _read_file_source_bytes(file_source)
-        return _parse_chat_export(raw_bytes)
-    except Exception as e:
-        st.error(f"Error processing data: {str(e)}")
-        return None, None
-
+def trigger_rerun():
+    """Trigger a Streamlit rerun compatible across versions."""
+    rerun_fn = getattr(st, "experimental_rerun", None) or getattr(st, "rerun", None)
+    if rerun_fn is not None:
+        rerun_fn()
 
 ALL_USERS_OPTION = "__ALL_USERS__"
 ALL_MODELS_OPTION = "All Models"
 
-def find_default_chat_export():
-    """Locate the most recent default chat export in the data directory."""
-    data_dir = Path(__file__).parent / "data"
-    if not data_dir.exists():
-        return None
+class BackendError(Exception):
+    """Custom exception raised when the backend API is unreachable or returns an error."""
 
-    exports = sorted(
-        data_dir.glob("all-chats-export*.json"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    return exports[0] if exports else None
 
-@st.cache_data
-def _parse_user_csv(raw_bytes):
-    """Parse raw CSV bytes into a normalized users DataFrame."""
-    if raw_bytes is None:
-        raise ValueError("No data found in provided CSV source")
+def get_api_base_url_candidates():
+    """Return backend API base URLs to try in priority order."""
+    secrets_url = None
+    secrets_source = getattr(st, "secrets", None)
+    if secrets_source is not None:
+        try:
+            secrets_url = secrets_source.get("api_base_url")
+        except Exception:
+            secrets_url = None
 
-    csv_buffer = BytesIO(raw_bytes)
-    users_df = pd.read_csv(csv_buffer)
+    if secrets_url:
+        base_url = str(secrets_url).rstrip("/")
+    else:
+        env_url = os.getenv("OWUI_API_BASE_URL")
+        base_url = env_url.rstrip("/") if env_url else "http://localhost:8502"
+
+    candidates = [base_url]
+
+    fallback_env = os.getenv("OWUI_API_BASE_URL_FALLBACK")
+    if fallback_env:
+        fallback_clean = fallback_env.rstrip("/")
+        if fallback_clean and fallback_clean not in candidates:
+            candidates.append(fallback_clean)
+
+    parsed = urlparse(base_url)
+    if parsed.hostname == "backend":
+        local_fallback = os.getenv("OWUI_LOCAL_API_BASE_URL", "http://localhost:8502").rstrip("/")
+        if local_fallback and local_fallback not in candidates:
+            candidates.append(local_fallback)
+
+    return candidates
+
+
+def get_api_base_url() -> str:
+    """Resolve the configured API base URL."""
+    return get_api_base_url_candidates()[0]
+
+
+def _request_backend(path: str, method: str = "GET", **kwargs):
+    """Execute a request against the backend API."""
+    response = None
+    last_exc = None
+    for base_url in get_api_base_url_candidates():
+        url = f"{base_url}{path}"
+        try:
+            response = requests.request(method=method.upper(), url=url, timeout=30, **kwargs)
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            detail = ""
+            if exc.response is not None:
+                try:
+                    payload = exc.response.json()
+                except ValueError:
+                    payload = None
+                if isinstance(payload, dict):
+                    detail_value = payload.get("detail")
+                    if detail_value:
+                        detail = str(detail_value)
+                if not detail:
+                    text = exc.response.text.strip()
+                    if text:
+                        detail = text
+            message = f"Backend request failed: {exc}"
+            if detail:
+                message = f"{message} - {detail}"
+            raise BackendError(message) from exc
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            continue
+        else:
+            break
+    else:
+        raise BackendError(f"Backend request failed: {last_exc}") from last_exc
+
+    try:
+        assert response is not None  # for type checkers
+    except AssertionError:
+        raise BackendError("Backend request failed due to an unknown error.")
+
+    if response.status_code == 204 or method.upper() == "HEAD":
+        return {}
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise BackendError("Backend returned an invalid JSON response.") from exc
+
+
+def fetch_dataset_metadata():
+    """Fetch dataset metadata from the backend."""
+    return _request_backend("/api/v1/datasets/meta")
+
+
+def sync_openwebui_dataset(hostname: str, api_key: str):
+    """Trigger a direct sync from an Open WebUI instance."""
+    payload = {"hostname": hostname}
+    token = (api_key or "").strip()
+    if token:
+        payload["api_key"] = token
+    return _request_backend("/api/v1/openwebui/sync", method="POST", json=payload)
+
+
+@st.cache_data(show_spinner=False)
+def load_and_process_data(dataset_id: str):
+    """Fetch chats and messages from the backend and convert them into DataFrames."""
+    chats_payload = _request_backend("/api/v1/chats")
+    messages_payload = _request_backend("/api/v1/messages")
+
+    chats_df = pd.DataFrame(chats_payload)
+    messages_df = pd.DataFrame(messages_payload)
+
+    if not chats_df.empty:
+        for column in ("created_at", "updated_at"):
+            if column in chats_df.columns:
+                chats_df[column] = pd.to_datetime(chats_df[column])
+
+    if not messages_df.empty and "timestamp" in messages_df.columns:
+        messages_df["timestamp"] = pd.to_datetime(messages_df["timestamp"])
+
+    return chats_df, messages_df
+
+
+@st.cache_data(show_spinner=False)
+def load_user_data(dataset_id: str):
+    """Fetch user metadata from the backend."""
+    users_payload = _request_backend("/api/v1/users")
+    users_df = pd.DataFrame(users_payload)
     if users_df.empty:
         return pd.DataFrame(columns=["user_id", "name"])
 
-    users_df.columns = [str(col).strip().lower() for col in users_df.columns]
-    id_col = None
-    for candidate in ("user_id", "id"):
-        if candidate in users_df.columns:
-            id_col = candidate
-            break
-    if id_col is None:
-        raise ValueError("CSV must contain a 'user_id' or 'id' column")
-
-    name_col = None
-    for candidate in ("name", "full_name", "display_name", "username"):
-        if candidate in users_df.columns:
-            name_col = candidate
-            break
-
-    if name_col is None:
-        raise ValueError("CSV must contain a column with user names (e.g. 'name')")
-
-    users_df = users_df[[id_col, name_col]].rename(columns={id_col: "user_id", name_col: "name"})
-    users_df = users_df.dropna(subset=["user_id"]).drop_duplicates(subset=["user_id"], keep="first")
     users_df["user_id"] = users_df["user_id"].astype(str)
-    users_df["name"] = users_df["name"].astype(str).str.strip()
+    users_df["name"] = users_df["name"].astype(str)
     return users_df
 
 
-def load_user_data(file_source):
-    """Load optional user metadata from CSV."""
-    if file_source is None:
-        return pd.DataFrame(columns=["user_id", "name"])
-
-    try:
-        raw_bytes = _read_file_source_bytes(file_source)
-        return _parse_user_csv(raw_bytes)
-    except Exception as e:
-        st.warning(f"Unable to load user CSV: {e}")
-        return pd.DataFrame(columns=["user_id", "name"])
+def upload_chat_export(file_obj):
+    """Upload a new chat export file to the backend."""
+    filename = getattr(file_obj, "name", "chat_export.json")
+    filetype = getattr(file_obj, "type", None) or "application/json"
+    file_bytes = file_obj.getvalue() if hasattr(file_obj, "getvalue") else file_obj.read()
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+    files = {"file": (filename, file_bytes, filetype)}
+    return _request_backend("/api/v1/uploads/chat-export", method="POST", files=files)
 
 
-def find_default_users_file():
-    """Locate a default users.csv file in the data directory if present."""
-    data_dir = Path(__file__).parent / "data"
-    if not data_dir.exists():
-        return None
-    users_file = data_dir / "users.csv"
-    return users_file if users_file.exists() else None
+def upload_users_csv(file_obj):
+    """Upload a users CSV file to the backend."""
+    filename = getattr(file_obj, "name", "users.csv")
+    filetype = getattr(file_obj, "type", None) or "text/csv"
+    file_bytes = file_obj.getvalue() if hasattr(file_obj, "getvalue") else file_obj.read()
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+    files = {"file": (filename, file_bytes, filetype)}
+    return _request_backend("/api/v1/uploads/users", method="POST", files=files)
 
 
 def reset_model_filter():
@@ -601,7 +622,7 @@ def compute_top_users(chats_df, messages_df, top_n=10):
     return summary
 
 def create_user_adoption_chart(chats_df, messages_df, date_min=None, date_max=None):
-    """Create a cumulative user adoption chart based on first user message."""
+    """Create a cumulative user adoption chart showing daily growth."""
     if chats_df.empty or messages_df.empty:
         return None
 
@@ -618,39 +639,95 @@ def create_user_adoption_chart(chats_df, messages_df, date_min=None, date_max=No
     if user_messages.empty:
         return None
 
+    user_messages["timestamp"] = pd.to_datetime(
+        user_messages["timestamp"], errors="coerce"
+    )
+    user_messages = user_messages.dropna(subset=["timestamp"])
+    if user_messages.empty:
+        return None
+
     first_message_dates = (
         user_messages.groupby("user_display")["timestamp"]
         .min()
         .dropna()
         .reset_index()
-        .sort_values("timestamp")
     )
     if first_message_dates.empty:
         return None
 
-    first_message_dates["cumulative_users"] = np.arange(1, len(first_message_dates) + 1)
+    first_message_dates["first_date"] = first_message_dates["timestamp"].dt.normalize()
+    daily_new_users = (
+        first_message_dates.groupby("first_date")
+        .size()
+        .rename("new_users")
+        .reset_index()
+        .sort_values("first_date")
+    )
+    daily_new_users["cumulative_users"] = daily_new_users["new_users"].cumsum()
+
+    if daily_new_users.empty:
+        return None
+
+    first_activity_date = daily_new_users["first_date"].min()
+    start_date = first_activity_date - pd.Timedelta(days=1)
+
+    if date_max is not None:
+        end_date = pd.to_datetime(date_max).normalize()
+    else:
+        end_date = daily_new_users["first_date"].max()
+
+    if start_date is None or end_date is None:
+        return None
+
+    all_dates = pd.date_range(start=start_date, end=end_date, freq="D")
+    if all_dates.empty:
+        return None
+
+    daily_adoption = pd.DataFrame({"date": all_dates})
+    daily_adoption = daily_adoption.merge(
+        daily_new_users.rename(columns={"first_date": "date"})[["date", "cumulative_users"]],
+        on="date",
+        how="left"
+    )
+    daily_adoption["cumulative_users"] = daily_adoption["cumulative_users"].ffill().fillna(0)
+    daily_adoption["cumulative_users"] = daily_adoption["cumulative_users"].astype(int)
+    daily_adoption["new_users"] = daily_adoption["cumulative_users"].diff().fillna(daily_adoption["cumulative_users"])
+    daily_adoption["new_users"] = daily_adoption["new_users"].astype(int)
 
     fig = px.line(
-        first_message_dates,
-        x="timestamp",
+        daily_adoption,
+        x="date",
         y="cumulative_users",
-        markers=True
+        markers=True,
+        custom_data=["new_users"]
     )
     fig.update_traces(line_color="#10b981", line_width=3)
     fig.update_layout(
         template="plotly_white",
         hovermode="x unified",
         showlegend=False,
-        xaxis_title="First Message Date",
+        xaxis_title="Date",
         yaxis_title="Cumulative Users",
         font=dict(family="Inter, sans-serif"),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(t=30, l=50, r=50, b=50)
+        margin=dict(t=30, l=50, r=50, b=50),
+        hoverlabel=dict(bgcolor="rgba(17,24,39,0.9)", font=dict(color="white"))
+    )
+    fig.update_xaxes(
+        tickmode="linear",
+        dtick=24 * 60 * 60 * 1000,
+        tickformat="%b %d"
+    )
+    fig.update_traces(
+        hovertemplate=(
+            "%{x|%b %d, %Y}<br>"
+            "Cumulative Users: %{y}<br>"
+            "New Users: %{customdata[0]}"
+        )
     )
 
-    if date_min is not None and date_max is not None:
-        fig.update_xaxes(range=[date_min, date_max])
+    fig.update_xaxes(range=[start_date, end_date])
 
     return fig
 
@@ -918,14 +995,202 @@ def main():
     # Create modern header
     create_header()
     
-    default_export_path = find_default_chat_export()
-    default_users_path = find_default_users_file()
+    try:
+        dataset_meta = fetch_dataset_metadata()
+    except BackendError as exc:
+        st.error(
+            "Unable to connect to the backend API. "
+            "Ensure the FastAPI service is running and reachable at "
+            f"`{get_api_base_url()}`.\n\nDetails: {exc}"
+        )
+        st.stop()
+
+    dataset_id = dataset_meta.get("dataset_id", "unknown")
+    app_metadata = dataset_meta.get("app_metadata") or {}
+    raw_dataset_source = dataset_meta.get("source", "")
+    dataset_source_label = app_metadata.get("dataset_source") or raw_dataset_source or "Unknown source"
+
+    def _format_timestamp(value) -> str:
+        if not value:
+            return "N/A"
+        try:
+            ts_value = pd.to_datetime(value)
+        except Exception:
+            return str(value)
+        if pd.isna(ts_value):
+            return "N/A"
+        if getattr(ts_value, "tzinfo", None) is None:
+            return ts_value.strftime("%Y-%m-%d %H:%M")
+        return ts_value.tz_convert("UTC").strftime("%Y-%m-%d %H:%M UTC")
+
+    def _format_relative_time(value) -> str:
+        if not value:
+            return ""
+        try:
+            ts_value = pd.to_datetime(value)
+        except Exception:
+            return ""
+        if pd.isna(ts_value):
+            return ""
+        try:
+            if getattr(ts_value, "tzinfo", None) is None:
+                ts_value = ts_value.tz_localize("UTC")
+            else:
+                ts_value = ts_value.tz_convert("UTC")
+        except Exception:
+            try:
+                ts_value = pd.Timestamp(ts_value).tz_localize("UTC")
+            except Exception:
+                return ""
+        now = pd.Timestamp.now(tz="UTC")
+        delta = now - ts_value
+        seconds = max(delta.total_seconds(), 0.0)
+        if seconds < 60:
+            return "1 minute ago"
+        minutes = int(seconds // 60)
+        if minutes < 60:
+            minutes = max(1, minutes)
+            unit = "minute" if minutes == 1 else "minutes"
+            return f"{minutes} {unit} ago"
+        hours = int(seconds // 3600)
+        if hours < 24:
+            hours = max(1, hours)
+            unit = "hour" if hours == 1 else "hours"
+            return f"{hours} {unit} ago"
+        days = max(1, int(seconds // 86400))
+        unit = "day" if days == 1 else "days"
+        return f"{days} {unit} ago"
+
+    def _format_day(value) -> str:
+        if not value:
+            return "N/A"
+        try:
+            dt_value = pd.to_datetime(value)
+        except Exception:
+            return str(value)
+        if pd.isna(dt_value):
+            return "N/A"
+        return dt_value.strftime("%Y-%m-%d")
+
+    chat_uploaded_display = _format_timestamp(app_metadata.get("chat_uploaded_at"))
+    users_uploaded_display = _format_timestamp(app_metadata.get("users_uploaded_at"))
+    dataset_pulled_value = app_metadata.get("dataset_pulled_at")
+    dataset_pulled_display = _format_timestamp(dataset_pulled_value)
+    dataset_pulled_relative = _format_relative_time(dataset_pulled_value)
+    first_day_display = _format_day(app_metadata.get("first_chat_day"))
+    last_day_display = _format_day(app_metadata.get("last_chat_day"))
+
+    if first_day_display == "N/A" and last_day_display == "N/A":
+        range_display = "N/A"
+    elif first_day_display != "N/A" and last_day_display != "N/A":
+        range_display = f"{first_day_display} - {last_day_display}"
+    else:
+        range_display = first_day_display if last_day_display == "N/A" else last_day_display
+
+    chat_count_meta = app_metadata.get("chat_count", dataset_meta.get("chat_count", 0))
+    user_count_meta = app_metadata.get("user_count", dataset_meta.get("user_count", 0))
+    try:
+        chat_count_display = f"{int(chat_count_meta):,}"
+    except (TypeError, ValueError):
+        chat_count_display = str(chat_count_meta)
+    try:
+        user_count_display = f"{int(user_count_meta):,}"
+    except (TypeError, ValueError):
+        user_count_display = str(user_count_meta)
+    dataset_ready = chat_count_meta > 0
+
+    normalized_source_label = (dataset_source_label or "").strip()
+    normalized_source_lower = normalized_source_label.lower()
+    normalized_raw_source = (raw_dataset_source or "").strip()
+    is_url_source = normalized_source_label.startswith(("http://", "https://"))
+    is_openwebui_source = normalized_raw_source.startswith("openwebui:")
+    is_file_upload_source = (
+        normalized_source_lower == "local upload"
+        or normalized_raw_source.startswith(("upload:", "default:", "json:", "chat export"))
+    )
+    if is_url_source or is_openwebui_source:
+        dataset_source_type = "Direct Connect"
+        dataset_source_detail = (
+            normalized_source_label
+            if is_url_source
+            else normalized_raw_source.split(":", 1)[1].strip() if ":" in normalized_raw_source else normalized_source_label
+        )
+    elif is_file_upload_source and dataset_ready:
+        dataset_source_type = "File Upload"
+        if ":" in normalized_raw_source:
+            dataset_source_detail = normalized_raw_source.split(":", 1)[1].strip()
+        else:
+            dataset_source_detail = normalized_source_label if normalized_source_lower not in {"local upload"} else ""
+    elif dataset_ready and normalized_source_label and normalized_source_lower not in {"unknown source", ""}:
+        dataset_source_type = normalized_source_label
+        dataset_source_detail = ""
+    else:
+        dataset_source_type = "Not Loaded"
+        dataset_source_detail = ""
+
+    default_hostname = OPENWEBUI_DEFAULT_HOST
+    prev_default_hostname = st.session_state.get("_openwebui_hostname_default")
+    current_hostname = st.session_state.get("openwebui_hostname")
+    if prev_default_hostname != default_hostname:
+        if current_hostname in (None, "", prev_default_hostname):
+            st.session_state["openwebui_hostname"] = default_hostname
+        st.session_state["_openwebui_hostname_default"] = default_hostname
+    else:
+        st.session_state.setdefault("openwebui_hostname", default_hostname)
+
+    default_api_key = OPENWEBUI_DEFAULT_API_KEY
+    prev_default_api_key = st.session_state.get("_openwebui_api_key_default")
+    current_api_key = st.session_state.get("openwebui_api_key")
+    if prev_default_api_key != default_api_key:
+        if current_api_key in (None, "", prev_default_api_key):
+            st.session_state["openwebui_api_key"] = default_api_key
+        st.session_state["_openwebui_api_key_default"] = default_api_key
+    else:
+        st.session_state.setdefault("openwebui_api_key", default_api_key)
+
+    direct_connect_active = dataset_ready and dataset_source_type == "Direct Connect"
+    direct_connect_label = "🔌 Direct Connect to Open WebUI"
+    if direct_connect_active:
+        direct_connect_label += " ✅"
+
+    with st.expander(direct_connect_label, expanded=not dataset_ready):
+        st.write(
+            "Pull the latest chats and user records directly from an Open WebUI instance. "
+            "Provide the base URL and an API key with sufficient permissions."
+        )
+        hostname = st.text_input(
+            "Hostname",
+            key="openwebui_hostname",
+            help="Example: http://localhost:3000"
+        )
+        api_key = st.text_input(
+            "API Key (Bearer token)",
+            key="openwebui_api_key",
+            type="password",
+            help="Generate this token from Open WebUI settings."
+        )
+        if st.button("Go", key="openwebui_sync_button"):
+            trimmed_host = hostname.strip()
+            if not trimmed_host:
+                st.error("Hostname is required to connect to Open WebUI.")
+            else:
+                with st.spinner("🔌 Connecting to Open WebUI..."):
+                    try:
+                        sync_openwebui_dataset(trimmed_host, api_key)
+                    except BackendError as exc:
+                        st.error(f"Failed to sync data: {exc}")
+                    else:
+                        load_and_process_data.clear()
+                        load_user_data.clear()
+                        st.toast("Open WebUI data synced successfully!", icon="✅")
+                        trigger_rerun()
 
     chat_upload_state = st.session_state.get("chat_file_uploader")
-    chat_loaded = (default_export_path is not None) or (chat_upload_state is not None)
+    chat_loaded = dataset_ready or (chat_upload_state is not None)
+    file_upload_active = dataset_ready and dataset_source_type == "File Upload"
     expander_label = "📁 Upload Files"
-    if chat_loaded:
-        expander_label = "📁 Upload Files ✅"
+    if file_upload_active:
+        expander_label += " ✅"
 
     with st.expander(expander_label, expanded=not chat_loaded):
         st.write(
@@ -933,15 +1198,12 @@ def main():
             "**Download instructions**:\n"
             "- **Chats**: Admin Panel → Settings → Database → Export All Chats (All Users)\n"
             "- **Users**: Admin Panel → Settings → Database → Export Users\n\n"
-            "To auto-load on startup, place the downloaded files in the `/data` directory, "
-            "or upload them directly using the inputs below."
+            "Upload files directly below. Backend defaults can still be placed in the `/data` directory."
         )
 
         upload_col, users_col = st.columns([3, 2])
         with upload_col:
-            chat_has_file = (default_export_path is not None) or (st.session_state.get("chat_file_uploader") is not None)
-            chat_subheader = "Upload Chats ✅" if chat_has_file else "Upload Chats"
-            st.subheader(chat_subheader)
+            st.subheader("Upload Chats")
             uploaded_file = st.file_uploader(
                 "Select JSON file",
                 type=['json'],
@@ -949,12 +1211,20 @@ def main():
                 label_visibility="collapsed",
                 key="chat_file_uploader"
             )
-            if uploaded_file is None and default_export_path is not None:
-                st.info(f"Loaded default export from `data/{default_export_path.name}`")
+            if uploaded_file is not None:
+                with st.spinner("📤 Uploading chat export..."):
+                    try:
+                        upload_chat_export(uploaded_file)
+                    except BackendError as exc:
+                        st.error(f"Failed to upload chat export: {exc}")
+                    else:
+                        load_and_process_data.clear()
+                        load_user_data.clear()
+                        st.session_state.pop("chat_file_uploader", None)
+                        st.toast("Chat export uploaded successfully!", icon="✅")
+                        trigger_rerun()
         with users_col:
-            users_has_file = (default_users_path is not None) or (st.session_state.get("users_csv_uploader") is not None)
-            user_subheader = "Upload Users ✅" if users_has_file else "Upload Users"
-            st.subheader(user_subheader)
+            st.subheader("Upload Users")
             uploaded_users_file = st.file_uploader(
                 "Optional users CSV",
                 type=['csv'],
@@ -962,46 +1232,24 @@ def main():
                 label_visibility="collapsed",
                 key="users_csv_uploader"
             )
-            if uploaded_users_file is None and default_users_path is not None:
-                st.info(f"Loaded user directory from `data/{default_users_path.name}`")
+            if uploaded_users_file is not None:
+                with st.spinner("📤 Uploading users CSV..."):
+                    try:
+                        upload_users_csv(uploaded_users_file)
+                    except BackendError as exc:
+                        st.error(f"Failed to upload users CSV: {exc}")
+                    else:
+                        load_user_data.clear()
+                        st.session_state.pop("users_csv_uploader", None)
+                        st.toast("User data uploaded successfully!", icon="🧑")
+                        trigger_rerun()
 
-    data_source = None
-    data_label = ""
-    loaded_from_default = False
-    user_data_source = None
-    user_data_label = ""
-    user_loaded_from_default = False
-
-    if uploaded_file is not None:
-        data_source = uploaded_file
-        data_label = getattr(uploaded_file, "name", "uploaded file")
-    elif default_export_path is not None:
-        data_source = default_export_path
-        data_label = default_export_path.name
-        loaded_from_default = True
-
-    if uploaded_users_file is not None:
-        user_data_source = uploaded_users_file
-        user_data_label = getattr(uploaded_users_file, "name", "uploaded users file")
-    elif default_users_path is not None:
-        user_data_source = default_users_path
-        user_data_label = default_users_path.name
-        user_loaded_from_default = True
-    
-    if data_source is not None:
-        # Load and process data with enhanced loading state
+    if dataset_ready:
         with st.spinner("🔄 Processing chat data..."):
-            chats_df, messages_df = load_and_process_data(data_source)
-        
-        if chats_df is not None and messages_df is not None:
-            users_df = load_user_data(user_data_source)
-            if user_data_source is not None and not users_df.empty:
-                if not user_loaded_from_default:
-                    st.toast("User data loaded successfully!", icon="🧑")
-            elif user_data_source is not None and users_df.empty:
-                st.warning("User CSV was provided but no usable records were found.")
+            chats_df, messages_df = load_and_process_data(dataset_id)
 
-            st.toast(f"Data loaded successfully!", icon="✅")
+        if chats_df is not None and messages_df is not None:
+            users_df = load_user_data(dataset_id)
 
             chats_df['user_id'] = chats_df['user_id'].fillna('').astype(str)
             fallback_ids = chats_df['user_id'].replace({'nan': '', 'None': ''})
@@ -1018,9 +1266,9 @@ def main():
             messages_df['model'] = messages_df['model'].fillna('')
 
             dataset_signature = (
-                data_label or "",
+                dataset_id,
                 len(chats_df),
-                len(messages_df)
+                len(messages_df),
             )
             if st.session_state.get("dataset_signature") != dataset_signature:
                 st.session_state.user_filter = ALL_USERS_OPTION
@@ -1041,6 +1289,81 @@ def main():
                 date_min = date_max = "N/A"
                 total_days = 0
                 date_range = "N/A"
+            section_text_style = "color:#6b7280;font-size:0.85rem;line-height:1.35;"
+            header_style = "font-weight:600;color:#1d4ed8;margin-bottom:0.25rem;"
+            panel_wrapper_style = (
+                "border:1px solid #bfdbfe;border-radius:12px;overflow:hidden;margin-bottom:1rem;"
+            )
+            panel_header_style = (
+                "background-color:#f3f4f6;color:#374151;font-weight:600;font-size:1.05rem;"
+                "padding:0.75rem 1.25rem;border-bottom:1px solid #bfdbfe;"
+            )
+            panel_body_style = (
+                "background-color:#eaf2ff;padding:1rem 1.25rem;"
+            )
+            columns_wrapper_style = "display:flex;flex-wrap:wrap;gap:1.5rem;"
+            column_style = f"flex:1;min-width:220px;{section_text_style}"
+
+            detail_value = (dataset_source_detail or "").strip()
+            connection_line = f"Connection Type: {html.escape(dataset_source_type)}"
+            if dataset_source_type == "Direct Connect" and detail_value:
+                link_target = (
+                    detail_value
+                    if detail_value.startswith(("http://", "https://"))
+                    else f"https://{detail_value.lstrip('/')}"
+                )
+                safe_label = html.escape(detail_value)
+                safe_href = html.escape(link_target, quote=True)
+                connection_line = (
+                    "Connection Type: Direct Connect "
+                    f"(<a href=\"{safe_href}\" target=\"_blank\" rel=\"noopener noreferrer\">{safe_label}</a>)"
+                )
+                detail_value = ""
+            source_lines = [
+                f"<span style=\"{header_style}\">Data Source</span>",
+                connection_line,
+            ]
+            if detail_value:
+                escaped_detail = html.escape(detail_value)
+                if dataset_source_type == "Direct Connect":
+                    source_lines.append(escaped_detail)
+                else:
+                    source_lines.append(f"Source: {escaped_detail}")
+            pulled_value = dataset_pulled_display
+            if pulled_value and pulled_value not in {"N/A", "Unknown"}:
+                relative_value = dataset_pulled_relative
+                relative_suffix = f" ({html.escape(relative_value)})" if relative_value else ""
+                source_lines.append(f"Last Pulled: {html.escape(pulled_value)}{relative_suffix}")
+            source_content = "<br>".join(line for line in source_lines if line)
+
+            chat_lines = [
+                f"<span style=\"{header_style}\">Chats</span>",
+                f"Uploaded: {html.escape(chat_uploaded_display)}",
+                f"Count: {html.escape(chat_count_display)}",
+            ]
+            if range_display and range_display != "N/A":
+                chat_lines.append(f"Range: {html.escape(range_display)}")
+            chat_content = "<br>".join(line for line in chat_lines if line)
+
+            user_lines = [
+                f"<span style=\"{header_style}\">Users</span>",
+                f"Uploaded: {html.escape(users_uploaded_display)}",
+                f"Count: {html.escape(user_count_display)}",
+            ]
+            user_content = "<br>".join(line for line in user_lines if line)
+
+            panel_html = (
+                f"<div style=\"{panel_wrapper_style}\">"
+                f"<div style=\"{panel_header_style}\">Loaded Data</div>"
+                f"<div style=\"{panel_body_style}\">"
+                f"<div style=\"{columns_wrapper_style}\">"
+                f"<div style=\"{column_style}\">{source_content}</div>"
+                f"<div style=\"{column_style}\">{chat_content}</div>"
+                f"<div style=\"{column_style}\">{user_content}</div>"
+                f"</div></div></div>"
+            )
+            st.markdown(panel_html, unsafe_allow_html=True)
+            st.markdown("<div style='margin-bottom:0.5rem;'></div>", unsafe_allow_html=True)
             st.header("Overview")
             st.caption(f"Date Range: {date_min} - {date_max}")
             col1, col2, col3, col4 = st.columns(4)
@@ -1517,10 +1840,7 @@ def main():
             create_export_section(chats_df, messages_df)
     
     else:
-        if default_export_path is None:
-            st.warning("Please upload your Open WebUI JSON export file to begin analysis")
-        else:
-            st.error("Unable to load chat data.")
+        st.warning("Upload your Open WebUI JSON export file to begin analysis.")
         create_instructions()
 
 if __name__ == "__main__":
