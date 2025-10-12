@@ -231,7 +231,7 @@ check_docker_setup() {
 
 # Check for Python setup
 check_python_setup() {
-    if [ -d "venv" ] && [ -f "frontend/app.py" ]; then
+    if [ -d "venv" ] && [ -f "frontend/home.py" ]; then
         return 0
     fi
     return 1
@@ -317,8 +317,8 @@ start_python() {
     source venv/bin/activate
 
     # Check if the main Python file exists
-    if [ ! -f "frontend/app.py" ]; then
-        print_error "frontend/app.py not found!"
+    if [ ! -f "frontend/home.py" ]; then
+        print_error "frontend/home.py not found!"
         echo "Please ensure the frontend application is present."
         exit 1
     fi
@@ -342,7 +342,7 @@ start_python() {
     print_info "🛑 Press Ctrl+C to stop the server"
     echo ""
 
-    streamlit run frontend/app.py \
+    streamlit run frontend/home.py \
         --server.address=localhost \
         --server.port=8501 \
         --server.headless=true \
@@ -498,7 +498,7 @@ else
     print_info "Project structure:"
     echo "  📁 $(pwd)"
     echo "  ├── 🐍 venv/              (Python virtual environment)"
-    echo "  ├── 📊 frontend/app.py (Streamlit frontend)"
+    echo "  ├── 📊 frontend/home.py (Streamlit frontend)"
     echo "  ├── 🚀 run.sh    (Launcher script)"
     echo "  ├── 📋 requirements.txt   (Dependencies)"
     echo "  ├── ⚙️  config.yaml       (Configuration)"

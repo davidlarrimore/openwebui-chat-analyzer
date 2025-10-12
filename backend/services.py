@@ -501,6 +501,7 @@ class DataService:
             "started_at": None,
             "finished_at": None,
             "updated_at": None,
+            "last_event": None,
         }
         self._summary_thread: Optional[Thread] = None
         self._summary_target_dataset_id: Optional[str] = None
@@ -714,6 +715,7 @@ class DataService:
         completed: Optional[int] = None,
         started_at: Optional[str] = None,
         finished_at: Optional[str] = None,
+        event: Optional[Dict[str, Any]] = None,
     ) -> None:
         with self._summary_state_lock:
             if state is not None:
@@ -728,6 +730,8 @@ class DataService:
                 self._summary_state["started_at"] = started_at
             if finished_at is not None:
                 self._summary_state["finished_at"] = finished_at
+            if event is not None:
+                self._summary_state["last_event"] = event
             self._summary_state["updated_at"] = self._summary_now_iso()
 
     def get_summary_status(self) -> Dict[str, Any]:
@@ -769,16 +773,60 @@ class DataService:
             completed=0,
             started_at=self._summary_now_iso(),
             finished_at=None,
+            event={
+                "type": "start",
+                "event_id": f"start-{job_id}",
+                "reason": reason,
+                "total": total,
+                "timestamp": self._summary_now_iso(),
+                "message": f"Starting summarizer job ({reason})",
+            },
         )
 
-        def progress(current: int, total_count: int, chat_id: str, outcome: str) -> None:
+        def progress(
+            current: int,
+            total_count: int,
+            chat_id: str,
+            outcome: str,
+            details: Optional[Dict[str, Any]] = None,
+        ) -> None:
+            def _format_message(payload: Dict[str, Any], default_outcome: str) -> str:
+                payload_type = payload.get("type")
+                if payload_type == "chat":
+                    outcome = payload.get("outcome", "generated")
+                    chat_id_value = payload.get("chat_id") or "unknown"
+                    if outcome == "generated":
+                        return f"Generated summary for chat {chat_id_value}"
+                    if outcome == "failed":
+                        return f"Failed to summarize chat {chat_id_value}"
+                    return f"{outcome.capitalize()} chat {chat_id_value}"
+                if payload_type == "skip":
+                    return f"Skipped existing summary for chat {payload.get('chat_id') or 'unknown'}"
+                if payload_type == "invalid_chat":
+                    return "Skipped chat without a valid chat_id"
+                if payload_type == "empty_context":
+                    return f"No summarizable content for chat {payload.get('chat_id') or 'unknown'}"
+                return default_outcome.capitalize()
+
             with self._summary_state_lock:
                 if self._summary_active_job_id != job_id:
                     raise SummaryJobCancelled()
+
+            message = None
+            event_payload = None
+            if details:
+                event_payload = dict(details)
+                event_payload.setdefault("event_id", f"auto-{uuid4().hex}")
+                event_payload["timestamp"] = self._summary_now_iso()
+                message = _format_message(event_payload, outcome)
+                if message is not None:
+                    event_payload["message"] = message
             self._update_summary_state(
                 state="running",
                 total=total_count,
                 completed=current,
+                message=message,
+                event=event_payload,
             )
 
         worker = Thread(
@@ -799,7 +847,7 @@ class DataService:
         target_dataset_id: str,
         reason: str,
         job_id: int,
-        progress_cb: Callable[[int, int, str, str], None],
+        progress_cb: Callable[[int, int, str, str, Optional[Dict[str, Any]]], None],
     ) -> None:
         logger = logging.getLogger(__name__)
         logger.info(
@@ -1132,6 +1180,55 @@ class DataService:
             self._users_uploaded_at = None
             self._bump_version()
             self._refresh_app_metadata()
+
+    def reset_dataset(self) -> DatasetMeta:
+        """Remove all stored dataset artifacts and reset in-memory state."""
+        now_iso = self._summary_now_iso()
+        with self._summary_state_lock:
+            self._summary_target_dataset_id = None
+            self._summary_active_job_id = None
+            self._summary_thread = None
+            self._summary_state.update(
+                {
+                    "state": "idle",
+                    "total": 0,
+                    "completed": 0,
+                    "message": "Dataset cleared. No data loaded.",
+                    "last_event": None,
+                    "started_at": None,
+                    "finished_at": now_iso,
+                    "updated_at": now_iso,
+                }
+            )
+
+        with self._lock:
+            if self._data_dir.exists():
+                for pattern in ("all-chats-export*.json", "users.csv", "users.json"):
+                    for candidate in self._data_dir.glob(pattern):
+                        try:
+                            candidate.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                if self._app_metadata_path.exists():
+                    try:
+                        self._app_metadata_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+            self._chats = []
+            self._messages = []
+            self._users = []
+            self._dataset_source_override = None
+            self._dataset_pulled_at = None
+            self._chat_uploaded_at = None
+            self._users_uploaded_at = None
+            self._first_chat_day = None
+            self._last_chat_day = None
+            self._source = "not loaded"
+            self._bump_version()
+            self._refresh_app_metadata(persist=True)
+
+        return self.get_meta()
 
     def sync_from_openwebui(self, hostname: str, api_key: Optional[str]) -> DatasetMeta:
         """Pull chats and users directly from an Open WebUI instance."""

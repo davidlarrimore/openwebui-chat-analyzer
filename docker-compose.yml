@@ -51,7 +51,7 @@ services:
       dockerfile: Dockerfile
       target: frontend
     container_name: openwebui-chat-analyzer-frontend-dev
-    command: ["streamlit", "run", "frontend/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--server.fileWatcherType=auto", "--server.runOnSave=true"]
+    command: ["streamlit", "run", "frontend/home.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--server.fileWatcherType=auto", "--server.runOnSave=true"]
     ports:
       - "8501:8501"
     volumes:

@@ -5,9 +5,11 @@ Streamlit dashboard for exploring Open WebUI chat exports locally.
 ## Highlights
 
 - Local FastAPI backend plus Streamlit UI—your exports never leave your machine
+- Load data either by pulling directly from a running Open WebUI instance or by dropping exports into `data/`
 - Backend auto-loads the latest `all-chats-export-*.json` from `data/` and supports an optional `users.csv` for friendly names
 - Overview metrics for chats, messages, per-role activity, file uploads, and approximate token volume
 - Filters every visualization by Open WebUI user and model
+- Built-in summarizer generates one-line chat headlines using local sentence embeddings plus an OpenAI-compatible completion API (Ollama-ready)
 - Time analysis (daily trend, conversation length, hour-by-day heatmap) and content analysis (word cloud, message length)
 - Sentiment breakdown with TextBlob plus full-text search, paginated browsing, and per-thread JSON downloads
 - CSV exports for both chat metadata and individual messages
@@ -15,17 +17,26 @@ Streamlit dashboard for exploring Open WebUI chat exports locally.
 ## Configuration
 
 1. Copy `.env.example` to `.env`.
-2. Adjust values as needed:
-   - `OWUI_API_BASE_URL` – URL the Streamlit UI should use. Use `http://localhost:8502` for local runs or `http://backend:8502` when using Docker Compose.
+2. Configure backend connectivity:
+   - `OWUI_API_BASE_URL` – Primary URL the Streamlit UI should hit (`http://localhost:8502` locally, `http://backend:8502` for Docker Compose).
+   - `OWUI_API_FALLBACKS` – Optional comma-separated list of backup URLs the frontend will try before surfacing an error.
    - `OWUI_API_ALLOWED_ORIGINS` – Comma-separated list of origins permitted to call the FastAPI backend.
    - `OWUI_DATA_DIR` – Directory where default exports live (relative to the project root).
-3. Restart the backend (and Streamlit) after changing environment variables.
+3. (Optional) Prefill the Direct Connect form:
+   - `OWUI_DIRECT_HOST` – Default Open WebUI base URL shown on the Load Data page.
+   - `OWUI_DIRECT_API_KEY` – Optional API token that appears in the Direct Connect form (stored only in your local `.env`).
+4. (Optional) Tune the summarizer:
+   - `SUMMARY_MAX_CHARS` / `SALIENT_K` – Control headline length and how many salient utterances feed the LLM.
+   - `EMB_MODEL` – Sentence-transformer used to pick salient lines (`sentence-transformers/all-MiniLM-L6-v2` by default).
+   - `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` – OpenAI-compatible completion endpoint used for headline generation. Defaults work with `ollama serve` listening on port 11434.
+5. Restart the backend (and Streamlit) after changing environment variables. The first summarizer run will download embeddings locally.
 
 ## Input Data
 
-- `all-chats-export-*.json` from Open WebUI: Admin Panel → **Settings → Data & Privacy → Export All Chats**
-- Optional `users.csv` from Admin Panel → **Settings → Database → Export Users** — needs `user_id` and a name column
-- Place files in `data/` for the backend to auto-load on startup or upload them through the interface; uploads are forwarded to the API and stored under `uploads/`
+Load data through either workflow:
+
+- **Direct Connect** – Use the **Load Data → Direct Connect** panel to point the analyzer at a live Open WebUI deployment. Provide the base URL (for example `http://localhost:3000`) and an API key; the backend will pull chats and users via `/api/v1/openwebui/sync`, persist them locally, and kick off the summarizer.
+- **File Uploads / Local Directory** – Export `all-chats-export-*.json` from Open WebUI (Admin Panel → **Settings → Data & Privacy → Export All Chats**) and optionally `users.csv` (Admin Panel → **Settings → Database → Export Users** with `user_id` plus a display column). Drop the files in `data/` for automatic loading on startup or upload them on the Load Data page. Uploaded artifacts live under `uploads/`.
 
 ## Quick Start
 
@@ -65,7 +76,7 @@ pip install -r requirements.txt
 cp .env.example .env
 python -m textblob.download_corpora   # first run only
 uvicorn backend.app:app --reload --port 8502  # terminal 1
-streamlit run frontend/app.py
+streamlit run frontend/home.py
 ```
 
 Run the backend and Streamlit UI in separate terminals (or background the FastAPI process) so the dashboard can reach `http://localhost:8502`.
@@ -74,20 +85,32 @@ Run the backend and Streamlit UI in separate terminals (or background the FastAP
 
 Run `scripts/setup.sh` for an interactive wizard that can prepare either Docker or the virtual environment. After setup, use the `make` targets (`make up`, `make down`, `make logs`, etc.) for day-to-day lifecycle commands.
 
+Once Streamlit is running, visit `http://localhost:8501`, open the **Load Data** page, and either Direct Connect to Open WebUI or upload your latest exports to populate the dashboard.
+
 ## Backend API
 
 The Streamlit front-end now talks to a FastAPI service that normalizes and serves the chat exports. Key endpoints:
 
 - `GET /api/v1/datasets/meta` – current dataset identifier, row counts, source label, and last updated timestamp.
 - `GET /api/v1/chats` / `GET /api/v1/messages` / `GET /api/v1/users` – hydrated chat metadata, messages, and optional user directory.
+- `POST /api/v1/openwebui/sync` – pull chats and users directly from Open WebUI using a hostname plus API token.
 - `POST /api/v1/uploads/chat-export` – upload a new `all-chats-export*.json`; replaces the in-memory dataset and bumps the dataset id.
 - `POST /api/v1/uploads/users` – upload a companion `users.csv` for friendly display names.
+- `POST /api/v1/datasets/reset` – delete all stored chat, message, and user records plus metadata.
+- `GET /api/v1/summaries/status` / `POST /api/v1/summaries/rebuild` – monitor or requeue the background summarizer job.
 
 Run `uvicorn backend.app:app --reload` during development to keep the API available to the dashboard.
 
+## Automated Chat Summaries
+
+- Summaries are persisted in the `summary_128` field for each chat and surface throughout the Browse and Overview experiences.
+- Every dataset update (direct sync or file upload) queues the summarizer; progress is shown in the Load Data processing log with toast notifications.
+- The summarizer picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the OpenAI-compatible endpoint configured via `OPENAI_BASE_URL` / `OPENAI_MODEL`. Point these at Ollama, OpenAI, or another gateway.
+- Rebuild summaries anytime from **Load Data → Admin Tools → Rerun summaries** or through the API (`POST /api/v1/summaries/rebuild` + `/summaries/status`).
+
 ## Dashboard Tour
 
-- **File uploader**: Detects the latest export under `data/` automatically and lets you add a `users.csv` to replace raw IDs with friendly names.
+- **Load Data page**: View dataset stats, stream processing logs, Direct Connect to Open WebUI, upload exports (with optional `users.csv`), and access admin tools to reset or rerun summaries.
 - **Overview metrics**: Totals and averages for chats, messages, per-role counts, file uploads, and approximate input/output token volumes (derived from character length).
 - **Model usage**: Horizontal bar chart plus quick stats for each model encountered across the filtered dataset.
 - **Filters**: Slice all visuals by Open WebUI user and model; filter changes reset pagination so the browse experience stays predictable.
@@ -116,6 +139,21 @@ Run `uvicorn backend.app:app --reload` during development to keep the API availa
 - The `Makefile` centralizes build and lifecycle commands — start with `make help`.
 - Python dependencies are split between `backend/requirements.txt` and `frontend/requirements.txt` (aggregate via root `requirements.txt`). The multi-stage Dockerfile builds dedicated images for each service and downloads the TextBlob corpora for the Streamlit frontend.
 
+## Frontend Architecture
+
+### Adding a New Page or Chart
+1. Copy an existing module under `frontend/pages/` (for example `01_Overview.py`) or create a new `NN_Title.py` file so it appears in Streamlit's sidebar.
+2. Call `ensure_data_ready()` from `frontend.ui.page_state` to load dataset metadata, render the shared controls (direct connect, uploads), and fetch cached dataframes.
+3. Use `components.render_filters(...)` to reuse the global user/model filters; pass a unique `filter_prefix` so widget keys stay distinct.
+4. Build figures with helpers in `frontend/ui/charts.py` or add new chart builders there if you need fresh visuals, then render them with `st.plotly_chart`.
+5. Keep Streamlit calls inside the page or `frontend/ui/components.py`; push data munging into `frontend/core/processing.py` or `frontend/core/api.py` so it remains testable.
+
+### Data Fetching & Processing
+- HTTP access to the FastAPI backend lives in `frontend/core/api.py`, which exposes typed helpers like `get_dataset_meta()` and `build_processed_data()`.
+- Dataset transformations, metrics, and filtering logic are implemented in `frontend/core/processing.py`.
+- Streamlit caching for expensive calls is centralized in `frontend/ui/data_access.py`, while session helpers (reruns, widget state) live in `frontend/utils/state.py`.
+- UI widgets and charts are separated: `frontend/ui/components.py` handles layout, and `frontend/ui/charts.py` returns ready-to-render Plotly figures or word clouds.
+
 ## Privacy & Storage
 
 All requests stay on your machine—the Streamlit UI only talks to the bundled FastAPI service. Uploaded files remain under the repository (`data/` and `uploads/`) until you remove them.
@@ -123,6 +161,7 @@ All requests stay on your machine—the Streamlit UI only talks to the bundled F
 ## Troubleshooting
 
 - If Streamlit crashes during sentiment analysis, install the TextBlob corpora with `python -m textblob.download_corpora`.
+- Summaries failing or timing out? Confirm the OpenAI-compatible endpoint configured in `.env` is running and reachable, and that the sentence-transformers model has been downloaded (first run may take a minute).
 - Some environments need a font package for `wordcloud`; installing system fonts (for example `sudo apt-get install fonts-dejavu`) fixes blank visuals.
 - Adjust `STREAMLIT_SERVER_PORT` or the Docker port mapping if 8501 is already in use.
 - Seeing “Unable to connect to the backend API”? Make sure `uvicorn backend.app:app --port 8502` (or the Docker `backend` service) is running and reachable.

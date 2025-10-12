@@ -9,49 +9,14 @@ maxUploadSize = 500
 maxMessageSize = 500
 enableWebsocketCompression = true
 
-fileWatcherType = "auto"           # Auto-detect file changes
-runOnSave = true                   # Auto-reload on file changes (dev mode)
-
-# Performance optimizations
-fastReruns = true                  # Enable fast reruns for better UX
-allowRunOnSave = true              # Allow auto-execution
-
 [browser]
-# Browser behavior configuration
-gatherUsageStats = false           # Disable usage statistics for privacy
-showErrorDetails = true            # Show detailed errors for debugging
-serverAddress = "localhost"        # Default server address
-serverPort = 8501                  # Default port
-
-[ui]
-# UI configuration for clean appearance
-hideTopBar = true                  # Hide Streamlit's top bar for cleaner look
-hideSidebarNav = false             # Keep sidebar navigation visible
-
-[client]
-# Client-side optimizations
-caching = true                     # Enable client-side caching
-showErrorDetails = true            # Show error details for debugging
-toolbarMode = "minimal"            # Minimal toolbar for cleaner interface
-
-[runner]
-# Runner configuration for better performance
-magicEnabled = true                # Enable magic commands
-installTracer = false              # Disable install tracer for performance
-fixMatplotlib = true               # Fix matplotlib backend issues
-postScriptGC = true                # Enable garbage collection after script runs
-fastReruns = true                  # Enable fast reruns
+gatherUsageStats = false
+serverAddress = "localhost"
+serverPort = 8501
 
 [logger]
-# Logging configuration
-level = "info"                     # Set logging level to info
-messageFormat = "%(asctime)s %(message)s"  # Simple message format
-
-[deprecation]
-# Handle deprecation warnings
-showfileUploaderEncoding = false  # Hide encoding warnings
-showPyplotGlobalUse = false        # Hide pyplot warnings
+level = "info"
+messageFormat = "%(asctime)s %(message)s"
 
 [mapbox]
-# Mapbox configuration (if needed for future features)
-token = ""                         # Empty token for now
+token = ""

@@ -38,6 +38,17 @@ def dataset_meta(service: DataService = Depends(get_data_service)) -> DatasetMet
 
 
 @router.post(
+    "/datasets/reset",
+    response_model=UploadResponse,
+    status_code=status.HTTP_200_OK,
+)
+def reset_dataset(service: DataService = Depends(get_data_service)) -> UploadResponse:
+    """Remove all stored dataset artifacts and reset metadata."""
+    dataset = service.reset_dataset()
+    return UploadResponse(detail="Dataset reset successfully.", dataset=dataset)
+
+
+@router.post(
     "/uploads/chat-export",
     response_model=UploadResponse,
     status_code=status.HTTP_201_CREATED,
