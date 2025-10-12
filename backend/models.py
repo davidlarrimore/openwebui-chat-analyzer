@@ -14,6 +14,10 @@ class Chat(BaseModel):
         default=None, description="Identifier for the user that owns the chat"
     )
     title: Optional[str] = Field(default=None, description="Chat title")
+    summary_128: Optional[str] = Field(
+        default=None,
+        description="≤128 character locally generated subject line summary",
+    )
     created_at: Optional[datetime] = Field(
         default=None, description="Timestamp when the chat was created"
     )

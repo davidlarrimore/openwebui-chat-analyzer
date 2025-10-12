@@ -126,3 +126,16 @@ def sync_openwebui(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return UploadResponse(detail="Open WebUI data synced successfully.", dataset=dataset)
+
+
+@router.get("/summaries/status")
+def summary_status(service: DataService = Depends(get_data_service)) -> dict:
+    """Return the current status of the summary job."""
+    return service.get_summary_status()
+
+
+@router.post("/summaries/rebuild")
+def rebuild_summaries(service: DataService = Depends(get_data_service)) -> dict:
+    """Trigger an asynchronous rebuild of chat summaries."""
+    status_state = service.rebuild_summaries()
+    return {"ok": True, "status": status_state}

@@ -11,14 +11,18 @@ streamlit run frontend/app.py
 """
 
 import base64
+from datetime import datetime
 import html
 import json
 import math
 import os
 import re
+import time
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import networkx as nx
 import numpy as np
@@ -60,6 +64,29 @@ def trigger_rerun():
     if rerun_fn is not None:
         rerun_fn()
 
+
+def render_chat_summary(summary: str) -> None:
+    """Render a chat summary below a card header."""
+    summary = (summary or "").strip()
+    if not summary:
+        return
+    safe_text = html.escape(summary)
+    st.markdown(
+        (
+            "<div style='margin:0.5rem 0 1rem 0;"
+            "padding:0.6rem 0.75rem;"
+            "background-color:#eef2ff;"
+            "border-radius:10px;"
+            "color:#1f2937;"
+            "white-space:normal;"
+            "word-break:break-word;'>"
+            "<span style=\"font-weight:600;\">📝 Summary:</span> "
+            f"{safe_text}"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
 ALL_USERS_OPTION = "__ALL_USERS__"
 ALL_MODELS_OPTION = "All Models"
 
@@ -69,35 +96,8 @@ class BackendError(Exception):
 
 def get_api_base_url_candidates():
     """Return backend API base URLs to try in priority order."""
-    secrets_url = None
-    secrets_source = getattr(st, "secrets", None)
-    if secrets_source is not None:
-        try:
-            secrets_url = secrets_source.get("api_base_url")
-        except Exception:
-            secrets_url = None
-
-    if secrets_url:
-        base_url = str(secrets_url).rstrip("/")
-    else:
-        env_url = os.getenv("OWUI_API_BASE_URL")
-        base_url = env_url.rstrip("/") if env_url else "http://localhost:8502"
-
-    candidates = [base_url]
-
-    fallback_env = os.getenv("OWUI_API_BASE_URL_FALLBACK")
-    if fallback_env:
-        fallback_clean = fallback_env.rstrip("/")
-        if fallback_clean and fallback_clean not in candidates:
-            candidates.append(fallback_clean)
-
-    parsed = urlparse(base_url)
-    if parsed.hostname == "backend":
-        local_fallback = os.getenv("OWUI_LOCAL_API_BASE_URL", "http://localhost:8502").rstrip("/")
-        if local_fallback and local_fallback not in candidates:
-            candidates.append(local_fallback)
-
-    return candidates
+    base_url = "http://backend:8502"
+    return [base_url]
 
 
 def get_api_base_url() -> str:
@@ -105,14 +105,19 @@ def get_api_base_url() -> str:
     return get_api_base_url_candidates()[0]
 
 
-def _request_backend(path: str, method: str = "GET", **kwargs):
+def _request_backend(path: str, method: str = "GET", *, timeout: float = 30.0, **kwargs):
     """Execute a request against the backend API."""
     response = None
     last_exc = None
     for base_url in get_api_base_url_candidates():
         url = f"{base_url}{path}"
         try:
-            response = requests.request(method=method.upper(), url=url, timeout=30, **kwargs)
+            response = requests.request(
+                method=method.upper(),
+                url=url,
+                timeout=timeout,
+                **kwargs,
+            )
             response.raise_for_status()
         except requests.exceptions.HTTPError as exc:
             detail = ""
@@ -155,6 +160,136 @@ def _request_backend(path: str, method: str = "GET", **kwargs):
         raise BackendError("Backend returned an invalid JSON response.") from exc
 
 
+def get_summary_status():
+    """Fetch the status of the background summarizer job."""
+    return _request_backend("/api/v1/summaries/status")
+
+
+def wait_for_summary_completion(
+    message: str,
+    timeout: int = 180,
+    poll_interval: float = 2.0,
+    on_update=None,
+    show_spinner: bool = True,
+) -> dict:
+    """Poll the backend until the summarizer job completes or times out."""
+    start_time = time.time()
+    last_state = None
+    status: dict = {}
+
+    spinner_ctx = st.spinner(message) if show_spinner and message else nullcontext()
+    with spinner_ctx:
+        while True:
+            try:
+                status = get_summary_status()
+            except BackendError as exc:
+                st.warning(f"Unable to check summary status: {exc}")
+                break
+
+            state = status.get("state", "idle")
+            if state != last_state:
+                last_state = state
+
+            if on_update is not None:
+                try:
+                    on_update(status)
+                except Exception:
+                    pass
+
+            if state in (None, "idle", "completed", "failed", "cancelled"):
+                break
+
+            if time.time() - start_time >= timeout:
+                st.warning("Summary job is still running; results will appear once complete.")
+                break
+
+            time.sleep(poll_interval)
+
+    return status
+
+
+def _init_direct_connect_log() -> None:
+    st.session_state.setdefault("show_direct_connect_log", False)
+    st.session_state.setdefault("direct_connect_log", [])
+    st.session_state.setdefault("direct_connect_progress_index", None)
+    st.session_state.setdefault("direct_connect_log_expanded", True)
+
+
+def _append_direct_connect_log(message: str, emoji: str = "ℹ️ ") -> None:
+    _init_direct_connect_log()
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    st.session_state["direct_connect_log"].append({
+        "timestamp": timestamp,
+        "emoji": emoji,
+        "message": message,
+    })
+
+
+def _set_direct_connect_progress(completed: int, total: int) -> None:
+    _init_direct_connect_log()
+    idx = st.session_state.get("direct_connect_progress_index")
+    percent = 0.0
+    if total > 0:
+        percent = (completed / total) * 100
+    entry_message = f"Building chat summaries... {completed}/{total} ({percent:.1f}%)"
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    if idx is None:
+        _append_direct_connect_log(entry_message, "🧠")
+        st.session_state["direct_connect_progress_index"] = len(st.session_state["direct_connect_log"]) - 1
+    else:
+        try:
+            st.session_state["direct_connect_log"][idx]["timestamp"] = timestamp
+            st.session_state["direct_connect_log"][idx]["message"] = entry_message
+        except (IndexError, KeyError):
+            st.session_state["direct_connect_progress_index"] = None
+
+
+def _reset_direct_connect_progress() -> None:
+    st.session_state["direct_connect_progress_index"] = None
+
+
+def _reset_direct_connect_log(show: bool = True) -> None:
+    st.session_state["direct_connect_log"] = []
+    st.session_state["show_direct_connect_log"] = show
+    st.session_state["direct_connect_progress_index"] = None
+    st.session_state["direct_connect_log_expanded"] = True
+
+
+def render_direct_connect_log(container=None, *, context: str = None, key_prefix: str = "direct_connect") -> None:
+    _init_direct_connect_log()
+    show = st.session_state.get("show_direct_connect_log")
+    if container is None:
+        container = st.container()
+    if not show:
+        try:
+            container.empty()
+        except AttributeError:
+            pass
+        return
+
+    try:
+        container.empty()
+        target = container.container()
+    except AttributeError:
+        target = container
+
+    log_entries = st.session_state.get("direct_connect_log", [])
+    with target:
+        accordion_fn = getattr(st, "accordion", None) or st.expander
+        expanded = st.session_state.get("direct_connect_log_expanded", True)
+        with accordion_fn("Processing Log", expanded=expanded):
+            if log_entries:
+                lines = [
+                    f"{entry.get('timestamp', '--:--:--')} {entry.get('emoji', 'ℹ️ ')} {entry.get('message', '')}"
+                    for entry in log_entries
+                ]
+                log_text = "\n".join(lines)
+            else:
+                log_text = "(no log entries yet)"
+
+            st.code(log_text, language="text")
+
+
 def fetch_dataset_metadata():
     """Fetch dataset metadata from the backend."""
     return _request_backend("/api/v1/datasets/meta")
@@ -179,6 +314,10 @@ def load_and_process_data(dataset_id: str):
     messages_df = pd.DataFrame(messages_payload)
 
     if not chats_df.empty:
+        if "summary_128" not in chats_df.columns:
+            chats_df["summary_128"] = ""
+        else:
+            chats_df["summary_128"] = chats_df["summary_128"].fillna("")
         for column in ("created_at", "updated_at"):
             if column in chats_df.columns:
                 chats_df[column] = pd.to_datetime(chats_df[column])
@@ -896,6 +1035,7 @@ def create_search_interface(chats_df, messages_df, chat_user_map=None, widget_pr
             file_upload_flag = "📎" if chat_info.get('files_uploaded', 0) > 0 else ""
             # Display expander with enriched title
             with st.expander(f"Thread #{idx+1}: {subject} | Date: {date} | Model: {model_name} | {file_upload_flag} ", expanded=False):
+                render_chat_summary(str(chat_info.get('summary_128', "")))
                 for _, msg in conv_msgs.iterrows():
                     # Highlight search terms
                     highlighted = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", str(msg['content']))
@@ -994,7 +1134,7 @@ def create_instructions():
 def main():
     # Create modern header
     create_header()
-    
+
     try:
         dataset_meta = fetch_dataset_metadata()
     except BackendError as exc:
@@ -1004,6 +1144,12 @@ def main():
             f"`{get_api_base_url()}`.\n\nDetails: {exc}"
         )
         st.stop()
+
+    try:
+        summary_status_initial = get_summary_status()
+    except BackendError as exc:
+        st.warning(f"Unable to retrieve summary status: {exc}")
+        summary_status_initial = {}
 
     dataset_id = dataset_meta.get("dataset_id", "unknown")
     app_metadata = dataset_meta.get("app_metadata") or {}
@@ -1071,6 +1217,30 @@ def main():
         if pd.isna(dt_value):
             return "N/A"
         return dt_value.strftime("%Y-%m-%d")
+
+    summary_state = summary_status_initial.get("state")
+    summary_state_message = None
+    summary_state_icon = None
+    if summary_state == "running":
+        completed = summary_status_initial.get("completed", 0)
+        total = summary_status_initial.get("total", 0)
+        summary_state_message = f"Summaries in progress ({completed}/{total})"
+        summary_state_icon = "🧠"
+    elif summary_state == "failed":
+        detail = summary_status_initial.get("message", "Unknown error")
+        summary_state_message = f"Summary job failed: {detail}"
+        summary_state_icon = "⚠️"
+    elif summary_state == "cancelled":
+        summary_state_message = "Summary job was cancelled because the dataset changed before completion."
+        summary_state_icon = "⚠️"
+    elif summary_state == "completed" and summary_status_initial.get("total", 0):
+        summary_state_message = "Chat summaries are up to date."
+        summary_state_icon = "🧠"
+
+    last_summary_toast = st.session_state.get("_summary_state_last_toast")
+    if summary_state_message and summary_state_message != last_summary_toast:
+        st.toast(summary_state_message, icon=summary_state_icon)
+    st.session_state["_summary_state_last_toast"] = summary_state_message
 
     chat_uploaded_display = _format_timestamp(app_metadata.get("chat_uploaded_at"))
     users_uploaded_display = _format_timestamp(app_metadata.get("users_uploaded_at"))
@@ -1169,21 +1339,74 @@ def main():
             type="password",
             help="Generate this token from Open WebUI settings."
         )
-        if st.button("Go", key="openwebui_sync_button"):
+        go_clicked = st.button("Go", key="openwebui_sync_button")
+        log_placeholder = st.empty()
+        render_direct_connect_log(log_placeholder, context="directconnect")
+
+        if go_clicked:
             trimmed_host = hostname.strip()
             if not trimmed_host:
                 st.error("Hostname is required to connect to Open WebUI.")
             else:
-                with st.spinner("🔌 Connecting to Open WebUI..."):
-                    try:
-                        sync_openwebui_dataset(trimmed_host, api_key)
-                    except BackendError as exc:
-                        st.error(f"Failed to sync data: {exc}")
-                    else:
-                        load_and_process_data.clear()
-                        load_user_data.clear()
-                        st.toast("Open WebUI data synced successfully!", icon="✅")
-                        trigger_rerun()
+                _reset_direct_connect_log(show=True)
+                _append_direct_connect_log(f"Connecting to Open WebUI at {trimmed_host}...", "🔌")
+                render_direct_connect_log(log_placeholder, context="directconnect")
+                try:
+                    sync_result = sync_openwebui_dataset(trimmed_host, api_key)
+                except BackendError as exc:
+                    _append_direct_connect_log(f"Failed to connect: {exc}", "❌")
+                    render_direct_connect_log(log_placeholder, context="directconnect")
+                    st.error(f"Failed to sync data: {exc}")
+                else:
+                    dataset_info = (sync_result or {}).get("dataset", {})
+                    chat_count = dataset_info.get("chat_count", 0)
+                    user_count = dataset_info.get("user_count", 0)
+                    _append_direct_connect_log(f"Retrieved {chat_count} chats", "📥")
+                    _append_direct_connect_log(f"Retrieved {user_count} users", "🙋")
+                    _append_direct_connect_log("Summarizer job queued", "🤖")
+                    render_direct_connect_log(log_placeholder, context="directconnect")
+
+                    def _summary_callback(status: dict) -> None:
+                        state = status.get("state")
+                        total = status.get("total", 0)
+                        completed = status.get("completed", 0)
+                        if state == "running":
+                            _set_direct_connect_progress(completed, total)
+                        elif state in {"completed", "failed", "cancelled"}:
+                            if total:
+                                _set_direct_connect_progress(completed, total)
+                            _reset_direct_connect_progress()
+                        render_direct_connect_log(log_placeholder, context="directconnect")
+
+                    load_and_process_data.clear()
+                    load_user_data.clear()
+                    _append_direct_connect_log("🧠 Building chat summaries...")
+                    render_direct_connect_log(log_placeholder, context="directconnect")
+                    status = wait_for_summary_completion(
+                        "🧠 Building chat summaries...",
+                        on_update=_summary_callback,
+                        show_spinner=False,
+                    )
+                    state = status.get("state")
+                    if state == "completed":
+                        _append_direct_connect_log("Chat summaries rebuilt", "✅")
+                        st.toast("Chat summaries rebuilt.", icon="🧠")
+                    elif state == "failed":
+                        message = status.get("message", "Unknown error")
+                        _append_direct_connect_log(f"Summary job failed: {message}", "⚠️")
+                        st.error(f"Summary job failed: {message}")
+                    elif state == "cancelled":
+                        _append_direct_connect_log("Summary job cancelled (dataset changed)", "⚠️")
+                        st.warning("Summary job was cancelled because the dataset changed.")
+                    elif state == "running":
+                        _append_direct_connect_log("Summaries still running in the background", "ℹ️ ")
+                        st.info("Summaries are still running in the background; new headlines will appear once complete.")
+
+                    _append_direct_connect_log("Done", "✅")
+                    st.session_state["direct_connect_log_expanded"] = False
+                    render_direct_connect_log(log_placeholder, context="directconnect")
+                    st.toast("Open WebUI data synced successfully!", icon="✅")
+                    trigger_rerun()
 
     chat_upload_state = st.session_state.get("chat_file_uploader")
     chat_loaded = dataset_ready or (chat_upload_state is not None)
@@ -1218,8 +1441,16 @@ def main():
                     except BackendError as exc:
                         st.error(f"Failed to upload chat export: {exc}")
                     else:
-                        load_and_process_data.clear()
                         load_user_data.clear()
+                        status = wait_for_summary_completion("🧠 Building chat summaries...")
+                        state = status.get("state")
+                        if state == "completed":
+                            st.toast("Chat summaries rebuilt.", icon="🧠")
+                        elif state == "failed":
+                            st.error(f"Summary job failed: {status.get('message', 'Unknown error')}")
+                        elif state == "cancelled":
+                            st.warning("Summary job was cancelled because the dataset changed.")
+                        load_and_process_data.clear()
                         st.session_state.pop("chat_file_uploader", None)
                         st.toast("Chat export uploaded successfully!", icon="✅")
                         trigger_rerun()
@@ -1243,7 +1474,6 @@ def main():
                         st.session_state.pop("users_csv_uploader", None)
                         st.toast("User data uploaded successfully!", icon="🧑")
                         trigger_rerun()
-
     if dataset_ready:
         with st.spinner("🔄 Processing chat data..."):
             chats_df, messages_df = load_and_process_data(dataset_id)
@@ -1735,108 +1965,103 @@ def main():
                 )
             with tab5:
                 st.subheader("Browse Data")
-                if not filtered_messages.empty:
-                    # Compute the first user message timestamp per chat
-                    chat_user_map = filtered_chats.set_index('chat_id')['user_display'].to_dict()
-                    first_prompts = (
-                        filtered_messages[filtered_messages['role'] == 'user']
-                        .groupby('chat_id')['timestamp']
-                        .min()
-                        .reset_index()
-                    )
-                    # Merge with chat titles
-                    first_prompts = first_prompts.merge(
-                        filtered_chats[['chat_id', 'title']],
-                        on='chat_id',
-                        how='left'
-                    )
-                    # Sort descending by first prompt date
-                    first_prompts = first_prompts.sort_values('timestamp', ascending=False)
-                    # Pagination setup
-                    total_threads = len(first_prompts)
-                    # Threads per page selector
-                    threads_per_page = st.selectbox(
-                        "Threads per page",
-                        [5, 10, 20, 50],
-                        index=1,
-                        key="threads_per_page"
-                    )
-                    # Calculate total pages and slice for current page
-                    total_pages = math.ceil(total_threads / threads_per_page) if total_threads else 1
-                    if st.session_state.page > total_pages:
-                        st.session_state.page = total_pages
-                    if st.session_state.page < 1:
-                        st.session_state.page = 1
-                    page = st.session_state.page
-                    start_idx = (page - 1) * threads_per_page
-                    end_idx = start_idx + threads_per_page
-                    first_prompts = first_prompts.iloc[start_idx:end_idx]
-                    # Display each thread in an expander
-                    for _, row in first_prompts.iterrows():
-                        thread_id = row['chat_id']
-                        title = row['title'] or thread_id
-                        date = row['timestamp'].strftime('%Y-%m-%d %H:%M')
-                        chat_rows = filtered_chats[filtered_chats['chat_id'] == thread_id]
-                        if chat_rows.empty:
-                            continue
-                        chat_info = chat_rows.iloc[0]
-                        file_upload_flag = "📎" if chat_info.get('files_uploaded', 0) > 0 else ""
-                        user_display = chat_user_map.get(thread_id, chat_info.get('user_id', 'User'))
-                        with st.expander(f"{title} (Started: {date}) {file_upload_flag}", expanded=False):
-                            thread_msgs = filtered_messages[filtered_messages['chat_id'] == thread_id].sort_values('timestamp')
-                            for _, msg in thread_msgs.iterrows():
-                                timestamp = msg['timestamp'].strftime('%Y-%m-%d %H:%M')
-                                content = msg['content'].replace('\n', '<br>')
-                                if msg['role'] == 'user':
-                                    st.markdown(
-                                        f"<div style='background-color:#e6f7ff; padding:8px; border-radius:5px; margin-bottom:4px;'>"
-                                        f"<strong>{user_display}</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
-                                        unsafe_allow_html=True
-                                    )
-                                else:
-                                    st.markdown(
-                                        f"<div style='background-color:#f0f0f0; padding:8px; border-radius:5px; margin-bottom:4px;'>"
-                                        f"<strong>🤖 Assistant ({msg['model']})</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
-                                        unsafe_allow_html=True
-                                    )
-                            # Export full thread JSON
-                            full_thread = {
-                                'chat_id': chat_info['chat_id'],
-                                'user_id': chat_info['user_id'],
-                                'user_name': user_display,
-                                'title': chat_info['title'],
-                                'created_at': chat_info['created_at'].isoformat(),
-                                'updated_at': chat_info['updated_at'].isoformat(),
-                                'archived': bool(chat_info['archived']),
-                                'pinned': bool(chat_info['pinned']),
-                                'tags': chat_info['tags'],
-                                'files': chat_info.get('files', []),
-                                'messages': json.loads(thread_msgs.to_json(orient='records', date_format='iso'))
-                            }
-                            thread_json = json.dumps(full_thread, indent=2)
-                            st.download_button(
-                                label="📥 Download Thread (JSON)",
-                                data=thread_json,
-                                file_name=f"thread_{thread_id}.json",
-                                mime="application/json",
-                                key=f"browse_download_{thread_id}"
-                            )
-                            # List attachments
-                            for file_item in chat_info.get('files', []):
-                                file_name = file_item.get('filename') or file_item.get('name')
-                                st.markdown(f"📎 {file_name}")
-                    # Page navigation controls
-                    col_prev, col_info, col_next = st.columns([1, 2, 1])
-                    with col_prev:
-                        if st.button("Previous", key="prev_page") and st.session_state.page > 1:
-                            st.session_state.page -= 1
-                    with col_info:
-                        st.write(f"Page {st.session_state.page} of {total_pages}")
-                    with col_next:
-                        if st.button("Next", key="next_page") and st.session_state.page < total_pages:
-                            st.session_state.page += 1
+                chat_table = filtered_chats.copy()
+                if chat_table.empty:
+                    st.info("No chats found for the current filters.")
                 else:
-                    st.info("No messages to display.")
+                    if filtered_messages.empty:
+                        st.info("No messages to display.")
+                    else:
+                        chat_user_map = filtered_chats.set_index('chat_id')['user_display'].to_dict()
+                        first_prompts = (
+                            filtered_messages[filtered_messages['role'] == 'user']
+                            .groupby('chat_id')['timestamp']
+                            .min()
+                            .reset_index()
+                        )
+                        first_prompts = first_prompts.merge(
+                            filtered_chats[['chat_id', 'title']],
+                            on='chat_id',
+                            how='left'
+                        )
+                        first_prompts = first_prompts.sort_values('timestamp', ascending=False)
+                        total_threads = len(first_prompts)
+                        threads_per_page = st.selectbox(
+                            "Threads per page",
+                            [5, 10, 20, 50],
+                            index=1,
+                            key="threads_per_page"
+                        )
+                        total_pages = math.ceil(total_threads / threads_per_page) if total_threads else 1
+                        if st.session_state.page > total_pages:
+                            st.session_state.page = total_pages
+                        if st.session_state.page < 1:
+                            st.session_state.page = 1
+                        page = st.session_state.page
+                        start_idx = (page - 1) * threads_per_page
+                        end_idx = start_idx + threads_per_page
+                        first_prompts = first_prompts.iloc[start_idx:end_idx]
+                        for _, row in first_prompts.iterrows():
+                            thread_id = row['chat_id']
+                            title = row['title'] or thread_id
+                            date = row['timestamp'].strftime('%Y-%m-%d %H:%M')
+                            chat_rows = filtered_chats[filtered_chats['chat_id'] == thread_id]
+                            if chat_rows.empty:
+                                continue
+                            chat_info = chat_rows.iloc[0]
+                            file_upload_flag = "📎" if chat_info.get('files_uploaded', 0) > 0 else ""
+                            user_display = chat_user_map.get(thread_id, chat_info.get('user_id', 'User'))
+                            with st.expander(f"{title} (Started: {date}) {file_upload_flag}", expanded=False):
+                                render_chat_summary(str(chat_info.get('summary_128', "")))
+                                thread_msgs = filtered_messages[filtered_messages['chat_id'] == thread_id].sort_values('timestamp')
+                                for _, msg in thread_msgs.iterrows():
+                                    timestamp = msg['timestamp'].strftime('%Y-%m-%d %H:%M')
+                                    content = msg['content'].replace('\n', '<br>')
+                                    if msg['role'] == 'user':
+                                        st.markdown(
+                                            f"<div style='background-color:#e6f7ff; padding:8px; border-radius:5px; margin-bottom:4px;'>"
+                                            f"<strong>{user_display}</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
+                                            unsafe_allow_html=True
+                                        )
+                                    else:
+                                        st.markdown(
+                                            f"<div style='background-color:#f0f0f0; padding:8px; border-radius:5px; margin-bottom:4px;'>"
+                                            f"<strong>🤖 Assistant ({msg['model']})</strong> <span style='color:#555;'>[{timestamp}]</span><br>{content}</div>",
+                                            unsafe_allow_html=True
+                                        )
+                                full_thread = {
+                                    'chat_id': chat_info['chat_id'],
+                                    'user_id': chat_info['user_id'],
+                                    'user_name': user_display,
+                                    'title': chat_info['title'],
+                                    'created_at': chat_info['created_at'].isoformat(),
+                                    'updated_at': chat_info['updated_at'].isoformat(),
+                                    'archived': bool(chat_info['archived']),
+                                    'pinned': bool(chat_info['pinned']),
+                                    'tags': chat_info['tags'],
+                                    'files': chat_info.get('files', []),
+                                    'messages': json.loads(thread_msgs.to_json(orient='records', date_format='iso'))
+                                }
+                                thread_json = json.dumps(full_thread, indent=2)
+                                st.download_button(
+                                    label="📥 Download Thread (JSON)",
+                                    data=thread_json,
+                                    file_name=f"thread_{thread_id}.json",
+                                    mime="application/json",
+                                    key=f"browse_download_{thread_id}"
+                                )
+                                for file_item in chat_info.get('files', []):
+                                    file_name = file_item.get('filename') or file_item.get('name')
+                                    st.markdown(f"📎 {file_name}")
+                        col_prev, col_info, col_next = st.columns([1, 2, 1])
+                        with col_prev:
+                            if st.button("Previous", key="prev_page") and st.session_state.page > 1:
+                                st.session_state.page -= 1
+                        with col_info:
+                            st.write(f"Page {st.session_state.page} of {total_pages}")
+                        with col_next:
+                            if st.button("Next", key="next_page") and st.session_state.page < total_pages:
+                                st.session_state.page += 1
             create_export_section(chats_df, messages_df)
     
     else:

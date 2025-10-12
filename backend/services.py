@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 from datetime import datetime, timezone, date
 from io import BytesIO
 from pathlib import Path
-from threading import Lock
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from threading import Lock, Thread
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
 
 import pandas as pd
@@ -18,6 +19,14 @@ from urllib.parse import urlparse, urlunparse
 
 from .config import DATA_DIR
 from .models import AppMetadata, DatasetMeta
+from .summarizer import summarize_chats
+
+
+class SummaryJobCancelled(Exception):
+    """Raised when a summary job is cancelled due to a newer dataset."""
+
+
+SUMMARY_EXPORT_FIELD = "owca_summary_128"
 
 
 def _coerce_timestamp(value: Any) -> Optional[datetime]:
@@ -97,6 +106,17 @@ def _parse_chat_export(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[Dic
             "files_uploaded": len(files) if isinstance(files, list) else 0,
             "files": files if isinstance(files, list) else [],
         }
+        summary_value = item.get(SUMMARY_EXPORT_FIELD)
+        chat_summary_value = None
+        if isinstance(summary_value, str):
+            chat_summary_value = summary_value
+        elif isinstance(chat_meta, dict):
+            nested_summary = chat_meta.get(SUMMARY_EXPORT_FIELD)
+            if isinstance(nested_summary, str):
+                chat_summary_value = nested_summary
+        if chat_summary_value is not None:
+            chat_info["summary_128"] = str(chat_summary_value)
+
         chats.append(chat_info)
 
         chat_messages = chat_meta.get("messages", [])
@@ -409,6 +429,47 @@ def _build_export_payload_from_openwebui(payload: Any) -> List[Dict[str, Any]]:
     return export_ready
 
 
+def _apply_summaries_to_export_payload(
+    payload: Any,
+    summary_map: Dict[str, str],
+) -> Any:
+    """Inject analyzer summaries into the raw export payload."""
+    if not isinstance(payload, list) or not summary_map:
+        return payload
+
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        chat_id = entry.get("id") or entry.get("_id") or entry.get("chat_id")
+        chat_id_str = str(chat_id) if chat_id not in (None, "", []) else None
+        if not chat_id_str:
+            continue
+        summary = summary_map.get(chat_id_str)
+        if summary is None:
+            continue
+        entry.pop(SUMMARY_EXPORT_FIELD, None)
+        entry[SUMMARY_EXPORT_FIELD] = summary
+        chat_section = entry.get("chat")
+        if isinstance(chat_section, dict):
+            chat_section.pop(SUMMARY_EXPORT_FIELD, None)
+    return payload
+
+
+def _annotate_export_bytes(raw_bytes: bytes, summary_map: Dict[str, str]) -> bytes:
+    """Return raw bytes with analyzer summaries injected; fallback to original bytes on failure."""
+    if not summary_map:
+        return raw_bytes
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8"))
+    except Exception:
+        return raw_bytes
+    annotated = _apply_summaries_to_export_payload(payload, summary_map)
+    try:
+        return json.dumps(annotated, ensure_ascii=False, indent=2).encode("utf-8")
+    except Exception:
+        return raw_bytes
+
+
 class DataService:
     """In-memory data repository backed by chat export files."""
 
@@ -431,6 +492,20 @@ class DataService:
         self._users_uploaded_at: Optional[datetime] = None
         self._first_chat_day: Optional[date] = None
         self._last_chat_day: Optional[date] = None
+        self._summary_state_lock = Lock()
+        self._summary_state: Dict[str, Any] = {
+            "state": "idle",
+            "total": 0,
+            "completed": 0,
+            "message": "",
+            "started_at": None,
+            "finished_at": None,
+            "updated_at": None,
+        }
+        self._summary_thread: Optional[Thread] = None
+        self._summary_target_dataset_id: Optional[str] = None
+        self._summary_job_counter: int = 0
+        self._summary_active_job_id: Optional[int] = None
         self._load_app_metadata()
         self.load_initial_data()
         with self._lock:
@@ -627,6 +702,179 @@ class DataService:
             user_count=len(self._users),
         )
 
+    def _summary_now_iso(self) -> str:
+        return self._now_utc().isoformat().replace("+00:00", "Z")
+
+    def _update_summary_state(
+        self,
+        *,
+        state: Optional[str] = None,
+        message: Optional[str] = None,
+        total: Optional[int] = None,
+        completed: Optional[int] = None,
+        started_at: Optional[str] = None,
+        finished_at: Optional[str] = None,
+    ) -> None:
+        with self._summary_state_lock:
+            if state is not None:
+                self._summary_state["state"] = state
+            if message is not None:
+                self._summary_state["message"] = message
+            if total is not None:
+                self._summary_state["total"] = total
+            if completed is not None:
+                self._summary_state["completed"] = completed
+            if started_at is not None:
+                self._summary_state["started_at"] = started_at
+            if finished_at is not None:
+                self._summary_state["finished_at"] = finished_at
+            self._summary_state["updated_at"] = self._summary_now_iso()
+
+    def get_summary_status(self) -> Dict[str, Any]:
+        with self._summary_state_lock:
+            return dict(self._summary_state)
+
+    def _enqueue_summary_job(self, reason: str) -> Dict[str, Any]:
+        with self._lock:
+            chats_snapshot = [chat.copy() for chat in self._chats]
+            messages_snapshot = [message.copy() for message in self._messages]
+            export_path = self._find_latest_chat_export()
+            dataset_id = self._dataset_id
+
+        total = len(chats_snapshot)
+        if total == 0:
+            self._update_summary_state(
+                state="idle",
+                message="No chats available for summarization.",
+                total=0,
+                completed=0,
+                started_at=None,
+                finished_at=self._summary_now_iso(),
+            )
+            return self.get_summary_status()
+
+        logger = logging.getLogger(__name__)
+        with self._summary_state_lock:
+            if self._summary_thread and self._summary_thread.is_alive():
+                logger.info("Cancelling in-flight summary job in favor of new request (%s)", reason)
+            self._summary_job_counter += 1
+            job_id = self._summary_job_counter
+            self._summary_target_dataset_id = dataset_id
+            self._summary_active_job_id = job_id
+
+        self._update_summary_state(
+            state="running",
+            message=f"Summarizing {total} chats ({reason})",
+            total=total,
+            completed=0,
+            started_at=self._summary_now_iso(),
+            finished_at=None,
+        )
+
+        def progress(current: int, total_count: int, chat_id: str, outcome: str) -> None:
+            with self._summary_state_lock:
+                if self._summary_active_job_id != job_id:
+                    raise SummaryJobCancelled()
+            self._update_summary_state(
+                state="running",
+                total=total_count,
+                completed=current,
+            )
+
+        worker = Thread(
+            target=self._summary_worker,
+            args=(chats_snapshot, messages_snapshot, export_path, dataset_id, reason, job_id, progress),
+            daemon=True,
+        )
+        with self._summary_state_lock:
+            self._summary_thread = worker
+        worker.start()
+        return self.get_summary_status()
+
+    def _summary_worker(
+        self,
+        chats_snapshot: List[Dict[str, Any]],
+        messages_snapshot: List[Dict[str, Any]],
+        export_path: Optional[Path],
+        target_dataset_id: str,
+        reason: str,
+        job_id: int,
+        progress_cb: Callable[[int, int, str, str], None],
+    ) -> None:
+        logger = logging.getLogger(__name__)
+        logger.info(
+            "Summary job %s started for %d chats (%s)",
+            job_id,
+            len(chats_snapshot),
+            reason,
+        )
+        try:
+            summary_map, stats = summarize_chats(
+                chats_snapshot,
+                messages_snapshot,
+                on_progress=progress_cb,
+            )
+
+            with self._summary_state_lock:
+                current_target = self._summary_target_dataset_id
+                active_job_id = self._summary_active_job_id
+
+            if active_job_id != job_id:
+                logger.info("Summary job %s superseded by a newer request; exiting early.", job_id)
+                return
+
+            if current_target != target_dataset_id:
+                logger.info(
+                    "Summary job %s skipped writing results because dataset changed (expected %s, current %s)",
+                    job_id,
+                    target_dataset_id,
+                    current_target,
+                )
+                return
+
+            summary_map = {chat_id: summary for chat_id, summary in summary_map.items() if summary}
+
+            with self._lock:
+                for chat in self._chats:
+                    chat_id = str(chat.get("chat_id") or "")
+                    if chat_id in summary_map:
+                        chat["summary_128"] = summary_map[chat_id]
+
+                if export_path is not None and export_path.exists():
+                    try:
+                        raw_bytes = export_path.read_bytes()
+                        updated_bytes = _annotate_export_bytes(raw_bytes, summary_map)
+                        export_path.write_bytes(updated_bytes)
+                    except Exception as exc:
+                        logger.warning("Failed to persist summaries to %s: %s", export_path, exc)
+
+                self._bump_version()
+                self._refresh_app_metadata(persist=False)
+
+            logger.info("Summary job %s finished successfully.", job_id)
+            self._update_summary_state(
+                state="completed",
+                message="Summary job complete.",
+                total=stats["total"],
+                completed=stats["total"],
+                finished_at=self._summary_now_iso(),
+            )
+        except SummaryJobCancelled:
+            logger.info("Summary job %s cancelled before completion.", job_id)
+        except Exception as exc:
+            logger.exception("Summary job failed: %s", exc)
+            self._update_summary_state(
+                state="failed",
+                message=str(exc),
+                finished_at=self._summary_now_iso(),
+            )
+        finally:
+            with self._summary_state_lock:
+                if self._summary_active_job_id == job_id:
+                    self._summary_thread = None
+                    self._summary_target_dataset_id = None
+                    self._summary_active_job_id = None
+
     def _build_target_path(
         self,
         original_filename: Optional[str],
@@ -728,6 +976,7 @@ class DataService:
                     bump_version=False,
                     record_upload=False,
                     persist_metadata=False,
+                    run_summarizer=False,
                 )
             except Exception:
                 # Leave dataset empty but continue boot if default fails
@@ -796,9 +1045,25 @@ class DataService:
         persist_filename: Optional[str] = None,
         record_upload: bool = True,
         persist_metadata: bool = True,
+        run_summarizer: bool = True,
     ) -> None:
         """Replace the current chat/messages dataset."""
+        logging.getLogger(__name__).info(
+            "update_chat_export invoked (run_summarizer=%s, source=%s)", run_summarizer, source_label
+        )
         chats, messages = _parse_chat_export(raw_bytes)
+        summary_map: Dict[str, str] = {}
+        for chat in chats:
+            chat_id = str(chat.get("chat_id") or "")
+            if not chat_id:
+                continue
+            summary_text = str(chat.get("summary_128") or "").strip()
+            if summary_text:
+                summary_map[chat_id] = summary_text
+        logging.getLogger(__name__).info(
+            "Summaries prepared for %d chats (total=%d)", len(summary_map), len(chats)
+        )
+        export_bytes = _annotate_export_bytes(raw_bytes, summary_map)
         with self._lock:
             if record_upload:
                 self._dataset_source_override = None
@@ -806,7 +1071,7 @@ class DataService:
             self._messages = messages
             if persist_filename is not None:
                 saved_path = self._persist_file(
-                    raw_bytes,
+                    export_bytes,
                     persist_filename,
                     "all-chats-export",
                     ".json",
@@ -820,6 +1085,9 @@ class DataService:
             else:
                 self._last_updated = self._now_utc()
             self._refresh_app_metadata(chat_updated=record_upload, persist=persist_metadata)
+
+        if run_summarizer:
+            self._enqueue_summary_job("chat export upload")
 
     def update_users(
         self,
@@ -912,6 +1180,16 @@ class DataService:
         export_payload = _build_export_payload_from_openwebui(chats_payload)
         export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
         chats, messages = _parse_chat_export(export_bytes)
+        summary_map: Dict[str, str] = {}
+        for chat in chats:
+            chat_id = str(chat.get("chat_id") or "")
+            if not chat_id:
+                continue
+            summary_text = str(chat.get("summary_128") or "").strip()
+            if summary_text:
+                summary_map[chat_id] = summary_text
+        _apply_summaries_to_export_payload(export_payload, summary_map)
+        export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
 
         normalized_users = _normalize_openwebui_users(users_payload)
 
@@ -933,7 +1211,12 @@ class DataService:
             self._bump_version()
             self._refresh_app_metadata(chat_updated=True, users_updated=True)
 
+        self._enqueue_summary_job("Open WebUI sync")
         return self.get_meta()
+
+    def rebuild_summaries(self) -> Dict[str, Any]:
+        """Trigger asynchronous summarization on the current dataset."""
+        return self._enqueue_summary_job("manual rebuild")
 
     def _bump_version(self) -> None:
         self._dataset_id = uuid4().hex
