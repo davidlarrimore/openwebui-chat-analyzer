@@ -35,6 +35,7 @@ from plotly.subplots import make_subplots
 from textblob import TextBlob
 from wordcloud import WordCloud
 from dotenv import load_dotenv
+from typing import Optional
 
 # Load environment variables from a `.env` file if present.
 load_dotenv()
@@ -93,6 +94,17 @@ ALL_MODELS_OPTION = "All Models"
 class BackendError(Exception):
     """Custom exception raised when the backend API is unreachable or returns an error."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        cause: Optional[BaseException] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.cause = cause
+
 
 def get_api_base_url_candidates():
     """Return backend API base URLs to try in priority order."""
@@ -103,6 +115,107 @@ def get_api_base_url_candidates():
 def get_api_base_url() -> str:
     """Resolve the configured API base URL."""
     return get_api_base_url_candidates()[0]
+
+
+def is_backend_unavailable_error(error: Optional[BackendError]) -> bool:
+    """Return True when the backend error indicates the service is temporarily unavailable."""
+    if error is None:
+        return False
+
+    status_code = getattr(error, "status_code", None)
+    if status_code in {502, 503, 504}:
+        return True
+
+    cause = getattr(error, "cause", None)
+    transient_exceptions = (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        requests.exceptions.ConnectTimeout,
+        requests.exceptions.ReadTimeout,
+    )
+    if isinstance(cause, transient_exceptions):
+        return True
+
+    return False
+
+
+def render_backend_wait_splash(error: Optional[BackendError] = None) -> None:
+    """Render a friendly splash screen while the backend service spins up."""
+    base_url_display = html.escape(get_api_base_url())
+
+    st.markdown(
+        """
+        <style>
+            .owui-backend-wait-wrapper {
+                padding: 3rem 0 4rem 0;
+            }
+            .owui-backend-wait-card {
+                margin: 0 auto;
+                max-width: 520px;
+                padding: 2.5rem 2.75rem;
+                border-radius: 18px;
+                background: linear-gradient(135deg, #eef2ff 0%, #e0f2fe 100%);
+                box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+                text-align: center;
+                color: #1f2937;
+                border: 1px solid rgba(99, 102, 241, 0.12);
+            }
+            .owui-backend-wait-icon {
+                font-size: 3rem;
+                margin-bottom: 1.25rem;
+            }
+            .owui-backend-wait-card h2 {
+                margin-bottom: 0.75rem;
+                font-weight: 700;
+                font-size: 1.75rem;
+            }
+            .owui-backend-wait-card p {
+                font-size: 1rem;
+                line-height: 1.6;
+                margin-bottom: 1.5rem;
+            }
+            .owui-backend-wait-baseurl {
+                display: inline-block;
+                padding: 0.35rem 0.6rem;
+                background: rgba(15, 23, 42, 0.08);
+                border-radius: 999px;
+                font-family: "Fira Code", "Source Code Pro", monospace;
+                font-size: 0.85rem;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container():
+        st.markdown(
+            f"""
+            <div class="owui-backend-wait-wrapper">
+                <div class="owui-backend-wait-card">
+                    <div class="owui-backend-wait-icon">🚀</div>
+                    <h2>Warming up the backend</h2>
+                    <p>We're standing by until the API responds. Once the service at
+                    <span class="owui-backend-wait-baseurl">{base_url_display}</span>
+                    is reachable, click "Retry now" or refresh the page to continue.</p>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        retry_col, hint_col = st.columns([1, 1])
+        with retry_col:
+            if st.button("Retry now"):
+                trigger_rerun()
+        with hint_col:
+            st.caption("Start the FastAPI backend service, then retry once it's ready.")
+
+        if error is not None:
+            with st.expander("Technical details"):
+                st.code(str(error), language="text")
+                status_code = getattr(error, "status_code", None)
+                if status_code is not None:
+                    st.caption(f"HTTP status: {status_code}")
 
 
 def _request_backend(path: str, method: str = "GET", *, timeout: float = 30.0, **kwargs):
@@ -137,14 +250,15 @@ def _request_backend(path: str, method: str = "GET", *, timeout: float = 30.0, *
             message = f"Backend request failed: {exc}"
             if detail:
                 message = f"{message} - {detail}"
-            raise BackendError(message) from exc
+            status_code = getattr(exc.response, "status_code", None) if exc.response is not None else None
+            raise BackendError(message, status_code=status_code, cause=exc) from exc
         except requests.exceptions.RequestException as exc:
             last_exc = exc
             continue
         else:
             break
     else:
-        raise BackendError(f"Backend request failed: {last_exc}") from last_exc
+        raise BackendError(f"Backend request failed: {last_exc}", cause=last_exc) from last_exc
 
     try:
         assert response is not None  # for type checkers
@@ -157,7 +271,7 @@ def _request_backend(path: str, method: str = "GET", *, timeout: float = 30.0, *
     try:
         return response.json()
     except ValueError as exc:
-        raise BackendError("Backend returned an invalid JSON response.") from exc
+        raise BackendError("Backend returned an invalid JSON response.", cause=exc) from exc
 
 
 def get_summary_status():
@@ -1138,11 +1252,14 @@ def main():
     try:
         dataset_meta = fetch_dataset_metadata()
     except BackendError as exc:
-        st.error(
-            "Unable to connect to the backend API. "
-            "Ensure the FastAPI service is running and reachable at "
-            f"`{get_api_base_url()}`.\n\nDetails: {exc}"
-        )
+        if is_backend_unavailable_error(exc):
+            render_backend_wait_splash(exc)
+        else:
+            st.error(
+                "Unable to connect to the backend API. "
+                "Ensure the FastAPI service is running and reachable at "
+                f"`{get_api_base_url()}`.\n\nDetails: {exc}"
+            )
         st.stop()
 
     try:

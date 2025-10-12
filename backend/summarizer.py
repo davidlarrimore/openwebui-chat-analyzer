@@ -6,7 +6,8 @@ import logging
 import os
 import re
 from collections import defaultdict
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+import json
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 from openai import OpenAI
@@ -14,6 +15,7 @@ from sentence_transformers import SentenceTransformer
 
 MAX_CHARS = int(os.getenv("SUMMARY_MAX_CHARS", "256"))
 SALIENT_K = int(os.getenv("SALIENT_K", "10"))
+SUMMARY_BATCH_SIZE = max(1, int(os.getenv("SUMMARY_BATCH_SIZE", "5")))
 EMB_MODEL_NAME = os.getenv("EMB_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
@@ -37,6 +39,14 @@ _HEADLINE_USER_TMPL = (
     "Be specific about the topic or subject matter.\n\n"
     "Context:\n{ctx}\n\n"
     "Summary:"
+)
+_HEADLINE_BATCH_USER_TMPL = (
+    "Summarize each chat interaction below in one line (<=256 characters). No quotes or trailing punctuation.\n"
+    "Identify: (1) the user's main intent, (2) whether the request was successfully fulfilled, and (3) the type of information or response provided (e.g., factual, procedural, analytical, creative).\n"
+    "Be specific about the topic or subject matter.\n"
+    "Respond with a valid JSON array of strings with exactly {count} items, one per chat in order.\n"
+    "Chats:\n{ctx}\n\n"
+    "JSON:"
 )
 
 
@@ -122,6 +132,21 @@ def _trim_one_line(text: str) -> str:
     return cleaned
 
 
+def _build_context(messages: Sequence[Mapping[str, object]]) -> str:
+    lines = _chat_lines(messages)
+    if not lines:
+        return ""
+
+    limit = min(max(SALIENT_K, 8), 12)
+    try:
+        salient = _select_salient(lines, limit)
+    except Exception:
+        salient = lines[:limit]
+
+    context = " ".join(salient)
+    return context
+
+
 def _headline_with_llm(context: str) -> str:
     response = _client.chat.completions.create(
         model=OPENAI_MODEL,
@@ -136,22 +161,45 @@ def _headline_with_llm(context: str) -> str:
     return _trim_one_line(text)
 
 
-def summarize_chat(messages: Sequence[Mapping[str, object]]) -> str:
-    lines = _chat_lines(messages)
-    if not lines:
-        return ""
+def _headline_with_llm_batch(contexts: Sequence[str]) -> List[str]:
+    if not contexts:
+        return []
 
-    limit = min(max(SALIENT_K, 8), 12)
+    numbered_contexts = "\n".join(
+        f"{idx}. {context}" for idx, context in enumerate(contexts, start=1)
+    )
+    response = _client.chat.completions.create(
+        model=OPENAI_MODEL,
+        temperature=0.1,
+        max_tokens=max(64, 64 * len(contexts)),
+        messages=[
+            {"role": "system", "content": _HEADLINE_SYS},
+            {
+                "role": "user",
+                "content": _HEADLINE_BATCH_USER_TMPL.format(
+                    count=len(contexts),
+                    ctx=numbered_contexts,
+                ),
+            },
+        ],
+    )
+    raw_text = (response.choices[0].message.content or "").strip()
     try:
-        salient = _select_salient(lines, limit)
-    except Exception:
-        salient = lines[:limit]
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Failed to parse batch summary response as JSON") from exc
 
-    context = " ".join(salient)
+    if not isinstance(parsed, list):
+        raise ValueError("Batch summary response was not a JSON array.")
+    if len(parsed) != len(contexts):
+        raise ValueError("Batch summary response length mismatched request.")
+
+    return [_trim_one_line(str(item or "")) for item in parsed]
+
+
+def _summarize_context(context: str) -> str:
     if not context:
         return ""
-
-    headline = ""
     try:
         headline = _headline_with_llm(context)
         if headline:
@@ -160,6 +208,14 @@ def summarize_chat(messages: Sequence[Mapping[str, object]]) -> str:
     except Exception as exc:
         _logger.warning("LLM summary request failed; falling back to snippet: %s", exc, exc_info=True)
     return _trim_one_line(context[:MAX_CHARS])
+
+
+def summarize_chat(messages: Sequence[Mapping[str, object]]) -> str:
+    context = _build_context(messages)
+    if not context:
+        return ""
+
+    return _summarize_context(context)
 
 
 ProgressCallback = Optional[Callable[[int, int, str, str], None]]
@@ -191,6 +247,47 @@ def summarize_chats(
     failures = 0
     generated = 0
 
+    batch: List[Tuple[int, Dict[str, object], str, str]] = []
+
+    def flush_batch() -> None:
+        nonlocal failures, generated
+        if not batch:
+            return
+
+        contexts = [item[3] for item in batch]
+        summaries: List[str] = []
+
+        try:
+            summaries = _headline_with_llm_batch(contexts)
+        except Exception as exc:  # pragma: no cover
+            _logger.debug("Batch summarization failed (%s); falling back to sequential.", exc)
+            summaries = []
+
+        if len(summaries) != len(batch):
+            summaries = []
+
+        if not summaries:
+            summaries = [_summarize_context(ctx) for ctx in contexts]
+
+        for (progress_idx, chat_obj, chat_id_value, _), summary_text in zip(batch, summaries):
+            summary_text = summary_text or ""
+            chat_obj["summary_128"] = summary_text
+            if summary_text:
+                generated += 1
+                summary_map[chat_id_value] = summary_text
+                outcome = "generated"
+            else:
+                failures += 1
+                outcome = "failed"
+
+            if on_progress:
+                try:
+                    on_progress(progress_idx, total, chat_id_value, outcome)
+                except Exception:  # pragma: no cover
+                    pass
+
+        batch.clear()
+
     for idx, chat in enumerate(chats_list, start=1):
         chat_id_raw = chat.get("chat_id")
         chat_id = str(chat_id_raw) if chat_id_raw not in (None, "") else ""
@@ -205,28 +302,32 @@ def summarize_chats(
                     pass
             continue
 
-        summary = ""
-        if chat_id:
-            try:
-                summary = summarize_chat(grouped.get(chat_id, []))
-            except Exception:
-                summary = ""
-
-        chat["summary_128"] = summary
-
-        if summary:
-            generated += 1
-            summary_map[chat_id] = summary
-            outcome = "generated"
-        else:
+        if not chat_id:
+            chat["summary_128"] = ""
             failures += 1
-            outcome = "failed"
+            if on_progress:
+                try:
+                    on_progress(idx, total, chat_id, "failed")
+                except Exception:  # pragma: no cover
+                    pass
+            continue
 
-        if on_progress:
-            try:
-                on_progress(idx, total, chat_id, outcome)
-            except Exception:  # pragma: no cover
-                pass
+        context = _build_context(grouped.get(chat_id, []))
+        if not context:
+            chat["summary_128"] = ""
+            failures += 1
+            if on_progress:
+                try:
+                    on_progress(idx, total, chat_id, "failed")
+                except Exception:  # pragma: no cover
+                    pass
+            continue
+
+        batch.append((idx, chat, chat_id, context))
+        if len(batch) >= SUMMARY_BATCH_SIZE:
+            flush_batch()
+
+    flush_batch()
 
     stats = {
         "total": total,
