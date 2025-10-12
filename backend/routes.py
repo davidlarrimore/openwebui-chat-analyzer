@@ -12,28 +12,52 @@ router = APIRouter(prefix="/api/v1", tags=["data"])
 
 @router.get("/chats", response_model=List[Chat])
 def list_chats(service: DataService = Depends(get_data_service)) -> List[Chat]:
-    """Return all chat metadata."""
+    """Return all chat metadata.
+
+    Args:
+        service (DataService): The shared data service dependency.
+    Returns:
+        List[Chat]: Chats converted into the API schema.
+    """
     chats = service.get_chats()
     return [Chat(**chat) for chat in chats]
 
 
 @router.get("/messages", response_model=List[Message])
 def list_messages(service: DataService = Depends(get_data_service)) -> List[Message]:
-    """Return all chat messages."""
+    """Return the flattened list of chat messages.
+
+    Args:
+        service (DataService): The shared data service dependency.
+    Returns:
+        List[Message]: Serialized messages compliant with the API schema.
+    """
     messages = service.get_messages()
     return [Message(**message) for message in messages]
 
 
 @router.get("/users", response_model=List[User])
 def list_users(service: DataService = Depends(get_data_service)) -> List[User]:
-    """Return optional user metadata."""
+    """Return user metadata when available.
+
+    Args:
+        service (DataService): The shared data service dependency.
+    Returns:
+        List[User]: Known user records keyed by exported identifiers.
+    """
     users = service.get_users()
     return [User(**user) for user in users]
 
 
 @router.get("/datasets/meta", response_model=DatasetMeta)
 def dataset_meta(service: DataService = Depends(get_data_service)) -> DatasetMeta:
-    """Return metadata about the current dataset."""
+    """Return metadata about the currently loaded dataset.
+
+    Args:
+        service (DataService): The shared data service dependency.
+    Returns:
+        DatasetMeta: Summary statistics and provenance indicators.
+    """
     return service.get_meta()
 
 
@@ -43,7 +67,13 @@ def dataset_meta(service: DataService = Depends(get_data_service)) -> DatasetMet
     status_code=status.HTTP_200_OK,
 )
 def reset_dataset(service: DataService = Depends(get_data_service)) -> UploadResponse:
-    """Remove all stored dataset artifacts and reset metadata."""
+    """Remove all stored dataset artifacts and reset metadata.
+
+    Args:
+        service (DataService): The shared data service dependency.
+    Returns:
+        UploadResponse: Payload describing the new dataset state.
+    """
     dataset = service.reset_dataset()
     return UploadResponse(detail="Dataset reset successfully.", dataset=dataset)
 
@@ -57,7 +87,17 @@ async def upload_chat_export(
     file: UploadFile = File(...),
     service: DataService = Depends(get_data_service),
 ) -> UploadResponse:
-    """Upload a new chat export JSON file."""
+    """Upload a new chat export JSON file.
+
+    Args:
+        file (UploadFile): Ingested export payload from the UI.
+        service (DataService): The shared data service dependency.
+    Returns:
+        UploadResponse: Dataset status after applying the upload.
+    Raises:
+        HTTPException: When the upload is empty or not JSON encoded.
+    """
+    # Validate the mimetype first; some browsers send octet-stream for JSON drag-drop uploads.
     if file.content_type not in (
         "application/json",
         "text/json",
@@ -92,7 +132,17 @@ async def upload_users_csv(
     file: UploadFile = File(...),
     service: DataService = Depends(get_data_service),
 ) -> UploadResponse:
-    """Upload a users CSV file."""
+    """Upload a users CSV file.
+
+    Args:
+        file (UploadFile): CSV payload containing user metadata.
+        service (DataService): The shared data service dependency.
+    Returns:
+        UploadResponse: Dataset status after applying the upload.
+    Raises:
+        HTTPException: When the upload is empty or not CSV encoded.
+    """
+    # Guard against incorrect uploads (e.g., XLS files) before reading them into memory.
     if file.content_type not in (
         "text/csv",
         "application/csv",
@@ -128,7 +178,16 @@ def sync_openwebui(
     payload: OpenWebUISyncRequest,
     service: DataService = Depends(get_data_service),
 ) -> UploadResponse:
-    """Fetch chats and users directly from an Open WebUI instance and store them locally."""
+    """Fetch chats and users directly from an Open WebUI instance and store them locally.
+
+    Args:
+        payload (OpenWebUISyncRequest): Hostname and optional API key for the remote instance.
+        service (DataService): The shared data service dependency.
+    Returns:
+        UploadResponse: Dataset status after syncing records.
+    Raises:
+        HTTPException: When validation or remote fetch fails.
+    """
     try:
         dataset = service.sync_from_openwebui(payload.hostname, payload.api_key)
     except ValueError as exc:
@@ -141,12 +200,24 @@ def sync_openwebui(
 
 @router.get("/summaries/status")
 def summary_status(service: DataService = Depends(get_data_service)) -> dict:
-    """Return the current status of the summary job."""
+    """Return the current status of the summary job.
+
+    Args:
+        service (DataService): The shared data service dependency.
+    Returns:
+        dict: Progress metrics emitted by the summarizer worker.
+    """
     return service.get_summary_status()
 
 
 @router.post("/summaries/rebuild")
 def rebuild_summaries(service: DataService = Depends(get_data_service)) -> dict:
-    """Trigger an asynchronous rebuild of chat summaries."""
+    """Trigger an asynchronous rebuild of chat summaries.
+
+    Args:
+        service (DataService): The shared data service dependency.
+    Returns:
+        dict: Acknowledgement payload returned by the service layer.
+    """
     status_state = service.rebuild_summaries()
     return {"ok": True, "status": status_state}

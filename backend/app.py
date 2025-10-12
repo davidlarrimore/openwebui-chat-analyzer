@@ -13,7 +13,8 @@ app = FastAPI(
     description="Backend service powering the Open WebUI Chat Analyzer dashboard.",
 )
 
-
+# Configure CORS so that the Streamlit frontend (and other approved origins) can call the API.
+# We deliberately keep the allow list driven by configuration so deployments can constrain access.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=API_ALLOWED_ORIGINS,
@@ -22,19 +23,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount the API router that exposes all data related endpoints.
 app.include_router(router)
 
 
 @app.on_event("startup")
 def ensure_data_loaded() -> None:
-    """Ensure the singleton data service loads default datasets on startup."""
+    """Warm the shared DataService so the app is ready to serve requests.
+
+    Ensures the singleton data service hydrates its caches when the ASGI server starts.
+    Returns:
+        None
+    """
     # The singleton already loads data in its __init__, but calling here captures reload scenarios.
     data_service.load_initial_data()
 
 
 @app.get("/health", tags=["health"])
 def healthcheck() -> dict[str, str]:
-    """Basic health-check endpoint."""
+    """Report a simple OK status used for readiness checks.
+
+    Returns:
+        dict[str, str]: A service status payload.
+    """
     return {"status": "ok"}
 
 

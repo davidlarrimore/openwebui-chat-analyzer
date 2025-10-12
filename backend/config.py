@@ -13,7 +13,13 @@ load_dotenv()
 
 
 def _split_origins(value: str) -> List[str]:
-    """Convert a comma-separated origin string into a clean list."""
+    """Convert a comma-separated origin string into a clean list.
+
+    Args:
+        value (str): One or many origins separated by commas.
+    Returns:
+        List[str]: Normalized origin values with whitespace removed.
+    """
     return [origin.strip() for origin in value.split(",") if origin.strip()]
 
 
@@ -23,4 +29,5 @@ DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 API_HOST = os.getenv("OWUI_API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("OWUI_API_PORT", "8502"))
 API_ALLOWED_ORIGINS = _split_origins(os.getenv("OWUI_API_ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS))
+# Resolve the data directory eagerly so downstream code can rely on absolute paths.
 DATA_DIR = Path(os.getenv("OWUI_DATA_DIR", str(DEFAULT_DATA_DIR))).resolve()

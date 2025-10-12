@@ -7,7 +7,21 @@ from pydantic import BaseModel, Field
 
 
 class Chat(BaseModel):
-    """Serialized chat metadata."""
+    """Serialized chat metadata as exposed by the API.
+
+    Attributes:
+        chat_id: Unique identifier for the chat conversation.
+        user_id: Owning user identifier, if available.
+        title: User-facing conversation title.
+        summary_128: Locally generated, truncated summary string.
+        created_at: Creation timestamp pulled from the export.
+        updated_at: Last modification timestamp pulled from the export.
+        archived: Whether the chat is marked archived.
+        pinned: Whether the chat is pinned in the source system.
+        tags: Optional tags carried over from the export metadata.
+        files_uploaded: Number of files attached to the chat.
+        files: Opaque metadata about uploaded files, if any.
+    """
 
     chat_id: str = Field(..., description="Unique identifier for the chat")
     user_id: Optional[str] = Field(
@@ -37,7 +51,18 @@ class Chat(BaseModel):
 
 
 class Message(BaseModel):
-    """Serialized chat message."""
+    """Serialized chat message used in analytics and summarization.
+
+    Attributes:
+        chat_id: Identifier for the parent chat.
+        message_id: Stable identifier for the message.
+        parent_id: Identifier of the parent message, used for threading.
+        role: Role of sender (user/assistant).
+        content: Plain-text message content.
+        timestamp: Source timestamp from the export, if provided.
+        model: Name of the model that produced the response (if assistant).
+        models: Alternate model names when the export contains multiple values.
+    """
 
     chat_id: str = Field(..., description="Identifier of the chat this message belongs to")
     message_id: str = Field(..., description="Unique identifier for the message")
@@ -56,7 +81,7 @@ class Message(BaseModel):
 
 
 class User(BaseModel):
-    """Serialized user metadata."""
+    """Serialized user metadata consumed by the frontend."""
 
     user_id: str = Field(..., description="Unique user identifier")
     name: str = Field(..., description="Display name")
@@ -91,7 +116,17 @@ class AppMetadata(BaseModel):
 
 
 class DatasetMeta(BaseModel):
-    """Metadata describing the currently loaded dataset."""
+    """Metadata describing the currently loaded dataset.
+
+    Attributes:
+        dataset_id: Synthetic identifier that changes when data updates.
+        source: Human-readable description of the dataset origin.
+        last_updated: Last modification timestamp for the dataset.
+        chat_count: Number of chats currently stored.
+        message_count: Number of messages currently stored.
+        user_count: Number of user records currently stored.
+        app_metadata: Aggregate analytics metadata for the frontend.
+    """
 
     dataset_id: str = Field(..., description="Opaque identifier that changes when data updates")
     source: str = Field(..., description="Human-friendly description of the data source")

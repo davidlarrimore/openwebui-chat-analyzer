@@ -42,6 +42,13 @@ _HEADLINE_USER_TMPL = (
 
 
 def _clean(text: str) -> str:
+    """Normalize message content so it is safe for downstream processing.
+
+    Args:
+        text (str): Raw message text from a conversation export.
+    Returns:
+        str: Sanitized content with markdown fences removed and whitespace squashed.
+    """
     if not text:
         return ""
     text = text.replace("```", " ")
@@ -50,6 +57,13 @@ def _clean(text: str) -> str:
 
 
 def _chat_lines(messages: Sequence[Mapping[str, object]]) -> List[str]:
+    """Convert message dictionaries into prefixed lines useful for summarization.
+
+    Args:
+        messages (Sequence[Mapping[str, object]]): Chat records emitted by the export.
+    Returns:
+        List[str]: Ordered lines in the format `role: content`.
+    """
     lines: List[str] = []
     for message in messages:
         role = str(message.get("role", "")).strip()
@@ -62,10 +76,19 @@ def _chat_lines(messages: Sequence[Mapping[str, object]]) -> List[str]:
 
 
 def _cosine_sim_matrix(embeddings: np.ndarray) -> np.ndarray:
+    """Compute a cosine similarity matrix for ranking diverse snippets."""
     return embeddings @ embeddings.T
 
 
 def _select_salient(lines: Sequence[str], k: int) -> List[str]:
+    """Select the most representative conversation lines while preserving diversity.
+
+    Args:
+        lines (Sequence[str]): Candidate message lines derived from a chat.
+        k (int): Target number of salient lines to retain.
+    Returns:
+        List[str]: Lines chosen by maximal marginal relevance heuristics.
+    """
     if not lines:
         return []
 
@@ -92,6 +115,7 @@ def _select_salient(lines: Sequence[str], k: int) -> List[str]:
 
     while len(selected) < limit and len(selected) < len(pre_idx):
         if not selected:
+            # Seed the selection with the line most aligned to the centroid embedding.
             best = int(np.argmax(relevance[pre_idx]))
             selected.append(best)
             continue
@@ -103,6 +127,7 @@ def _select_salient(lines: Sequence[str], k: int) -> List[str]:
                 continue
             rel = relevance[pre_idx[candidate]]
             div = max(sim_mat[candidate, idx] for idx in selected) if selected else 0.0
+            # Score balances relevance to topic centroid with dissimilarity to selected lines.
             scores.append(lambda_param * rel - (1 - lambda_param) * div)
 
         next_idx = int(np.argmax(scores))
@@ -115,6 +140,7 @@ def _select_salient(lines: Sequence[str], k: int) -> List[str]:
 
 
 def _trim_one_line(text: str) -> str:
+    """Return a single-line summary clipped to the configured character limit."""
     cleaned = _clean(text)
     cleaned = cleaned.split("\n", 1)[0]
     cleaned = cleaned.strip('"\'' "“”‘’ ").rstrip(".")
@@ -124,6 +150,7 @@ def _trim_one_line(text: str) -> str:
 
 
 def _build_context(messages: Sequence[Mapping[str, object]]) -> str:
+    """Build a condensed context window from a chat's messages."""
     lines = _chat_lines(messages)
     if not lines:
         return ""
@@ -132,6 +159,7 @@ def _build_context(messages: Sequence[Mapping[str, object]]) -> str:
     try:
         salient = _select_salient(lines, limit)
     except Exception:
+        # If the embedding model fails, degrade gracefully with the most recent lines.
         salient = lines[:limit]
 
     context = " ".join(salient)
@@ -139,6 +167,13 @@ def _build_context(messages: Sequence[Mapping[str, object]]) -> str:
 
 
 def _headline_with_llm(context: str) -> str:
+    """Call the configured local LLM to obtain a one-line headline.
+
+    Args:
+        context (str): Condensed conversation snippet used as the LLM prompt.
+    Returns:
+        str: Model-generated summary trimmed to a single line.
+    """
     response = _client.chat.completions.create(
         model=OPENAI_MODEL,
         temperature=0.1,
@@ -153,6 +188,13 @@ def _headline_with_llm(context: str) -> str:
 
 
 def _summarize_context(context: str) -> str:
+    """Generate a summary via the LLM with a deterministic fallback.
+
+    Args:
+        context (str): Concatenated salient conversation lines.
+    Returns:
+        str: Single-line summary, either model generated or clipped context.
+    """
     if not context:
         return ""
     try:
@@ -166,6 +208,13 @@ def _summarize_context(context: str) -> str:
 
 
 def summarize_chat(messages: Sequence[Mapping[str, object]]) -> str:
+    """Summarize a single chat's message history.
+
+    Args:
+        messages (Sequence[Mapping[str, object]]): Exported messages for a single chat.
+    Returns:
+        str: Summary line suitable for display in the UI.
+    """
     context = _build_context(messages)
     if not context:
         return ""
@@ -174,6 +223,7 @@ def summarize_chat(messages: Sequence[Mapping[str, object]]) -> str:
 
 
 ProgressCallback = Optional[Callable[[int, int, str, str, Optional[Dict[str, object]]], None]]
+# Optional hook signature used to stream summarization progress back to callers.
 
 
 def summarize_chats(
@@ -181,7 +231,15 @@ def summarize_chats(
     messages: Sequence[Mapping[str, object]],
     on_progress: ProgressCallback = None,
 ) -> tuple[Dict[str, str], Dict[str, int]]:
-    """Summarize chats and return a map of chat_id -> summary plus stats."""
+    """Summarize chats and return a map of chat_id -> summary plus stats.
+
+    Args:
+        chats (Iterable[Dict[str, object]]): Chat metadata dictionaries.
+        messages (Sequence[Mapping[str, object]]): All messages in the dataset.
+        on_progress (ProgressCallback, optional): Callback invoked after each chat.
+    Returns:
+        tuple[Dict[str, str], Dict[str, int]]: Summary map and aggregate statistics.
+    """
     chats_list = list(chats)
     messages_list = list(messages)
     total = len(chats_list)
@@ -195,6 +253,7 @@ def summarize_chats(
         chat_id = str(chat_id_raw) if chat_id_raw not in (None, "") else ""
         if not chat_id:
             continue
+        # Bucket messages by chat to avoid repeatedly scanning the full list later.
         grouped[chat_id].append(message)
 
     summary_map: Dict[str, str] = {}
@@ -209,6 +268,7 @@ def summarize_chats(
         if existing_summary:
             chat["summary_128"] = existing_summary
             skipped += 1
+            # Skip work for chats that ship with a pre-computed summary in the export.
             if on_progress:
                 details = {
                     "type": "skip",
@@ -227,6 +287,7 @@ def summarize_chats(
             chat["summary_128"] = ""
             failures += 1
             if on_progress:
+                # Invalid chats are tracked as failures so the UI can surface data issues.
                 details = {
                     "type": "invalid_chat",
                     "chat_id": chat_id,
@@ -245,6 +306,7 @@ def summarize_chats(
             chat["summary_128"] = ""
             failures += 1
             if on_progress:
+                # Chats without user/assistant messages cannot be summarized meaningfully.
                 details = {
                     "type": "empty_context",
                     "chat_id": chat_id,
@@ -267,6 +329,7 @@ def summarize_chats(
             summary_map[chat_id] = summary_text
             outcome = "generated"
         else:
+            # Treat empty strings from the model as failures so totals still reconcile.
             failures += 1
             outcome = "failed"
 
@@ -303,4 +366,5 @@ def attach_summaries(
     chats: Iterable[Dict[str, object]],
     messages: Sequence[Mapping[str, object]],
 ) -> None:
+    """Convenience wrapper that mutates chat dictionaries with generated summaries."""
     summarize_chats(chats, messages)
