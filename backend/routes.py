@@ -189,13 +189,17 @@ def sync_openwebui(
         HTTPException: When validation or remote fetch fails.
     """
     try:
-        dataset = service.sync_from_openwebui(payload.hostname, payload.api_key)
+        dataset, stats = service.sync_from_openwebui(payload.hostname, payload.api_key)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    return UploadResponse(detail="Open WebUI data synced successfully.", dataset=dataset)
+    return UploadResponse(
+        detail="Open WebUI data synced successfully.",
+        dataset=dataset,
+        stats=stats,
+    )
 
 
 @router.get("/summaries/status")

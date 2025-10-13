@@ -15,7 +15,7 @@ from frontend.core.api import (
     upload_users_csv,
 )
 from frontend.core.config import AppConfig
-from frontend.core.models import DatasetMeta
+from frontend.core.models import DatasetMeta, SummaryStatus
 from frontend.core.processing import determine_dataset_source
 from frontend.ui.data_access import load_processed_data
 from frontend.utils import state as app_state
@@ -88,11 +88,91 @@ def render_direct_connect_section(
                 return
 
             dataset_info = (sync_result.dataset or {})
-            chat_count = dataset_info.get("chat_count", 0)
-            user_count = dataset_info.get("user_count", 0)
-            app_state.append_direct_connect_log(f"Retrieved {chat_count} chats", "📥")
-            app_state.append_direct_connect_log(f"Retrieved {user_count} users", "🙋")
-            app_state.append_direct_connect_log("Summarizer job queued", "🤖")
+            stats = sync_result.stats or {}
+            chat_count = int(dataset_info.get("chat_count", 0) or 0)
+            user_count = int(dataset_info.get("user_count", 0) or 0)
+            message_count = int(dataset_info.get("message_count", 0) or stats.get("total_messages", 0) or 0)
+
+            source_matched = bool(stats.get("source_matched", False))
+            mode = stats.get("mode")
+            normalized_host = str(stats.get("normalized_hostname") or trimmed_host)
+            new_chats = int(stats.get("new_chats", 0) or 0)
+            new_messages = int(stats.get("new_messages", 0) or 0)
+            new_users = int(stats.get("new_users", 0) or 0)
+            total_chats = int(stats.get("total_chats", chat_count) or chat_count)
+            total_users = int(stats.get("total_users", user_count) or user_count)
+            total_messages = int(stats.get("total_messages", message_count) or message_count)
+            queued_chat_ids = stats.get("queued_chat_ids") or []
+            summarizer_enqueued = stats.get("summarizer_enqueued")
+            if summarizer_enqueued is None:
+                summarizer_enqueued = chat_count > 0
+            summarizer_enqueued = bool(summarizer_enqueued)
+
+            def _format_count(value: int, noun: str) -> str:
+                label = noun if value == 1 else f"{noun}s"
+                return f"{value:,} {label}"
+
+            if stats:
+                if source_matched:
+                    if mode == "noop":
+                        app_state.append_direct_connect_log(
+                            f"Dataset already up to date for {normalized_host}; no new chats or users detected.",
+                            "ℹ️ ",
+                        )
+                    else:
+                        app_state.append_direct_connect_log(
+                            f"Updating existing dataset for {normalized_host}...",
+                            "🔄",
+                        )
+                        change_fragments = []
+                        if new_chats:
+                            change_fragments.append(_format_count(new_chats, "new chat"))
+                        if new_messages:
+                            change_fragments.append(_format_count(new_messages, "message"))
+                        if new_users:
+                            change_fragments.append(_format_count(new_users, "new user"))
+                        if change_fragments:
+                            app_state.append_direct_connect_log(
+                                "Added " + ", ".join(change_fragments) + ".",
+                                "➕",
+                            )
+                        else:
+                            app_state.append_direct_connect_log("No new records detected.", "ℹ️ ")
+                        app_state.append_direct_connect_log(
+                            "Dataset now contains "
+                            f"{_format_count(total_chats, 'chat')}, "
+                            f"{_format_count(total_messages, 'message')}, and "
+                            f"{_format_count(total_users, 'user')}.",
+                            "📊",
+                        )
+                else:
+                    app_state.append_direct_connect_log(
+                        f"Loaded dataset from {normalized_host}.",
+                        "📦",
+                    )
+                    app_state.append_direct_connect_log(
+                        f"Retrieved {_format_count(chat_count, 'chat')} and {_format_count(user_count, 'user')}.",
+                        "📥",
+                    )
+                    app_state.append_direct_connect_log(
+                        f"Captured {_format_count(message_count, 'message')} in total.",
+                        "🗂️",
+                    )
+            else:
+                app_state.append_direct_connect_log(f"Retrieved {chat_count} chats", "📥")
+                app_state.append_direct_connect_log(f"Retrieved {user_count} users", "🙋")
+
+            if summarizer_enqueued:
+                target_count = len(queued_chat_ids) if queued_chat_ids else (new_chats or chat_count)
+                app_state.append_direct_connect_log(
+                    f"Summarizer queued for {_format_count(target_count, 'chat')}.",
+                    "🤖",
+                )
+            else:
+                app_state.append_direct_connect_log(
+                    "Summarizer skipped (no new chats to process).",
+                    "ℹ️ ",
+                )
             render_log()
 
             def _summary_callback(status) -> None:
@@ -132,24 +212,26 @@ def render_direct_connect_section(
                 render_log()
 
             load_processed_data.clear()
-            app_state.append_direct_connect_log("🧠 Building chat summaries...")
-            render_log()
+            status = SummaryStatus(state="idle")
+            if summarizer_enqueued:
+                app_state.append_direct_connect_log("🧠 Building chat summaries...")
+                render_log()
 
-            with st.spinner("🧠 Building chat summaries..."):
-                status = poll_summary_status(on_update=_summary_callback)
+                with st.spinner("🧠 Building chat summaries..."):
+                    status = poll_summary_status(on_update=_summary_callback)
 
             state = status.state
-            if state == "completed":
+            if summarizer_enqueued and state == "completed":
                 app_state.append_direct_connect_log("Chat summaries rebuilt", "✅")
                 st.toast("Chat summaries rebuilt.", icon="🧠")
-            elif state == "failed":
+            elif summarizer_enqueued and state == "failed":
                 message = status.message or "Unknown error"
                 app_state.append_direct_connect_log(f"Summary job failed: {message}", "⚠️")
                 expander.error(f"Summary job failed: {message}")
-            elif state == "cancelled":
+            elif summarizer_enqueued and state == "cancelled":
                 app_state.append_direct_connect_log("Summary job cancelled (dataset changed)", "⚠️")
                 expander.warning("Summary job was cancelled because the dataset changed.")
-            elif state == "running":
+            elif summarizer_enqueued and state == "running":
                 app_state.append_direct_connect_log("Summaries still running in the background", "ℹ️ ")
                 expander.info(
                     "Summaries are still running in the background; new headlines will appear once complete."

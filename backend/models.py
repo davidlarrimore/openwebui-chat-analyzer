@@ -1,7 +1,7 @@
 """Pydantic models for the Open WebUI Chat Analyzer backend."""
 
 from datetime import date, datetime
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Literal
 
 from pydantic import BaseModel, Field
 
@@ -140,11 +140,51 @@ class DatasetMeta(BaseModel):
     )
 
 
+class DatasetSyncStats(BaseModel):
+    """Structured summary of a dataset sync operation."""
+
+    mode: Literal["full", "incremental", "noop"] = Field(
+        ...,
+        description="Indicates whether the sync replaced all data, appended to existing data, or found nothing new.",
+    )
+    source_matched: bool = Field(
+        ..., description="True when the submitted hostname matches the current dataset source."
+    )
+    submitted_hostname: str = Field(
+        ..., description="Hostname submitted by the user for the sync request."
+    )
+    normalized_hostname: str = Field(
+        ..., description="Normalized hostname used internally for Open WebUI requests."
+    )
+    source_display: str = Field(
+        ..., description="Human-readable dataset source after the sync completes."
+    )
+    new_chats: int = Field(..., description="Number of newly appended chats.")
+    new_messages: int = Field(..., description="Number of newly appended messages.")
+    new_users: int = Field(..., description="Number of newly appended users.")
+    summarizer_enqueued: bool = Field(
+        ..., description="True when the summarizer was queued for the sync."
+    )
+    total_chats: int = Field(..., description="Total number of chats after the sync.")
+    total_messages: int = Field(
+        ..., description="Total number of messages after the sync."
+    )
+    total_users: int = Field(..., description="Total number of users after the sync.")
+    queued_chat_ids: Optional[List[str]] = Field(
+        default=None,
+        description="Identifiers of chats queued for summarization (if partial job scheduled).",
+    )
+
+
 class UploadResponse(BaseModel):
     """Response payload returned after successful uploads."""
 
     detail: str = Field(..., description="Human readable status message")
     dataset: DatasetMeta = Field(..., description="Dataset metadata after the upload finishes")
+    stats: Optional[DatasetSyncStats] = Field(
+        default=None,
+        description="Optional sync statistics returned by direct-connect operations.",
+    )
 
 
 class OpenWebUISyncRequest(BaseModel):

@@ -10,7 +10,7 @@ from datetime import datetime, timezone, date
 from io import BytesIO
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 
 import pandas as pd
@@ -18,7 +18,7 @@ import requests
 from urllib.parse import urlparse, urlunparse
 
 from .config import DATA_DIR
-from .models import AppMetadata, DatasetMeta
+from .models import AppMetadata, DatasetMeta, DatasetSyncStats
 from .summarizer import summarize_chats
 
 
@@ -429,6 +429,35 @@ def _build_export_payload_from_openwebui(payload: Any) -> List[Dict[str, Any]]:
     return export_ready
 
 
+def _extract_chat_id_from_export_entry(entry: Any) -> Optional[str]:
+    """Return the chat identifier from an export entry if available."""
+    if not isinstance(entry, dict):
+        return None
+    chat_id = entry.get("id") or entry.get("_id") or entry.get("chat_id")
+    if chat_id in (None, "", []):
+        chat_section = entry.get("chat")
+        if isinstance(chat_section, dict):
+            chat_id = chat_section.get("id")
+    if chat_id in (None, "", []):
+        return None
+    return str(chat_id)
+
+
+def _normalize_source_for_compare(value: Optional[str]) -> Optional[Tuple[str, str]]:
+    """Normalize URL-like values to support source comparisons."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    candidate = value.strip()
+    try:
+        normalized = _normalize_hostname(candidate)
+    except ValueError:
+        return None
+    parsed = urlparse(normalized)
+    netloc = parsed.netloc.lower()
+    path = parsed.path.rstrip("/")
+    return netloc, path
+
+
 def _apply_summaries_to_export_payload(
     payload: Any,
     summary_map: Dict[str, str],
@@ -632,15 +661,19 @@ class DataService:
         chat_updated: bool = False,
         users_updated: bool = False,
         persist: bool = True,
+        force_timestamp: bool = False,
     ) -> None:
         now = self._now_utc()
-        if chat_updated:
-            self._chat_uploaded_at = now
-        if users_updated:
-            self._users_uploaded_at = now
-
         chat_count = len(self._chats)
         user_count = len(self._users)
+
+        update_chat_timestamp = chat_updated or (force_timestamp and chat_count > 0)
+        update_user_timestamp = users_updated or (force_timestamp and user_count > 0)
+
+        if update_chat_timestamp:
+            self._chat_uploaded_at = now
+        if update_user_timestamp:
+            self._users_uploaded_at = now
 
         first_day: Optional[date]
         last_day: Optional[date]
@@ -662,12 +695,14 @@ class DataService:
 
         if chat_count == 0 and user_count == 0:
             self._dataset_pulled_at = None
-        elif chat_updated or users_updated:
+        elif chat_updated or users_updated or force_timestamp:
             self._dataset_pulled_at = now
         elif self._dataset_pulled_at is None:
             self._dataset_pulled_at = self._chat_uploaded_at or self._users_uploaded_at
 
-        should_recalculate_source = chat_updated or users_updated or self._dataset_source_override is None
+        should_recalculate_source = (
+            chat_updated or users_updated or force_timestamp or self._dataset_source_override is None
+        )
         if should_recalculate_source:
             display_source = self._determine_dataset_source()
             self._dataset_source_override = display_source
@@ -738,10 +773,40 @@ class DataService:
         with self._summary_state_lock:
             return dict(self._summary_state)
 
-    def _enqueue_summary_job(self, reason: str) -> Dict[str, Any]:
+    def _enqueue_summary_job(
+        self,
+        reason: str,
+        chat_ids: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        chat_id_filter: Optional[Set[str]] = None
+        if chat_ids is not None:
+            chat_id_filter = {str(chat_id).strip() for chat_id in chat_ids if str(chat_id).strip()}
+            if not chat_id_filter:
+                self._update_summary_state(
+                    state="idle",
+                    message="No eligible chats queued for summarization.",
+                    total=0,
+                    completed=0,
+                    started_at=None,
+                    finished_at=self._summary_now_iso(),
+                )
+                return self.get_summary_status()
+
         with self._lock:
-            chats_snapshot = [chat.copy() for chat in self._chats]
-            messages_snapshot = [message.copy() for message in self._messages]
+            if chat_id_filter is not None:
+                chats_snapshot = [
+                    chat.copy()
+                    for chat in self._chats
+                    if str(chat.get("chat_id") or "").strip() in chat_id_filter
+                ]
+                messages_snapshot = [
+                    message.copy()
+                    for message in self._messages
+                    if str(message.get("chat_id") or "").strip() in chat_id_filter
+                ]
+            else:
+                chats_snapshot = [chat.copy() for chat in self._chats]
+                messages_snapshot = [message.copy() for message in self._messages]
             export_path = self._find_latest_chat_export()
             dataset_id = self._dataset_id
 
@@ -969,6 +1034,39 @@ class DataService:
         target_path.write_bytes(raw_bytes)
         return target_path
 
+    def _load_existing_export_entries(self) -> List[Dict[str, Any]]:
+        export_path = self._find_latest_chat_export()
+        if export_path is None or not export_path.exists():
+            return []
+        try:
+            payload = json.loads(export_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        if isinstance(payload, list):
+            return payload
+        return []
+
+    def _combine_export_entries(
+        self,
+        existing_entries: Iterable[Dict[str, Any]],
+        new_entries: Iterable[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        combined: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for entry in existing_entries:
+            chat_id = _extract_chat_id_from_export_entry(entry)
+            if not chat_id or chat_id in seen:
+                continue
+            combined.append(entry)
+            seen.add(chat_id)
+        for entry in new_entries:
+            chat_id = _extract_chat_id_from_export_entry(entry)
+            if not chat_id or chat_id in seen:
+                continue
+            combined.append(entry)
+            seen.add(chat_id)
+        return combined
+
     def _write_users_json(self, users: List[Dict[str, Any]]) -> Path:
         self._ensure_data_dir()
         target_path = self._data_dir / "users.json"
@@ -1085,6 +1183,98 @@ class DataService:
     # ------------------------------------------------------------------
     # Dataset mutations
     # ------------------------------------------------------------------
+    def _merge_openwebui_dataset(
+        self,
+        base_url: str,
+        chats: List[Dict[str, Any]],
+        messages: List[Dict[str, Any]],
+        normalized_users: List[Dict[str, str]],
+        export_payload: List[Dict[str, Any]],
+    ) -> Tuple[List[str], int, List[str]]:
+        new_chat_ids: List[str] = []
+        new_export_entries: List[Dict[str, Any]] = []
+        new_user_ids: List[str] = []
+        new_message_count = 0
+
+        with self._lock:
+            existing_chat_ids: Set[str] = set()
+            for chat in self._chats:
+                chat_id_raw = chat.get("chat_id")
+                chat_id = str(chat_id_raw) if chat_id_raw not in (None, "", []) else ""
+                if chat_id:
+                    existing_chat_ids.add(chat_id)
+
+            for chat in chats:
+                chat_id_raw = chat.get("chat_id")
+                chat_id = str(chat_id_raw) if chat_id_raw not in (None, "", []) else ""
+                if not chat_id or chat_id in existing_chat_ids:
+                    continue
+                self._chats.append(chat)
+                existing_chat_ids.add(chat_id)
+                new_chat_ids.append(chat_id)
+
+            if new_chat_ids:
+                new_chat_id_set = set(new_chat_ids)
+                for message in messages:
+                    chat_id_raw = message.get("chat_id")
+                    chat_id = str(chat_id_raw) if chat_id_raw not in (None, "", []) else ""
+                    if chat_id in new_chat_id_set:
+                        self._messages.append(message)
+                        new_message_count += 1
+
+                for entry in export_payload:
+                    entry_chat_id = _extract_chat_id_from_export_entry(entry)
+                    if entry_chat_id and entry_chat_id in new_chat_id_set:
+                        new_export_entries.append(entry)
+
+            existing_user_ids: Set[str] = set()
+            for user in self._users:
+                user_id_raw = user.get("user_id")
+                user_id = str(user_id_raw) if user_id_raw not in (None, "", []) else ""
+                if user_id:
+                    existing_user_ids.add(user_id)
+
+            for user in normalized_users:
+                user_id_raw = user.get("user_id")
+                user_id = str(user_id_raw) if user_id_raw not in (None, "", []) else ""
+                if not user_id or user_id in existing_user_ids:
+                    continue
+                name = str(user.get("name") or "")
+                self._users.append({"user_id": user_id, "name": name})
+                existing_user_ids.add(user_id)
+                new_user_ids.append(user_id)
+
+            self._dataset_source_override = None
+            self._source = f"openwebui:{base_url}"
+            if new_chat_ids or new_user_ids:
+                self._bump_version()
+            else:
+                self._last_updated = self._now_utc()
+
+            if new_export_entries:
+                existing_entries = self._load_existing_export_entries()
+                combined_entries = self._combine_export_entries(existing_entries, new_export_entries)
+                export_bytes = json.dumps(combined_entries, ensure_ascii=False, indent=2).encode("utf-8")
+                self._persist_file(
+                    export_bytes,
+                    "all-chats-export-openwebui.json",
+                    "all-chats-export",
+                    ".json",
+                    exclusive=True,
+                )
+
+            if new_user_ids:
+                self._write_users_json(self._users)
+
+            force_timestamp = not new_chat_ids and not new_user_ids
+            self._refresh_app_metadata(
+                chat_updated=bool(new_chat_ids),
+                users_updated=bool(new_user_ids),
+                force_timestamp=force_timestamp,
+            )
+
+        return new_chat_ids, new_message_count, new_user_ids
+
     def update_chat_export(
         self,
         raw_bytes: bytes,
@@ -1230,7 +1420,7 @@ class DataService:
 
         return self.get_meta()
 
-    def sync_from_openwebui(self, hostname: str, api_key: Optional[str]) -> DatasetMeta:
+    def sync_from_openwebui(self, hostname: str, api_key: Optional[str]) -> Tuple[DatasetMeta, DatasetSyncStats]:
         """Pull chats and users directly from an Open WebUI instance."""
         base_url = _normalize_hostname(hostname)
         headers = {"Accept": "application/json"}
@@ -1291,6 +1481,64 @@ class DataService:
         normalized_users = _normalize_openwebui_users(users_payload)
 
         with self._lock:
+            current_source_display = self._compute_dataset_source_display()
+        requested_origin = _normalize_source_for_compare(base_url)
+        current_origin = _normalize_source_for_compare(current_source_display)
+        same_source = requested_origin is not None and requested_origin == current_origin
+
+        if same_source:
+            new_chat_ids, new_message_count, new_user_ids = self._merge_openwebui_dataset(
+                base_url,
+                chats,
+                messages,
+                normalized_users,
+                export_payload,
+            )
+            summarizer_enqueued = False
+            if new_chat_ids:
+                self._enqueue_summary_job(
+                    f"Open WebUI sync (+{len(new_chat_ids)} new chats)",
+                    chat_ids=new_chat_ids,
+                )
+                summarizer_enqueued = True
+            elif new_user_ids:
+                self._update_summary_state(
+                    state="idle",
+                    message="No new chats detected; user list updated.",
+                    total=0,
+                    completed=0,
+                    started_at=None,
+                    finished_at=self._summary_now_iso(),
+                )
+            else:
+                self._update_summary_state(
+                    state="idle",
+                    message="No new chats detected; dataset already up to date.",
+                    total=0,
+                    completed=0,
+                    started_at=None,
+                    finished_at=self._summary_now_iso(),
+                )
+            mode = "incremental" if (new_chat_ids or new_user_ids) else "noop"
+            dataset_meta = self.get_meta()
+            stats = DatasetSyncStats(
+                mode=mode,
+                source_matched=True,
+                submitted_hostname=str(hostname),
+                normalized_hostname=base_url,
+                source_display=dataset_meta.source,
+                new_chats=len(new_chat_ids),
+                new_messages=new_message_count,
+                new_users=len(new_user_ids),
+                summarizer_enqueued=summarizer_enqueued,
+                total_chats=dataset_meta.chat_count,
+                total_messages=dataset_meta.message_count,
+                total_users=dataset_meta.user_count,
+                queued_chat_ids=new_chat_ids if summarizer_enqueued else None,
+            )
+            return dataset_meta, stats
+
+        with self._lock:
             self._dataset_source_override = None
             self._chats = chats
             self._messages = messages
@@ -1308,8 +1556,24 @@ class DataService:
             self._bump_version()
             self._refresh_app_metadata(chat_updated=True, users_updated=True)
 
+        dataset_meta = self.get_meta()
         self._enqueue_summary_job("Open WebUI sync")
-        return self.get_meta()
+        stats = DatasetSyncStats(
+            mode="full",
+            source_matched=False,
+            submitted_hostname=str(hostname),
+            normalized_hostname=base_url,
+            source_display=dataset_meta.source,
+            new_chats=len(chats),
+            new_messages=len(messages),
+            new_users=len(normalized_users),
+            summarizer_enqueued=dataset_meta.chat_count > 0,
+            total_chats=dataset_meta.chat_count,
+            total_messages=dataset_meta.message_count,
+            total_users=dataset_meta.user_count,
+            queued_chat_ids=None,
+        )
+        return dataset_meta, stats
 
     def rebuild_summaries(self) -> Dict[str, Any]:
         """Trigger asynchronous summarization on the current dataset."""

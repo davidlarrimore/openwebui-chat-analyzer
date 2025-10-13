@@ -59,6 +59,7 @@ class UploadResult:
 
     detail: Optional[str] = None
     dataset: Dict[str, Any] = field(default_factory=dict)
+    stats: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "UploadResult":
@@ -66,6 +67,7 @@ class UploadResult:
         return cls(
             detail=payload.get("detail"),
             dataset=payload.get("dataset") or {},
+            stats=payload.get("stats"),
         )
 
 
