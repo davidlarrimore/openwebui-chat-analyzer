@@ -36,7 +36,7 @@ Streamlit dashboard for exploring Open WebUI chat exports locally.
 Load data through either workflow:
 
 - **Direct Connect** – Use the **Load Data → Direct Connect** panel to point the analyzer at a live Open WebUI deployment. Provide the base URL (for example `http://localhost:3000`) and an API key; the backend will pull chats and users via `/api/v1/openwebui/sync`, persist them locally, and kick off the summarizer.
-- **File Uploads / Local Directory** – Export `all-chats-export-*.json` from Open WebUI (Admin Panel → **Settings → Data & Privacy → Export All Chats**) and optionally `users.csv` (Admin Panel → **Settings → Database → Export Users** with `user_id` plus a display column). Drop the files in `data/` for automatic loading on startup or upload them on the Load Data page. Uploaded artifacts live under `uploads/`.
+- **File Uploads / Local Directory** – Export `all-chats-export-*.json` from Open WebUI (Admin Panel → **Settings → Data & Privacy → Export All Chats**) and optionally `users.csv` (Admin Panel → **Settings → Database → Export Users** with `user_id` plus a display column) plus `models.json` captured from the `/api/v1/models` endpoint for friendly model names. Drop the files in `data/` for automatic loading on startup or upload them on the Load Data page. Uploaded artifacts live under `uploads/`.
 
 ## Quick Start
 

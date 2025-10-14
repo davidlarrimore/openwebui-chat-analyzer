@@ -14,6 +14,7 @@ class DatasetMeta:
     chat_count: int
     message_count: int
     user_count: int
+    model_count: int
     source: Optional[str] = None
     app_metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -26,6 +27,7 @@ class DatasetMeta:
             chat_count=int(payload.get("chat_count", 0) or 0),
             message_count=int(payload.get("message_count", 0) or 0),
             user_count=int(payload.get("user_count", 0) or 0),
+            model_count=int(payload.get("model_count", 0) or 0),
             source=payload.get("source"),
             app_metadata=app_metadata,
         )
@@ -86,6 +88,7 @@ class DatasetPanel:
     source_html: str
     chat_html: str
     user_html: str
+    model_html: str
 
 
 @dataclass
@@ -95,4 +98,6 @@ class ProcessedData:
     chats: pd.DataFrame
     messages: pd.DataFrame
     users: pd.DataFrame
+    models: pd.DataFrame
     chat_user_map: Dict[str, str] = field(default_factory=dict)
+    model_display_map: Dict[str, str] = field(default_factory=dict)

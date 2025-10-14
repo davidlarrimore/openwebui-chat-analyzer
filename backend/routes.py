@@ -4,7 +4,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
-from .models import Chat, DatasetMeta, Message, OpenWebUISyncRequest, UploadResponse, User
+from .models import Chat, DatasetMeta, Message, ModelInfo, OpenWebUISyncRequest, UploadResponse, User
 from .services import DataService, get_data_service
 
 router = APIRouter(prefix="/api/v1", tags=["data"])
@@ -47,6 +47,19 @@ def list_users(service: DataService = Depends(get_data_service)) -> List[User]:
     """
     users = service.get_users()
     return [User(**user) for user in users]
+
+
+@router.get("/models", response_model=List[ModelInfo])
+def list_models(service: DataService = Depends(get_data_service)) -> List[ModelInfo]:
+    """Return model metadata when available.
+
+    Args:
+        service (DataService): The shared data service dependency.
+    Returns:
+        List[ModelInfo]: Known model records keyed by exported identifiers.
+    """
+    models = service.get_models()
+    return [ModelInfo(**model) for model in models]
 
 
 @router.get("/datasets/meta", response_model=DatasetMeta)
@@ -167,6 +180,47 @@ async def upload_users_csv(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return UploadResponse(detail="Users CSV uploaded successfully.", dataset=service.get_meta())
+
+
+@router.post(
+    "/uploads/models",
+    response_model=UploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_models_json(
+    file: UploadFile = File(...),
+    service: DataService = Depends(get_data_service),
+) -> UploadResponse:
+    """Upload a models JSON file.
+
+    Args:
+        file (UploadFile): JSON payload containing model metadata.
+        service (DataService): The shared data service dependency.
+    Returns:
+        UploadResponse: Dataset status after applying the upload.
+    Raises:
+        HTTPException: When the upload is empty or not JSON encoded.
+    """
+    if file.content_type not in (
+        "application/json",
+        "text/json",
+        "application/octet-stream",
+    ):
+        raise HTTPException(status_code=400, detail="File must be a JSON document.")
+
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file was empty.")
+
+    try:
+        service.update_models(
+            raw_bytes,
+            source_label=None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return UploadResponse(detail="Models JSON uploaded successfully.", dataset=service.get_meta())
 
 
 @router.post(

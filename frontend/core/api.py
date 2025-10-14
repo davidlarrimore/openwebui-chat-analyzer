@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import json
 import time
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import pandas as pd
 import requests
@@ -211,6 +211,22 @@ def get_users() -> pd.DataFrame:
     return users_df
 
 
+def get_models() -> pd.DataFrame:
+    """Fetch models as a dataframe."""
+    payload = _request("/api/v1/models")
+    models_df = pd.DataFrame(payload)
+    if models_df.empty:
+        return pd.DataFrame(columns=["model_id", "name"])
+
+    models_df["model_id"] = models_df["model_id"].astype(str)
+    models_df["name"] = models_df["name"].fillna(models_df["model_id"]).astype(str)
+    if "owned_by" in models_df.columns:
+        models_df["owned_by"] = models_df["owned_by"].fillna("").astype(str)
+    if "connection_type" in models_df.columns:
+        models_df["connection_type"] = models_df["connection_type"].fillna("").astype(str)
+    return models_df
+
+
 def reset_dataset() -> UploadResult:
     """Delete all stored dataset artifacts and reset metadata."""
     payload = _request("/api/v1/datasets/reset", method="POST")
@@ -218,7 +234,10 @@ def reset_dataset() -> UploadResult:
 
 
 def upload_chat_export(file_obj: io.BytesIO) -> UploadResult:
-    """Upload a chat export JSON file."""
+    """Upload a chat export JSON file.
+
+    Deprecated: the Load Data UI no longer exposes file uploads, but this helper remains for automations.
+    """
     filename = getattr(file_obj, "name", "chat_export.json")
     filetype = getattr(file_obj, "type", None) or "application/json"
     file_bytes = file_obj.getvalue() if hasattr(file_obj, "getvalue") else file_obj.read()
@@ -230,7 +249,10 @@ def upload_chat_export(file_obj: io.BytesIO) -> UploadResult:
 
 
 def upload_users_csv(file_obj: io.BytesIO) -> UploadResult:
-    """Upload a CSV of user metadata."""
+    """Upload a CSV of user metadata.
+
+    Deprecated: retained for backwards compatibility with automation flows.
+    """
     filename = getattr(file_obj, "name", "users.csv")
     filetype = getattr(file_obj, "type", None) or "text/csv"
     file_bytes = file_obj.getvalue() if hasattr(file_obj, "getvalue") else file_obj.read()
@@ -238,6 +260,21 @@ def upload_users_csv(file_obj: io.BytesIO) -> UploadResult:
         file_obj.seek(0)
     files = {"file": (filename, file_bytes, filetype)}
     payload = _request("/api/v1/uploads/users", method="POST", files=files)
+    return UploadResult.from_dict(payload)
+
+
+def upload_models_json(file_obj: io.BytesIO) -> UploadResult:
+    """Upload a JSON file of model metadata.
+
+    Deprecated: retained for backwards compatibility with automation flows.
+    """
+    filename = getattr(file_obj, "name", "models.json")
+    filetype = getattr(file_obj, "type", None) or "application/json"
+    file_bytes = file_obj.getvalue() if hasattr(file_obj, "getvalue") else file_obj.read()
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+    files = {"file": (filename, file_bytes, filetype)}
+    payload = _request("/api/v1/uploads/models", method="POST", files=files)
     return UploadResult.from_dict(payload)
 
 
@@ -252,10 +289,11 @@ def sync_openwebui_dataset(hostname: str, api_key: str) -> UploadResult:
 
 
 def build_processed_data() -> ProcessedData:
-    """Fetch chats, messages, and users and prepare helper mappings."""
+    """Fetch chats, messages, users, and models and prepare helper mappings."""
     chats_df = get_chats()
     messages_df = get_messages()
     users_df = get_users()
+    models_df = get_models()
 
     if not chats_df.empty:
         chats_df["user_id"] = chats_df["user_id"].fillna("").astype(str)
@@ -278,6 +316,34 @@ def build_processed_data() -> ProcessedData:
     if "chat_id" in chats_df.columns and "user_display" in chats_df.columns:
         chat_user_map = chats_df.set_index("chat_id")["user_display"].to_dict()
 
+    model_display_map: Dict[str, str] = {}
+    if not models_df.empty:
+        model_display_map = dict(zip(models_df["model_id"], models_df["name"]))
+
+    if not messages_df.empty:
+        messages_df["model"] = messages_df["model"].fillna("").astype(str)
+        messages_df["model_id"] = messages_df["model"]
+        if model_display_map:
+            messages_df["model"] = messages_df["model_id"].map(model_display_map).fillna(messages_df["model_id"])
+        else:
+            messages_df["model"] = messages_df["model_id"]
+
+        def _normalize_model_list(value: Any) -> List[str]:
+            if isinstance(value, (list, tuple)):
+                return [str(item) for item in value if item not in (None, "")]
+            return []
+
+        if "models" in messages_df.columns:
+            messages_df["model_ids"] = messages_df["models"].apply(_normalize_model_list)
+        else:
+            messages_df["model_ids"] = [[] for _ in range(len(messages_df))]
+        messages_df["models"] = messages_df["model_ids"].apply(list)
+
+        if model_display_map:
+            messages_df["models"] = messages_df["models"].apply(
+                lambda values: [model_display_map.get(v, v) for v in values]
+            )
+
     if "chat_id" in messages_df.columns:
         messages_df["chat_id"] = messages_df["chat_id"].astype(str)
         messages_df["chat_user_display"] = messages_df["chat_id"].map(chat_user_map)
@@ -287,6 +353,8 @@ def build_processed_data() -> ProcessedData:
         chats=chats_df,
         messages=messages_df,
         users=users_df,
+        models=models_df,
         chat_user_map=chat_user_map,
+        model_display_map=model_display_map,
     )
     return processed

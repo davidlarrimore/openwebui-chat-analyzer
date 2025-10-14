@@ -1,7 +1,7 @@
 """Pydantic models for the Open WebUI Chat Analyzer backend."""
 
 from datetime import date, datetime
-from typing import Any, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 
 from pydantic import BaseModel, Field
 
@@ -80,6 +80,21 @@ class Message(BaseModel):
     )
 
 
+class ModelInfo(BaseModel):
+    """Metadata describing an Open WebUI model."""
+
+    model_id: str = Field(..., description="Unique identifier for the model as reported by Open WebUI")
+    name: Optional[str] = Field(default=None, description="Human-friendly model display name")
+    owned_by: Optional[str] = Field(default=None, description="Owning provider or namespace")
+    connection_type: Optional[str] = Field(
+        default=None, description="Connection type for the model (e.g. internal, external)"
+    )
+    object: Optional[str] = Field(default=None, description="Object type reported by the API")
+    raw: Dict[str, Any] = Field(
+        default_factory=dict, description="Original payload returned by the Open WebUI API for this model"
+    )
+
+
 class User(BaseModel):
     """Serialized user metadata consumed by the frontend."""
 
@@ -103,6 +118,10 @@ class AppMetadata(BaseModel):
         default=None,
         description="UTC timestamp when user data was most recently ingested",
     )
+    models_uploaded_at: Optional[datetime] = Field(
+        default=None,
+        description="UTC timestamp when model data was most recently ingested",
+    )
     first_chat_day: Optional[date] = Field(
         default=None,
         description="Date of the earliest chat/message in the current dataset",
@@ -113,6 +132,7 @@ class AppMetadata(BaseModel):
     )
     chat_count: int = Field(..., description="Number of chat records currently available")
     user_count: int = Field(..., description="Number of user records currently available")
+    model_count: int = Field(..., description="Number of model records currently available")
 
 
 class DatasetMeta(BaseModel):
@@ -134,6 +154,7 @@ class DatasetMeta(BaseModel):
     chat_count: int = Field(..., description="Number of chats available")
     message_count: int = Field(..., description="Number of messages available")
     user_count: int = Field(..., description="Number of user records available")
+    model_count: int = Field(..., description="Number of model records available")
     app_metadata: Optional[AppMetadata] = Field(
         default=None,
         description="Aggregated metadata persisted to app.json for frontend display",
@@ -162,6 +183,10 @@ class DatasetSyncStats(BaseModel):
     new_chats: int = Field(..., description="Number of newly appended chats.")
     new_messages: int = Field(..., description="Number of newly appended messages.")
     new_users: int = Field(..., description="Number of newly appended users.")
+    new_models: int = Field(..., description="Number of newly appended models.")
+    models_changed: bool = Field(
+        ..., description="True when existing model records were updated during the sync."
+    )
     summarizer_enqueued: bool = Field(
         ..., description="True when the summarizer was queued for the sync."
     )
@@ -170,6 +195,7 @@ class DatasetSyncStats(BaseModel):
         ..., description="Total number of messages after the sync."
     )
     total_users: int = Field(..., description="Total number of users after the sync.")
+    total_models: int = Field(..., description="Total number of models after the sync.")
     queued_chat_ids: Optional[List[str]] = Field(
         default=None,
         description="Identifiers of chats queued for summarization (if partial job scheduled).",

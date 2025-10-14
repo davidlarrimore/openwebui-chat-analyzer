@@ -425,7 +425,7 @@
       "id": "chat-E05",
       "title": "\ud83d\udcc5 PTO Balance Check",
       "models": [
-        "amichat---hr-chat"
+        "us.anthropic.claude-sonnet-4-20250514-v1:0"
       ],
       "params": {},
       "history": {
@@ -445,7 +445,7 @@
             "role": "assistant",
             "content": "PTO balances can be viewed in Unanet. Log in and click 'Leave Balance'.",
             "timestamp": 1760017691,
-            "model": "amichat---hr-chat",
+            "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
             "modelName": "HR Chat",
             "modelIdx": 0,
             "statusHistory": [
@@ -479,7 +479,7 @@
           "role": "assistant",
           "content": "PTO balances can be viewed in Unanet. Log in and click 'Leave Balance'.",
           "timestamp": 1760017691,
-          "model": "amichat---hr-chat",
+          "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
           "modelName": "HR Chat",
           "modelIdx": 0,
           "statusHistory": [

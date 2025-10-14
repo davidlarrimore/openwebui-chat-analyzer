@@ -207,18 +207,32 @@ def render_dataset_panel(panel: DatasetPanel, *, container: Optional[DeltaGenera
         "background-color:#f3f4f6;color:#374151;font-weight:600;font-size:1.0rem;"
         "padding:0.65rem 1.1rem;border-bottom:1px solid #bfdbfe;"
     )
-    panel_body_style = "background-color:#eaf2ff;padding:0.9rem 1rem;height:300px;overflow-y:auto;"
-    columns_wrapper_style = "display:flex;flex-direction:column;gap:0.75rem;"
-    column_style = "flex:1;"
+    panel_body_style = "background-color:#eaf2ff;padding:0.9rem 1rem;"
+    columns_wrapper_style = (
+        "display:grid;"
+        "grid-template-columns:repeat(12,minmax(0,1fr));"
+        "gap:0.75rem;"
+        "align-items:start;"
+    )
+    base_column_style = (
+        "background-color:#f9fbff;"
+        "border-radius:10px;"
+        "padding:0.75rem 0.85rem;"
+        "box-shadow:0 0 0 1px rgba(191,219,254,0.6);"
+        "min-width:0;"
+    )
+    source_column_style = base_column_style + "grid-column:1 / span 12;"
+    third_column_style = base_column_style + "grid-column:span 4;"
 
     panel_html = (
         f"<div style=\"{panel_wrapper_style}\">"
         f"<div style=\"{panel_header_style}\">Loaded Data</div>"
         f"<div style=\"{panel_body_style}\">"
         f"<div style=\"{columns_wrapper_style}\">"
-        f"<div style=\"{column_style}\">{panel.source_html}</div>"
-        f"<div style=\"{column_style}\">{panel.chat_html}</div>"
-        f"<div style=\"{column_style}\">{panel.user_html}</div>"
+        f"<div style=\"{source_column_style}\">{panel.source_html}</div>"
+        f"<div style=\"{third_column_style}\">{panel.chat_html}</div>"
+        f"<div style=\"{third_column_style}\">{panel.user_html}</div>"
+        f"<div style=\"{third_column_style}\">{panel.model_html}</div>"
         f"</div></div></div>"
     )
     target.markdown(panel_html, unsafe_allow_html=True)
@@ -467,14 +481,14 @@ def render_search_interface(
 
 def render_instructions() -> None:
     """Render instructions when no dataset is available."""
-    st.warning("Upload your Open WebUI JSON export file to begin analysis.")
-    st.header("How to export data from Open WebUI")
+    st.warning("Use Direct Connect to link the analyzer with your Open WebUI instance and pull in chats.")
+    st.header("How to enable Direct Connect")
     st.write(
         """
-        1. **Access your Open WebUI admin panel**
-        2. **Go to Settings → Data & Privacy**
-        3. **Click "Export All Chats"** to download your chat data as JSON
-        4. **Upload the downloaded JSON file** using the file uploader above
+        1. **Open Open WebUI** and sign in with an account that can access the Admin panel.
+        2. **Generate an API token** from Settings → Personal Access Tokens.
+        3. **Confirm the base URL** where Open WebUI is running (for example `http://localhost:3000`).
+        4. **Enter the URL and token** in the Direct Connect panel and press **Load Data** to import chats, users, and models.
         """
     )
     st.header("What you'll get from this analysis")

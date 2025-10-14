@@ -19,9 +19,9 @@ st.set_page_config(
 
 from frontend.core.api import BackendError, get_dataset_meta, is_backend_unavailable_error
 from frontend.core.config import get_config
-from frontend.core.processing import build_dataset_panel, determine_dataset_source
+from frontend.core.processing import build_dataset_panel
 from frontend.ui import components
-from frontend.ui.controls import render_admin_section, render_direct_connect_section, render_upload_section
+from frontend.ui.controls import render_admin_section, render_direct_connect_section
 from frontend.utils import state as app_state
 from frontend.utils.logging import get_logger
 
@@ -38,6 +38,14 @@ def render_page() -> None:
         config.direct_host_default,
         config.direct_api_key_default,
     )
+
+    defaults_from_env = bool(config.direct_host_default or config.direct_api_key_default)
+    if defaults_from_env and not st.session_state.get("_openwebui_defaults_toast_shown", False):
+        st.toast(
+            "Open WebUI host and API key were pre-filled from your environment file. ",
+            icon="ℹ️",
+        )
+        st.session_state["_openwebui_defaults_toast_shown"] = True
 
     try:
         dataset_meta = get_dataset_meta()
@@ -56,39 +64,39 @@ def render_page() -> None:
     components.render_sidebar_status(dataset_meta, container=sidebar)
 
     dataset_ready = dataset_meta.chat_count > 0 or (dataset_meta.app_metadata or {}).get("chat_count", 0) > 0
-    source_info = determine_dataset_source(dataset_meta)
-
     st.header("Load Data")
-    st.caption("Connect to Open WebUI or upload exported files to populate the analyzer.")
+    st.caption("Connect directly to Open WebUI to populate the analyzer.")
 
-    panel = build_dataset_panel(dataset_meta)
-    col_dataset, col_log = st.columns(2)
-    components.render_dataset_panel(panel, container=col_dataset)
-    log_renderer = components.render_processing_log_panel(
-        container=col_log,
-        description="This panel will show data processing logs",
-    )
+    admin_container = st.container()
+    row_container = st.container()
+    dataset_container = st.container()
 
-    render_admin_section(
-        dataset=dataset_meta,
-        on_refresh=app_state.trigger_rerun,
-        log_renderer=log_renderer,
-    )
-    
-    render_direct_connect_section(
-        dataset_meta,
-        dataset_ready=dataset_ready,
-        config=config,
-        on_refresh=app_state.trigger_rerun,
-        log_renderer=log_renderer,
-    )
+    with row_container:
+        col_direct, col_log = st.columns(2)
+        log_renderer = components.render_processing_log_panel(
+            container=col_log,
+            description="This panel will show data processing logs",
+        )
+        render_direct_connect_section(
+            dataset_meta,
+            dataset_ready=dataset_ready,
+            config=config,
+            on_refresh=app_state.trigger_rerun,
+            parent=col_direct,
+            log_renderer=log_renderer,
+        )
 
-    render_upload_section(
-        dataset_ready=dataset_ready,
-        source_label=source_info.label,
-        on_refresh=app_state.trigger_rerun,
-        log_renderer=log_renderer,
-    )
+    with admin_container:
+        render_admin_section(
+            dataset=dataset_meta,
+            on_refresh=app_state.trigger_rerun,
+            parent=admin_container,
+            log_renderer=log_renderer,
+        )
+
+    with dataset_container:
+        panel = build_dataset_panel(dataset_meta)
+        components.render_dataset_panel(panel)
 
     if not dataset_ready:
         components.render_instructions()

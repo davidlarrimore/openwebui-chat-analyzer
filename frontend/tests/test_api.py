@@ -13,8 +13,10 @@ from frontend.core.api import (
     get_chats,
     get_dataset_meta,
     get_messages,
+    get_models,
     poll_summary_status,
     upload_chat_export,
+    upload_models_json,
 )
 from frontend.core.models import DatasetMeta
 
@@ -43,6 +45,7 @@ def test_get_dataset_meta_success(monkeypatch) -> None:
         "chat_count": 10,
         "message_count": 100,
         "user_count": 4,
+        "model_count": 2,
         "source": "upload:sample.json",
         "app_metadata": {"dataset_source": "Local Upload"},
     }
@@ -56,7 +59,25 @@ def test_get_dataset_meta_success(monkeypatch) -> None:
         assert isinstance(meta, DatasetMeta)
         assert meta.dataset_id == "abc123"
         assert meta.chat_count == 10
+        assert meta.model_count == 2
         assert meta.app_metadata["dataset_source"] == "Local Upload"
+
+
+def test_get_models_returns_dataframe(monkeypatch) -> None:
+    payload = [
+        {"model_id": "model-a", "name": "Model A"},
+        {"model_id": "model-b", "name": None},
+    ]
+
+    def fake_request(method: str, url: str, timeout: float = 30.0, **kwargs: Any) -> DummyResponse:
+        assert url.endswith("/api/v1/models")
+        return DummyResponse(payload)
+
+    with patch("frontend.core.api.requests.request", side_effect=fake_request):
+        models_df = get_models()
+        assert not models_df.empty
+        assert list(models_df["model_id"]) == ["model-a", "model-b"]
+        assert models_df.loc[1, "name"] == "model-b"
 
 
 def test_get_chats_returns_dataframe(monkeypatch) -> None:
@@ -99,6 +120,15 @@ def test_upload_chat_export_raises_backend_error(monkeypatch) -> None:
     with patch("frontend.core.api.requests.request", side_effect=fake_request):
         with pytest.raises(BackendError):
             upload_chat_export(io.BytesIO(b"{}"))
+
+
+def test_upload_models_json_raises_backend_error(monkeypatch) -> None:
+    def fake_request(method: str, url: str, timeout: float = 30.0, **kwargs: Any) -> DummyResponse:
+        raise requests.exceptions.ConnectionError("offline")
+
+    with patch("frontend.core.api.requests.request", side_effect=fake_request):
+        with pytest.raises(BackendError):
+            upload_models_json(io.BytesIO(b"{}"))
 
 
 def test_poll_summary_status_calls_callback(monkeypatch) -> None:

@@ -63,13 +63,13 @@ def main() -> None:
         dataset_ready = dataset_meta.chat_count > 0 or (dataset_meta.app_metadata or {}).get("chat_count", 0) > 0
         if dataset_ready:
             st.success(
-                f"You're all set! {dataset_meta.chat_count:,} chats and {dataset_meta.message_count:,} messages "
-                "are ready to explore on the Overview page."
+                f"You're all set! {dataset_meta.chat_count:,} chats, {dataset_meta.message_count:,} messages, "
+                f"and {dataset_meta.model_count:,} models are ready to explore on the Overview page."
             )
         else:
             st.info(
                 "No chats detected yet. Visit **Load Data** to connect to Open WebUI "
-                "or upload an export, then head back here."
+                "and pull your workspace data into the analyzer."
             )
     else:
         st.info(
@@ -90,26 +90,21 @@ def main() -> None:
     )
 
     st.subheader("Bring your data in")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Direct Connect**")
-        st.write(
-            "Point the app at a running Open WebUI instance. Add the base URL and API key on the Load Data page, "
-            "and the analyzer will pull chats plus user details for you."
-        )
-    with col2:
-        st.markdown("**Upload an Export**")
-        st.write(
-            "Already have Open WebUI exports? Drop the JSON file (and optional `users.csv`) into the uploader or the "
-            "`data/` folder to populate the dashboard locally."
-        )
+    st.markdown("**Direct Connect**")
+    st.write(
+        "Point the app at a running Open WebUI instance. Add the base URL and API key on the Load Data page, "
+        "and the analyzer will pull chats plus user details for you."
+    )
+    st.caption(
+        "Need automation? The upload API endpoints still exist for scripted imports, but the UI flow is now deprecated."
+    )
 
     st.subheader("First-time setup")
     st.markdown(
         """
         1. Make sure the `.env` file is in place (start with `.env.example` if you're setting things up for the first time).
         2. Start the analyzer using your usual approach—Docker Compose, the bundled Makefile helpers, or the local Python commands.
-        3. Visit **Load Data**, choose Direct Connect or Upload, and let the importer finish.
+        3. Visit **Load Data**, add your Open WebUI URL plus API token, and let the importer finish.
         4. Open the **Overview** page for live metrics, then browse the other tabs for deeper dives.
         """
     )

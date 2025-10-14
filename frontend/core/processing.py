@@ -251,6 +251,7 @@ def build_dataset_panel(meta: DatasetMeta) -> DatasetPanel:
 
     chat_uploaded_display = format_timestamp(metadata.get("chat_uploaded_at"))
     users_uploaded_display = format_timestamp(metadata.get("users_uploaded_at"))
+    models_uploaded_display = format_timestamp(metadata.get("models_uploaded_at"))
     dataset_pulled_value = metadata.get("dataset_pulled_at")
     dataset_pulled_display = format_timestamp(dataset_pulled_value)
     dataset_pulled_relative = format_relative_time(dataset_pulled_value)
@@ -266,6 +267,7 @@ def build_dataset_panel(meta: DatasetMeta) -> DatasetPanel:
 
     chat_count_meta = metadata.get("chat_count", meta.chat_count or 0)
     user_count_meta = metadata.get("user_count", meta.user_count or 0)
+    model_count_meta = metadata.get("model_count", meta.model_count or 0)
     try:
         chat_count_display = f"{int(chat_count_meta):,}"
     except (TypeError, ValueError):
@@ -274,6 +276,10 @@ def build_dataset_panel(meta: DatasetMeta) -> DatasetPanel:
         user_count_display = f"{int(user_count_meta):,}"
     except (TypeError, ValueError):
         user_count_display = str(user_count_meta)
+    try:
+        model_count_display = f"{int(model_count_meta):,}"
+    except (TypeError, ValueError):
+        model_count_display = str(model_count_meta)
 
     connection_line = f"Connection Type: {html.escape(dataset_source_info.label)}"
     detail_value = (dataset_source_info.detail or "").strip()
@@ -324,10 +330,18 @@ def build_dataset_panel(meta: DatasetMeta) -> DatasetPanel:
     ]
     user_content = "<br>".join(line for line in user_lines if line)
 
+    model_lines = [
+        f"<span style=\"{header_style}\">Models</span>",
+        f"Uploaded: {html.escape(models_uploaded_display)}",
+        f"Count: {html.escape(model_count_display)}",
+    ]
+    model_content = "<br>".join(line for line in model_lines if line)
+
     return DatasetPanel(
         source_html=f"<div style=\"{section_text_style}\">{source_content}</div>",
         chat_html=f"<div style=\"{section_text_style}\">{chat_content}</div>",
         user_html=f"<div style=\"{section_text_style}\">{user_content}</div>",
+        model_html=f"<div style=\"{section_text_style}\">{model_content}</div>",
     )
 
 

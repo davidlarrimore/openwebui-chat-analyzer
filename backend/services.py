@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import math
@@ -289,6 +290,56 @@ def _normalize_openwebui_users(payload: Any) -> List[Dict[str, str]]:
     return normalized
 
 
+def _normalize_models_payload(payload: Any) -> List[Dict[str, Any]]:
+    """Transform Open WebUI model payloads into analyzer-compatible structures."""
+    if isinstance(payload, dict):
+        if isinstance(payload.get("data"), list):
+            entries = payload.get("data", [])
+        elif isinstance(payload.get("models"), list):
+            entries = payload.get("models", [])
+        else:
+            entries = []
+    elif isinstance(payload, list):
+        entries = payload
+    else:
+        entries = []
+
+    normalized: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        info_section = entry.get("info") if isinstance(entry.get("info"), dict) else {}
+        model_id = (
+            entry.get("model_id")
+            or entry.get("id")
+            or info_section.get("model_id")
+            or info_section.get("id")
+        )
+        if model_id in (None, "", []):
+            continue
+        model_id_str = str(model_id)
+        if model_id_str in seen:
+            continue
+        seen.add(model_id_str)
+        name = entry.get("name") or info_section.get("name") or model_id_str
+        owned_by = entry.get("owned_by") or info_section.get("owned_by")
+        connection_type = entry.get("connection_type") or info_section.get("connection_type")
+        object_type = entry.get("object") or info_section.get("object")
+        raw_payload = entry.get("raw") if isinstance(entry.get("raw"), dict) else entry
+        normalized.append(
+            {
+                "model_id": model_id_str,
+                "name": str(name) if name not in (None, "") else model_id_str,
+                "owned_by": str(owned_by) if owned_by not in (None, "") else None,
+                "connection_type": str(connection_type) if connection_type not in (None, "") else None,
+                "object": str(object_type) if object_type not in (None, "") else None,
+                "raw": raw_payload,
+            }
+        )
+    return normalized
+
+
 def _stringify_content(value: Any) -> str:
     """Convert message content into a JSON-friendly string representation."""
     if value is None:
@@ -453,8 +504,14 @@ def _normalize_source_for_compare(value: Optional[str]) -> Optional[Tuple[str, s
     except ValueError:
         return None
     parsed = urlparse(normalized)
-    netloc = parsed.netloc.lower()
-    path = parsed.path.rstrip("/")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return None
+    if host in {"host.docker.internal", "127.0.0.1", "::1"}:
+        host = "localhost"
+    port = parsed.port
+    netloc = f"{host}:{port}" if port else host
+    path = parsed.path.rstrip("/") or ""
     return netloc, path
 
 
@@ -511,14 +568,17 @@ class DataService:
         self._chats: List[Dict[str, Any]] = []
         self._messages: List[Dict[str, Any]] = []
         self._users: List[Dict[str, str]] = []
+        self._models: List[Dict[str, Any]] = []
         self._dataset_id = uuid4().hex
         self._source = "no dataset loaded"
+        self._source_origin: Optional[Tuple[str, str]] = None
         self._last_updated = datetime.utcnow().replace(tzinfo=timezone.utc)
         self._app_metadata_path = self._data_dir / "app.json"
         self._dataset_source_override: Optional[str] = None
         self._dataset_pulled_at: Optional[datetime] = None
         self._chat_uploaded_at: Optional[datetime] = None
         self._users_uploaded_at: Optional[datetime] = None
+        self._models_uploaded_at: Optional[datetime] = None
         self._first_chat_day: Optional[date] = None
         self._last_chat_day: Optional[date] = None
         self._summary_state_lock = Lock()
@@ -619,11 +679,21 @@ class DataService:
         self._dataset_pulled_at = self._parse_datetime(payload.get("dataset_pulled_at"))
         chats_section = payload.get("chats") or {}
         users_section = payload.get("users") or {}
+        models_section = payload.get("models") or {}
 
         self._chat_uploaded_at = self._parse_datetime(chats_section.get("uploaded_at"))
         self._users_uploaded_at = self._parse_datetime(users_section.get("uploaded_at"))
+        self._models_uploaded_at = self._parse_datetime(models_section.get("uploaded_at"))
         self._first_chat_day = self._parse_date(chats_section.get("first_day"))
         self._last_chat_day = self._parse_date(chats_section.get("last_day"))
+        source_candidate = None
+        if isinstance(self._source, str) and self._source.startswith("openwebui:"):
+            parts = self._source.split(":", 1)
+            if len(parts) == 2:
+                source_candidate = parts[1]
+        if source_candidate is None:
+            source_candidate = dataset_source
+        self._source_origin = _normalize_source_for_compare(source_candidate)
 
     def _determine_dataset_source(self) -> str:
         source = (self._source or "").strip()
@@ -660,20 +730,25 @@ class DataService:
         self,
         chat_updated: bool = False,
         users_updated: bool = False,
+        models_updated: bool = False,
         persist: bool = True,
         force_timestamp: bool = False,
     ) -> None:
         now = self._now_utc()
         chat_count = len(self._chats)
         user_count = len(self._users)
+        model_count = len(self._models)
 
         update_chat_timestamp = chat_updated or (force_timestamp and chat_count > 0)
         update_user_timestamp = users_updated or (force_timestamp and user_count > 0)
+        update_model_timestamp = models_updated or (force_timestamp and model_count > 0)
 
         if update_chat_timestamp:
             self._chat_uploaded_at = now
         if update_user_timestamp:
             self._users_uploaded_at = now
+        if update_model_timestamp:
+            self._models_uploaded_at = now
 
         first_day: Optional[date]
         last_day: Optional[date]
@@ -692,16 +767,28 @@ class DataService:
             self._users_uploaded_at = None
         else:
             self._users_uploaded_at = self._users_uploaded_at or now
+        if model_count == 0:
+            self._models_uploaded_at = None
+        else:
+            self._models_uploaded_at = self._models_uploaded_at or now
 
-        if chat_count == 0 and user_count == 0:
+        if chat_count == 0 and user_count == 0 and model_count == 0:
             self._dataset_pulled_at = None
-        elif chat_updated or users_updated or force_timestamp:
+        elif chat_updated or users_updated or models_updated or force_timestamp:
             self._dataset_pulled_at = now
         elif self._dataset_pulled_at is None:
-            self._dataset_pulled_at = self._chat_uploaded_at or self._users_uploaded_at
+            self._dataset_pulled_at = (
+                self._chat_uploaded_at
+                or self._users_uploaded_at
+                or self._models_uploaded_at
+            )
 
         should_recalculate_source = (
-            chat_updated or users_updated or force_timestamp or self._dataset_source_override is None
+            chat_updated
+            or users_updated
+            or models_updated
+            or force_timestamp
+            or self._dataset_source_override is None
         )
         if should_recalculate_source:
             display_source = self._determine_dataset_source()
@@ -723,6 +810,10 @@ class DataService:
                     "count": user_count,
                     "uploaded_at": self._serialize_datetime(self._users_uploaded_at),
                 },
+                "models": {
+                    "count": model_count,
+                    "uploaded_at": self._serialize_datetime(self._models_uploaded_at),
+                },
             }
             self._save_app_metadata(payload)
 
@@ -732,10 +823,12 @@ class DataService:
             dataset_pulled_at=self._dataset_pulled_at,
             chat_uploaded_at=self._chat_uploaded_at,
             users_uploaded_at=self._users_uploaded_at,
+             models_uploaded_at=self._models_uploaded_at,
             first_chat_day=self._first_chat_day,
             last_chat_day=self._last_chat_day,
             chat_count=len(self._chats),
             user_count=len(self._users),
+            model_count=len(self._models),
         )
 
     def _summary_now_iso(self) -> str:
@@ -1073,6 +1166,28 @@ class DataService:
         target_path.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding="utf-8")
         return target_path
 
+    def _write_users_csv(self, users: List[Dict[str, Any]]) -> Path:
+        self._ensure_data_dir()
+        target_path = self._data_dir / "users.csv"
+        fieldnames = ["user_id", "name"]
+        with target_path.open("w", encoding="utf-8", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for user in users:
+                writer.writerow(
+                    {
+                        "user_id": str(user.get("user_id", "") or ""),
+                        "name": str(user.get("name", "") or ""),
+                    }
+                )
+        return target_path
+
+    def _write_models_json(self, models: List[Dict[str, Any]]) -> Path:
+        self._ensure_data_dir()
+        target_path = self._data_dir / "models.json"
+        target_path.write_text(json.dumps(models, ensure_ascii=False, indent=2), encoding="utf-8")
+        return target_path
+
     def _load_users_from_json(
         self,
         json_path: Path,
@@ -1106,6 +1221,34 @@ class DataService:
             else:
                 self._last_updated = self._now_utc()
             self._refresh_app_metadata(persist=persist_metadata)
+
+    def _load_models_from_json(
+        self,
+        json_path: Path,
+        source_label: str,
+        bump_version: bool = False,
+        persist_metadata: bool = True,
+    ) -> None:
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Invalid models JSON at {json_path}") from exc
+
+        normalized = _normalize_models_payload(payload)
+
+        with self._lock:
+            self._models = normalized
+            if not self._source or self._source == "no dataset loaded":
+                self._source = source_label
+            if bump_version:
+                self._bump_version()
+            else:
+                self._last_updated = self._now_utc()
+            self._refresh_app_metadata(
+                models_updated=bool(normalized),
+                persist=persist_metadata,
+                force_timestamp=bool(normalized),
+            )
 
     # ------------------------------------------------------------------
     # Initialization helpers
@@ -1155,6 +1298,18 @@ class DataService:
                 except Exception:
                     pass
 
+        default_models_json = self._find_models_json()
+        if default_models_json is not None:
+            try:
+                self._load_models_from_json(
+                    default_models_json,
+                    f"default:{default_models_json.name}",
+                    bump_version=False,
+                    persist_metadata=False,
+                )
+            except Exception:
+                pass
+
         # Always ensure metadata is current even if no files loaded
         self._last_updated = datetime.utcnow().replace(tzinfo=timezone.utc)
 
@@ -1180,6 +1335,12 @@ class DataService:
         users_json = self._data_dir / "users.json"
         return users_json if users_json.exists() else None
 
+    def _find_models_json(self) -> Optional[Path]:
+        if not self._data_dir.exists():
+            return None
+        models_json = self._data_dir / "models.json"
+        return models_json if models_json.exists() else None
+
     # ------------------------------------------------------------------
     # Dataset mutations
     # ------------------------------------------------------------------
@@ -1189,43 +1350,86 @@ class DataService:
         chats: List[Dict[str, Any]],
         messages: List[Dict[str, Any]],
         normalized_users: List[Dict[str, str]],
+        normalized_models: List[Dict[str, Any]],
         export_payload: List[Dict[str, Any]],
-    ) -> Tuple[List[str], int, List[str]]:
+    ) -> Tuple[List[str], int, List[str], List[str], List[str], bool]:
         new_chat_ids: List[str] = []
-        new_export_entries: List[Dict[str, Any]] = []
         new_user_ids: List[str] = []
+        new_model_ids: List[str] = []
         new_message_count = 0
+        chats_missing_summary: Set[str] = set()
+        chats_needing_export_update: Set[str] = set()
+        models_changed = False
+
+        export_entries_by_chat_id: Dict[str, Dict[str, Any]] = {}
+        for entry in export_payload:
+            chat_id = _extract_chat_id_from_export_entry(entry)
+            if chat_id:
+                export_entries_by_chat_id[chat_id] = entry
 
         with self._lock:
             existing_chat_ids: Set[str] = set()
-            for chat in self._chats:
+            existing_chats_index: Dict[str, int] = {}
+            for idx, chat in enumerate(self._chats):
                 chat_id_raw = chat.get("chat_id")
                 chat_id = str(chat_id_raw) if chat_id_raw not in (None, "", []) else ""
                 if chat_id:
                     existing_chat_ids.add(chat_id)
+                    existing_chats_index[chat_id] = idx
+
+            existing_message_ids: Set[str] = set()
+            for message in self._messages:
+                message_id_raw = message.get("message_id")
+                message_id = str(message_id_raw) if message_id_raw not in (None, "", []) else ""
+                if message_id:
+                    existing_message_ids.add(message_id)
 
             for chat in chats:
                 chat_id_raw = chat.get("chat_id")
                 chat_id = str(chat_id_raw) if chat_id_raw not in (None, "", []) else ""
-                if not chat_id or chat_id in existing_chat_ids:
+                if not chat_id:
                     continue
-                self._chats.append(chat)
-                existing_chat_ids.add(chat_id)
-                new_chat_ids.append(chat_id)
+                summary_text = str(chat.get("summary_128") or "").strip()
+                if chat_id in existing_chat_ids:
+                    existing_chat = self._chats[existing_chats_index[chat_id]]
+                    before_snapshot = existing_chat.copy()
+                    previous_summary = str(existing_chat.get("summary_128") or "").strip()
+                    existing_chat.update(chat)
+                    if existing_chat != before_snapshot:
+                        chats_needing_export_update.add(chat_id)
+                    current_summary = str(existing_chat.get("summary_128") or "").strip()
+                    if previous_summary and not current_summary:
+                        existing_chat["summary_128"] = previous_summary
+                        current_summary = previous_summary
+                        chats_needing_export_update.add(chat_id)
+                    if not summary_text and not current_summary:
+                        chats_missing_summary.add(chat_id)
+                else:
+                    self._chats.append(chat)
+                    existing_chat_ids.add(chat_id)
+                    existing_chats_index[chat_id] = len(self._chats) - 1
+                    new_chat_ids.append(chat_id)
+                    chats_needing_export_update.add(chat_id)
+                    if not summary_text:
+                        chats_missing_summary.add(chat_id)
 
-            if new_chat_ids:
-                new_chat_id_set = set(new_chat_ids)
-                for message in messages:
-                    chat_id_raw = message.get("chat_id")
-                    chat_id = str(chat_id_raw) if chat_id_raw not in (None, "", []) else ""
-                    if chat_id in new_chat_id_set:
-                        self._messages.append(message)
-                        new_message_count += 1
-
-                for entry in export_payload:
-                    entry_chat_id = _extract_chat_id_from_export_entry(entry)
-                    if entry_chat_id and entry_chat_id in new_chat_id_set:
-                        new_export_entries.append(entry)
+            for message in messages:
+                message_id_raw = message.get("message_id")
+                message_id = str(message_id_raw) if message_id_raw not in (None, "", []) else ""
+                if not message_id or message_id in existing_message_ids:
+                    continue
+                self._messages.append(message)
+                existing_message_ids.add(message_id)
+                new_message_count += 1
+                chat_id_value = str(message.get("chat_id") or "").strip()
+                if chat_id_value:
+                    chats_needing_export_update.add(chat_id_value)
+                    target_idx = existing_chats_index.get(chat_id_value)
+                    if target_idx is not None:
+                        target_chat = self._chats[target_idx]
+                        target_summary = str(target_chat.get("summary_128") or "").strip()
+                        if not target_summary:
+                            chats_missing_summary.add(chat_id_value)
 
             existing_user_ids: Set[str] = set()
             for user in self._users:
@@ -1244,16 +1448,103 @@ class DataService:
                 existing_user_ids.add(user_id)
                 new_user_ids.append(user_id)
 
+            existing_models_index: Dict[str, int] = {}
+            updated_models: List[Dict[str, Any]] = list(self._models)
+            for idx, model in enumerate(updated_models):
+                model_id_raw = model.get("model_id")
+                model_id = str(model_id_raw) if model_id_raw not in (None, "", []) else ""
+                if model_id:
+                    existing_models_index[model_id] = idx
+
+            new_model_id_set: Set[str] = set()
+            for model in normalized_models:
+                model_id_raw = model.get("model_id")
+                model_id = str(model_id_raw) if model_id_raw not in (None, "", []) else ""
+                if not model_id:
+                    continue
+                existing_idx = existing_models_index.get(model_id)
+                if existing_idx is None:
+                    updated_models.append(model)
+                    existing_models_index[model_id] = len(updated_models) - 1
+                    if model_id not in new_model_id_set:
+                        new_model_ids.append(model_id)
+                        new_model_id_set.add(model_id)
+                    models_changed = True
+                else:
+                    if updated_models[existing_idx] != model:
+                        updated_models[existing_idx] = model
+                        models_changed = True
+
+            if models_changed:
+                self._models = updated_models
+                self._write_models_json(self._models)
+
             self._dataset_source_override = None
             self._source = f"openwebui:{base_url}"
-            if new_chat_ids or new_user_ids:
+            if new_chat_ids or new_user_ids or new_model_ids:
                 self._bump_version()
             else:
                 self._last_updated = self._now_utc()
 
-            if new_export_entries:
+            if chats_needing_export_update:
                 existing_entries = self._load_existing_export_entries()
-                combined_entries = self._combine_export_entries(existing_entries, new_export_entries)
+                existing_map: Dict[str, Dict[str, Any]] = {}
+                order: List[str] = []
+                for entry in existing_entries:
+                    existing_chat_id = _extract_chat_id_from_export_entry(entry)
+                    if not existing_chat_id:
+                        continue
+                    if existing_chat_id not in existing_map:
+                        order.append(existing_chat_id)
+                    existing_map[existing_chat_id] = entry
+
+                for chat_id in chats_needing_export_update:
+                    replacement = export_entries_by_chat_id.get(chat_id)
+                    if replacement is None:
+                        continue
+                    existing_idx = existing_chats_index.get(chat_id)
+                    chat_summary = ""
+                    if existing_idx is not None:
+                        chat_summary = str(self._chats[existing_idx].get("summary_128") or "").strip()
+                    if chat_summary:
+                        replacement = dict(replacement)
+                        replacement["summary_128"] = chat_summary
+                    existing_map[chat_id] = replacement
+                    if chat_id not in order:
+                        order.append(chat_id)
+
+                combined_entries: List[Dict[str, Any]] = []
+                seen_ids: Set[str] = set()
+                for chat_id in order:
+                    entry = existing_map.get(chat_id)
+                    if entry is None or chat_id in seen_ids:
+                        continue
+                    if "summary_128" not in entry or not str(entry.get("summary_128") or "").strip():
+                        existing_idx = existing_chats_index.get(chat_id)
+                        chat_summary = ""
+                        if existing_idx is not None:
+                            chat_summary = str(self._chats[existing_idx].get("summary_128") or "").strip()
+                        if chat_summary:
+                            entry = dict(entry)
+                            entry["summary_128"] = chat_summary
+                    combined_entries.append(entry)
+                    seen_ids.add(chat_id)
+
+                for chat_id, entry in existing_map.items():
+                    if chat_id not in seen_ids:
+                        if "summary_128" not in entry or not str(entry.get("summary_128") or "").strip():
+                            existing_idx = existing_chats_index.get(chat_id)
+                            chat_summary = ""
+                            if existing_idx is not None:
+                                chat_summary = str(
+                                    self._chats[existing_idx].get("summary_128") or ""
+                                ).strip()
+                            if chat_summary:
+                                entry = dict(entry)
+                                entry["summary_128"] = chat_summary
+                        combined_entries.append(entry)
+                        seen_ids.add(chat_id)
+
                 export_bytes = json.dumps(combined_entries, ensure_ascii=False, indent=2).encode("utf-8")
                 self._persist_file(
                     export_bytes,
@@ -1265,15 +1556,24 @@ class DataService:
 
             if new_user_ids:
                 self._write_users_json(self._users)
+                self._write_users_csv(self._users)
 
-            force_timestamp = not new_chat_ids and not new_user_ids
+            force_timestamp = not new_chat_ids and not new_user_ids and not new_model_ids
             self._refresh_app_metadata(
                 chat_updated=bool(new_chat_ids),
                 users_updated=bool(new_user_ids),
+                models_updated=bool(new_model_ids) or models_changed,
                 force_timestamp=force_timestamp,
             )
 
-        return new_chat_ids, new_message_count, new_user_ids
+        return (
+            new_chat_ids,
+            new_message_count,
+            new_user_ids,
+            new_model_ids,
+            sorted(chats_missing_summary),
+            models_changed,
+        )
 
     def update_chat_export(
         self,
@@ -1323,9 +1623,15 @@ class DataService:
             else:
                 self._last_updated = self._now_utc()
             self._refresh_app_metadata(chat_updated=record_upload, persist=persist_metadata)
+            missing_summary_chat_ids = [
+                str(chat.get("chat_id") or "").strip()
+                for chat in self._chats
+                if str(chat.get("chat_id") or "").strip()
+                and not str(chat.get("summary_128") or "").strip()
+            ]
 
-        if run_summarizer:
-            self._enqueue_summary_job("chat export upload")
+        if run_summarizer and missing_summary_chat_ids:
+            self._enqueue_summary_job("chat export upload", chat_ids=missing_summary_chat_ids)
 
     def update_users(
         self,
@@ -1352,6 +1658,7 @@ class DataService:
                 saved_path = None
 
             json_path = self._write_users_json(users)
+            self._write_users_csv(users)
 
             if saved_path is not None:
                 self._source = f"upload:{json_path.name}"
@@ -1368,6 +1675,46 @@ class DataService:
         with self._lock:
             self._users = []
             self._users_uploaded_at = None
+            self._bump_version()
+            self._refresh_app_metadata()
+
+    def update_models(
+        self,
+        raw_bytes: bytes,
+        source_label: Optional[str],
+        bump_version: bool = True,
+        record_upload: bool = True,
+        persist_metadata: bool = True,
+    ) -> None:
+        """Replace the current model metadata dataset."""
+        try:
+            payload = json.loads(raw_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("Invalid models JSON.") from exc
+
+        normalized = _normalize_models_payload(payload)
+
+        with self._lock:
+            self._models = normalized
+            self._write_models_json(normalized)
+            if source_label:
+                self._source = source_label
+            if bump_version:
+                self._bump_version()
+            else:
+                self._last_updated = self._now_utc()
+            models_present = bool(normalized)
+            self._refresh_app_metadata(
+                models_updated=record_upload and models_present,
+                persist=persist_metadata,
+                force_timestamp=record_upload and models_present,
+            )
+
+    def clear_models(self) -> None:
+        """Clear model metadata."""
+        with self._lock:
+            self._models = []
+            self._models_uploaded_at = None
             self._bump_version()
             self._refresh_app_metadata()
 
@@ -1393,7 +1740,7 @@ class DataService:
 
         with self._lock:
             if self._data_dir.exists():
-                for pattern in ("all-chats-export*.json", "users.csv", "users.json"):
+                for pattern in ("all-chats-export*.json", "users.csv", "users.json", "models.json"):
                     for candidate in self._data_dir.glob(pattern):
                         try:
                             candidate.unlink(missing_ok=True)
@@ -1408,20 +1755,23 @@ class DataService:
             self._chats = []
             self._messages = []
             self._users = []
+            self._models = []
             self._dataset_source_override = None
             self._dataset_pulled_at = None
             self._chat_uploaded_at = None
             self._users_uploaded_at = None
+            self._models_uploaded_at = None
             self._first_chat_day = None
             self._last_chat_day = None
             self._source = "not loaded"
+            self._source_origin = None
             self._bump_version()
             self._refresh_app_metadata(persist=True)
 
         return self.get_meta()
 
     def sync_from_openwebui(self, hostname: str, api_key: Optional[str]) -> Tuple[DatasetMeta, DatasetSyncStats]:
-        """Pull chats and users directly from an Open WebUI instance."""
+        """Pull chats, users, and models directly from an Open WebUI instance."""
         base_url = _normalize_hostname(hostname)
         headers = {"Accept": "application/json"}
         token = (api_key or "").strip()
@@ -1435,15 +1785,24 @@ class DataService:
         attempt_messages: List[str] = []
         chats_payload: Any = None
         users_payload: Any = None
+        models_payload: Any = None
 
         with requests.Session() as session:
             session.headers.update(headers)
             for candidate in base_candidates:
                 chats_endpoint = f"{candidate}/api/v1/chats/all/db"
                 users_endpoint = f"{candidate}/api/v1/users/all"
+                models_endpoint = f"{candidate}/api/v1/models"
                 try:
                     chats_payload = _fetch_openwebui_json(session, chats_endpoint)
                     users_payload = _fetch_openwebui_json(session, users_endpoint)
+                    try:
+                        models_payload = _fetch_openwebui_json(session, models_endpoint)
+                    except RuntimeError as models_exc:
+                        logging.getLogger(__name__).warning(
+                            "Model inventory request failed for %s: %s", candidate, models_exc
+                        )
+                        models_payload = []
                 except RuntimeError as exc:
                     attempt_messages.append(f"{candidate}: {exc}")
                     underlying = exc.__cause__
@@ -1451,6 +1810,7 @@ class DataService:
                         # Connection-level issue; try next candidate if available.
                         chats_payload = None
                         users_payload = None
+                        models_payload = None
                         continue
                     raise RuntimeError(
                         "Open WebUI responded with an unexpected payload."
@@ -1479,32 +1839,56 @@ class DataService:
         export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
 
         normalized_users = _normalize_openwebui_users(users_payload)
+        normalized_models = _normalize_models_payload(models_payload)
 
-        with self._lock:
-            current_source_display = self._compute_dataset_source_display()
         requested_origin = _normalize_source_for_compare(base_url)
-        current_origin = _normalize_source_for_compare(current_source_display)
-        same_source = requested_origin is not None and requested_origin == current_origin
+        with self._lock:
+            if self._source_origin is None:
+                origin_seed = None
+                if isinstance(self._source, str) and self._source.startswith("openwebui:"):
+                    parts = self._source.split(":", 1)
+                    if len(parts) == 2:
+                        origin_seed = parts[1]
+                if origin_seed is None:
+                    display_candidate = self._compute_dataset_source_display()
+                    origin_seed = display_candidate
+                self._source_origin = _normalize_source_for_compare(origin_seed)
+            current_origin = self._source_origin
+            current_source_display = self._compute_dataset_source_display()
+
+        same_source = False
+        if requested_origin is not None and current_origin is not None:
+            requested_netloc, _ = requested_origin
+            current_netloc, _ = current_origin
+            same_source = requested_netloc == current_netloc
 
         if same_source:
-            new_chat_ids, new_message_count, new_user_ids = self._merge_openwebui_dataset(
+            (
+                new_chat_ids,
+                new_message_count,
+                new_user_ids,
+                new_model_ids,
+                chats_missing_summary,
+                models_changed,
+            ) = self._merge_openwebui_dataset(
                 base_url,
                 chats,
                 messages,
                 normalized_users,
+                normalized_models,
                 export_payload,
             )
             summarizer_enqueued = False
-            if new_chat_ids:
+            if chats_missing_summary:
                 self._enqueue_summary_job(
                     f"Open WebUI sync (+{len(new_chat_ids)} new chats)",
-                    chat_ids=new_chat_ids,
+                    chat_ids=chats_missing_summary,
                 )
                 summarizer_enqueued = True
-            elif new_user_ids:
+            elif new_user_ids or new_model_ids or models_changed:
                 self._update_summary_state(
                     state="idle",
-                    message="No new chats detected; user list updated.",
+                    message="No new chats detected; user/model data updated.",
                     total=0,
                     completed=0,
                     started_at=None,
@@ -1519,7 +1903,11 @@ class DataService:
                     started_at=None,
                     finished_at=self._summary_now_iso(),
                 )
-            mode = "incremental" if (new_chat_ids or new_user_ids) else "noop"
+            mode = (
+                "incremental"
+                if (new_chat_ids or new_user_ids or new_model_ids or models_changed)
+                else "noop"
+            )
             dataset_meta = self.get_meta()
             stats = DatasetSyncStats(
                 mode=mode,
@@ -1530,12 +1918,17 @@ class DataService:
                 new_chats=len(new_chat_ids),
                 new_messages=new_message_count,
                 new_users=len(new_user_ids),
+                new_models=len(new_model_ids),
+                models_changed=models_changed,
                 summarizer_enqueued=summarizer_enqueued,
                 total_chats=dataset_meta.chat_count,
                 total_messages=dataset_meta.message_count,
                 total_users=dataset_meta.user_count,
-                queued_chat_ids=new_chat_ids if summarizer_enqueued else None,
+                total_models=dataset_meta.model_count,
+                queued_chat_ids=chats_missing_summary if summarizer_enqueued else None,
             )
+            with self._lock:
+                self._source_origin = requested_origin
             return dataset_meta, stats
 
         with self._lock:
@@ -1543,6 +1936,13 @@ class DataService:
             self._chats = chats
             self._messages = messages
             self._users = normalized_users
+            self._models = normalized_models
+            missing_summary_chat_ids = [
+                str(chat.get("chat_id") or "").strip()
+                for chat in self._chats
+                if str(chat.get("chat_id") or "").strip()
+                and not str(chat.get("summary_128") or "").strip()
+            ]
             self._ensure_data_dir()
             self._persist_file(
                 export_bytes,
@@ -1552,12 +1952,18 @@ class DataService:
                 exclusive=True,
             )
             self._write_users_json(normalized_users)
+            self._write_users_csv(normalized_users)
+            self._write_models_json(self._models)
             self._source = f"openwebui:{base_url}"
+            self._source_origin = requested_origin
             self._bump_version()
-            self._refresh_app_metadata(chat_updated=True, users_updated=True)
+            self._refresh_app_metadata(chat_updated=True, users_updated=True, models_updated=bool(self._models))
 
         dataset_meta = self.get_meta()
-        self._enqueue_summary_job("Open WebUI sync")
+        summarizer_enqueued = False
+        if missing_summary_chat_ids:
+            self._enqueue_summary_job("Open WebUI sync", chat_ids=missing_summary_chat_ids)
+            summarizer_enqueued = True
         stats = DatasetSyncStats(
             mode="full",
             source_matched=False,
@@ -1567,11 +1973,14 @@ class DataService:
             new_chats=len(chats),
             new_messages=len(messages),
             new_users=len(normalized_users),
-            summarizer_enqueued=dataset_meta.chat_count > 0,
+            new_models=len(normalized_models),
+            models_changed=bool(normalized_models),
+            summarizer_enqueued=summarizer_enqueued,
             total_chats=dataset_meta.chat_count,
             total_messages=dataset_meta.message_count,
             total_users=dataset_meta.user_count,
-            queued_chat_ids=None,
+            total_models=dataset_meta.model_count,
+            queued_chat_ids=missing_summary_chat_ids if summarizer_enqueued else None,
         )
         return dataset_meta, stats
 
@@ -1598,6 +2007,10 @@ class DataService:
         with self._lock:
             return [user.copy() for user in self._users]
 
+    def get_models(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [model.copy() for model in self._models]
+
     def get_meta(self) -> DatasetMeta:
         with self._lock:
             return DatasetMeta(
@@ -1607,6 +2020,7 @@ class DataService:
                 chat_count=len(self._chats),
                 message_count=len(self._messages),
                 user_count=len(self._users),
+                model_count=len(self._models),
                 app_metadata=self._build_app_metadata(),
             )
 

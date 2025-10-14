@@ -1,0 +1,269 @@
+{
+  "data": [
+    {
+      "id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      "created": 1760443079,
+      "object": "model",
+      "owned_by": "openai",
+      "connection_type": "external",
+      "name": "Anthropic Claude 4: Sonnet",
+      "openai": {
+        "id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "created": 1760443079,
+        "object": "model",
+        "owned_by": "bedrock",
+        "connection_type": "external"
+      },
+      "urlIdx": 0,
+      "info": {
+        "id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "user_id": "115d1995-6d11-4fb8-934f-95fe4c58d37e",
+        "base_model_id": null,
+        "name": "Anthropic Claude 4: Sonnet",
+        "params": {},
+        "meta": {
+          "profile_image_url": "",
+          "capabilities": {
+            "vision": true,
+            "file_upload": true,
+            "web_search": true,
+            "image_generation": true,
+            "code_interpreter": true,
+            "citations": true,
+            "status_updates": true
+          },
+          "suggestion_prompts": null,
+          "tags": []
+        },
+        "access_control": {
+          "read": {
+            "group_ids": [],
+            "user_ids": []
+          },
+          "write": {
+            "group_ids": [],
+            "user_ids": []
+          }
+        },
+        "is_active": true,
+        "updated_at": 1759951469,
+        "created_at": 1759951469
+      },
+      "actions": [],
+      "filters": [],
+      "tags": []
+    },
+    {
+      "id": "us.anthropic.claude-opus-4-20250514-v1:0",
+      "created": 1760443080,
+      "object": "model",
+      "owned_by": "openai",
+      "connection_type": "external",
+      "name": "Anthropic Claude 4: Opus",
+      "openai": {
+        "id": "us.anthropic.claude-opus-4-20250514-v1:0",
+        "created": 1760443080,
+        "object": "model",
+        "owned_by": "bedrock",
+        "connection_type": "external"
+      },
+      "urlIdx": 0,
+      "info": {
+        "id": "us.anthropic.claude-opus-4-20250514-v1:0",
+        "user_id": "115d1995-6d11-4fb8-934f-95fe4c58d37e",
+        "base_model_id": null,
+        "name": "Anthropic Claude 4: Opus",
+        "params": {},
+        "meta": {
+          "profile_image_url": "",
+          "capabilities": {
+            "vision": true,
+            "file_upload": true,
+            "web_search": true,
+            "image_generation": true,
+            "code_interpreter": true,
+            "citations": true,
+            "status_updates": true
+          },
+          "suggestion_prompts": null,
+          "tags": []
+        },
+        "access_control": {
+          "read": {
+            "group_ids": [],
+            "user_ids": []
+          },
+          "write": {
+            "group_ids": [],
+            "user_ids": []
+          }
+        },
+        "is_active": true,
+        "updated_at": 1759951470,
+        "created_at": 1759951470
+      },
+      "actions": [],
+      "filters": [],
+      "tags": []
+    },
+    {
+      "id": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+      "created": 1760443081,
+      "object": "model",
+      "owned_by": "openai",
+      "connection_type": "external",
+      "name": "Anthropic Claude 3.5: Sonnet v2",
+      "openai": {
+        "id": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "created": 1760443081,
+        "object": "model",
+        "owned_by": "bedrock",
+        "connection_type": "external"
+      },
+      "urlIdx": 0,
+      "info": {
+        "id": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "user_id": "115d1995-6d11-4fb8-934f-95fe4c58d37e",
+        "base_model_id": null,
+        "name": "Anthropic Claude 3.5: Sonnet v2",
+        "params": {},
+        "meta": {
+          "profile_image_url": "",
+          "capabilities": {
+            "vision": true,
+            "file_upload": true,
+            "web_search": true,
+            "image_generation": false,
+            "code_interpreter": true,
+            "citations": true,
+            "status_updates": true
+          },
+          "suggestion_prompts": null,
+          "tags": []
+        },
+        "access_control": {
+          "read": {
+            "group_ids": [],
+            "user_ids": []
+          },
+          "write": {
+            "group_ids": [],
+            "user_ids": []
+          }
+        },
+        "is_active": true,
+        "updated_at": 1759951471,
+        "created_at": 1759951471
+      },
+      "actions": [],
+      "filters": [],
+      "tags": []
+    },
+    {
+      "id": "anthropic.claude-3-opus-20240229-v1:0",
+      "created": 1760443082,
+      "object": "model",
+      "owned_by": "openai",
+      "connection_type": "external",
+      "name": "Anthropic Claude 3: Opus",
+      "openai": {
+        "id": "anthropic.claude-3-opus-20240229-v1:0",
+        "created": 1760443082,
+        "object": "model",
+        "owned_by": "bedrock",
+        "connection_type": "external"
+      },
+      "urlIdx": 0,
+      "info": {
+        "id": "anthropic.claude-3-opus-20240229-v1:0",
+        "user_id": "115d1995-6d11-4fb8-934f-95fe4c58d37e",
+        "base_model_id": null,
+        "name": "Anthropic Claude 3: Opus",
+        "params": {},
+        "meta": {
+          "profile_image_url": "",
+          "capabilities": {
+            "vision": true,
+            "file_upload": true,
+            "web_search": true,
+            "image_generation": false,
+            "code_interpreter": true,
+            "citations": true,
+            "status_updates": true
+          },
+          "suggestion_prompts": null,
+          "tags": []
+        },
+        "access_control": {
+          "read": {
+            "group_ids": [],
+            "user_ids": []
+          },
+          "write": {
+            "group_ids": [],
+            "user_ids": []
+          }
+        },
+        "is_active": true,
+        "updated_at": 1759951472,
+        "created_at": 1759951472
+      },
+      "actions": [],
+      "filters": [],
+      "tags": []
+    },
+    {
+      "id": "anthropic.claude-3-haiku-20240307-v1:0",
+      "created": 1760443083,
+      "object": "model",
+      "owned_by": "openai",
+      "connection_type": "external",
+      "name": "Anthropic Claude 3: Haiku",
+      "openai": {
+        "id": "anthropic.claude-3-haiku-20240307-v1:0",
+        "created": 1760443083,
+        "object": "model",
+        "owned_by": "bedrock",
+        "connection_type": "external"
+      },
+      "urlIdx": 0,
+      "info": {
+        "id": "anthropic.claude-3-haiku-20240307-v1:0",
+        "user_id": "115d1995-6d11-4fb8-934f-95fe4c58d37e",
+        "base_model_id": null,
+        "name": "Anthropic Claude 3: Haiku",
+        "params": {},
+        "meta": {
+          "profile_image_url": "",
+          "capabilities": {
+            "vision": true,
+            "file_upload": true,
+            "web_search": true,
+            "image_generation": false,
+            "code_interpreter": true,
+            "citations": true,
+            "status_updates": true
+          },
+          "suggestion_prompts": null,
+          "tags": []
+        },
+        "access_control": {
+          "read": {
+            "group_ids": [],
+            "user_ids": []
+          },
+          "write": {
+            "group_ids": [],
+            "user_ids": []
+          }
+        },
+        "is_active": true,
+        "updated_at": 1759951473,
+        "created_at": 1759951473
+      },
+      "actions": [],
+      "filters": [],
+      "tags": []
+    }
+  ]
+}
