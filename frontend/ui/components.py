@@ -97,12 +97,35 @@ def render_sidebar_status(meta: Optional[DatasetMeta], *, container: Optional[De
     target.markdown(card_html, unsafe_allow_html=True)
 
 
-def render_chat_summary(summary: str) -> None:
-    """Render a chat summary below a card header."""
+def render_chat_summary(
+    summary: str,
+    *,
+    user: Optional[str] = None,
+    model: Optional[str] = None,
+    title: Optional[str] = None,
+) -> None:
+    """Render chat metadata and summary within a styled container."""
     summary = (summary or "").strip()
-    if not summary:
-        return
-    safe_text = html.escape(summary)
+    safe_summary = html.escape(summary) if summary else "<em>No summary available.</em>"
+
+    meta_items = []
+    if user:
+        meta_items.append(
+            f"<span style='white-space:nowrap;'>👤 <strong>User:</strong> {html.escape(str(user))}</span>"
+        )
+    if model:
+        meta_items.append(
+            f"<span style='white-space:nowrap;'>🤖 <strong>Model:</strong> {html.escape(str(model))}</span>"
+        )
+    metadata_html = ""
+    if meta_items:
+        metadata_html = (
+            "<div style='display:flex;flex-wrap:wrap;gap:0.75rem;font-size:0.75rem;"
+            "margin-bottom:0.4rem;color:#1f2937;'>"
+            + "".join(meta_items)
+            + "</div>"
+        )
+
     st.markdown(
         (
             "<div style='margin:0.5rem 0 1rem 0;"
@@ -112,8 +135,11 @@ def render_chat_summary(summary: str) -> None:
             "color:#1f2937;"
             "white-space:normal;"
             "word-break:break-word;'>"
+            f"{metadata_html}"
+            "<div style='font-size:0.82rem;'>"
             "<span style=\"font-weight:600;\">📝 Summary:</span> "
-            f"{safe_text}"
+            f"{safe_summary}"
+            "</div>"
             "</div>"
         ),
         unsafe_allow_html=True,
@@ -421,11 +447,24 @@ def render_search_interface(
         filtered = filtered[filtered["role"] == role_filter]
 
     conversation_ids = filtered["chat_id"].unique()
+    if len(conversation_ids) > 0:
+        ordered_conversations = (
+            messages_df[messages_df["chat_id"].isin(conversation_ids)]
+            .groupby("chat_id", as_index=False)["timestamp"]
+            .min()
+            .sort_values("timestamp", ascending=True, na_position="last")
+        )
+        ordered_conversation_ids = ordered_conversations["chat_id"].tolist()
+    else:
+        ordered_conversation_ids = []
+
     st.success(f"✅ Found {len(conversation_ids)} conversations containing '{search_query}'")
     pattern = re.compile(re.escape(search_query), re.IGNORECASE)
 
-    for idx, cid in enumerate(conversation_ids[:max_conversations]):
-        conv_msgs = messages_df[messages_df["chat_id"] == cid].sort_values("timestamp")
+    for idx, cid in enumerate(ordered_conversation_ids[:max_conversations]):
+        conv_msgs = messages_df[messages_df["chat_id"] == cid].copy()
+        conv_msgs["role_priority"] = conv_msgs["role"].map({"user": 0, "assistant": 1}).fillna(2)
+        conv_msgs = conv_msgs.sort_values(["timestamp", "role_priority"], ascending=[True, True])
         chat_info_rows = chats_df[chats_df["chat_id"] == cid]
         if chat_info_rows.empty:
             continue
@@ -437,7 +476,12 @@ def render_search_interface(
         user_display = chat_user_map.get(cid, chat_info.get("user_display", chat_info.get("user_id", "User")))
         file_upload_flag = "📎" if chat_info.get("files_uploaded", 0) > 0 else ""
         with st.expander(f"Thread #{idx + 1}: {subject} | Date: {date} | Model: {model_name} | {file_upload_flag}", expanded=False):
-            render_chat_summary(str(chat_info.get("summary_128", "")))
+            render_chat_summary(
+                str(chat_info.get("summary_128", "")),
+                user=user_display,
+                model=model_name,
+                title=subject,
+            )
             for _, msg in conv_msgs.iterrows():
                 highlighted = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", str(msg["content"]))
                 timestamp = msg["timestamp"].strftime("%Y-%m-%d %H:%M") if pd.notna(msg["timestamp"]) else "--:--"
@@ -464,7 +508,12 @@ def render_search_interface(
                 "pinned": bool(chat_info.get("pinned")),
                 "tags": chat_info.get("tags"),
                 "files": chat_info.get("files", []),
-                "messages": json.loads(conv_msgs.to_json(orient="records", date_format="iso")),
+                "messages": json.loads(
+                    conv_msgs.drop(columns=["role_priority"], errors="ignore").to_json(
+                        orient="records",
+                        date_format="iso",
+                    )
+                ),
             }
             thread_json = json.dumps(full_thread, indent=2)
             st.download_button(
@@ -532,7 +581,7 @@ def render_browse_data(
         on="chat_id",
         how="left",
     )
-    first_prompts = first_prompts.sort_values("timestamp", ascending=False)
+    first_prompts = first_prompts.sort_values("timestamp", ascending=False, na_position="last")
     total_threads = len(first_prompts)
     threads_options = [5, 10, 20, 50]
     current_threads = app_state.get_threads_per_page()
@@ -565,9 +614,22 @@ def render_browse_data(
         chat_info = chat_rows.iloc[0]
         file_upload_flag = "📎" if chat_info.get("files_uploaded", 0) > 0 else ""
         user_display = chat_user_lookup.get(thread_id, chat_info.get("user_id", "User"))
-        with st.expander(f"{title} (Started: {date}) {file_upload_flag}", expanded=False):
-            render_chat_summary(str(chat_info.get("summary_128", "")))
-            thread_msgs = filtered_messages[filtered_messages["chat_id"] == thread_id].sort_values("timestamp")
+        header = f"{title} (Started: {date})"
+        header = f"{header} | {user_display}"
+        if file_upload_flag:
+            header = f"{header} | {file_upload_flag}"
+        with st.expander(header, expanded=False):
+            thread_msgs = filtered_messages[filtered_messages["chat_id"] == thread_id].copy()
+            thread_msgs["role_priority"] = thread_msgs["role"].map({"user": 0, "assistant": 1}).fillna(2)
+            thread_msgs = thread_msgs.sort_values(["timestamp", "role_priority"], ascending=[True, True])
+            models = [m for m in thread_msgs["model"].unique() if m]
+            model_name = models[0] if models else "Unknown"
+            render_chat_summary(
+                str(chat_info.get("summary_128", "")),
+                user=user_display,
+                model=model_name,
+                title=title,
+            )
             for _, msg in thread_msgs.iterrows():
                 timestamp = msg["timestamp"].strftime("%Y-%m-%d %H:%M") if pd.notna(msg["timestamp"]) else "--:--"
                 content = str(msg["content"]).replace("\n", "<br>")
@@ -594,7 +656,12 @@ def render_browse_data(
                 "pinned": bool(chat_info.get("pinned")),
                 "tags": chat_info.get("tags"),
                 "files": chat_info.get("files", []),
-                "messages": json.loads(thread_msgs.to_json(orient="records", date_format="iso")),
+                "messages": json.loads(
+                    thread_msgs.drop(columns=["role_priority"], errors="ignore").to_json(
+                        orient="records",
+                        date_format="iso",
+                    )
+                ),
             }
             thread_json = json.dumps(full_thread, indent=2)
             st.download_button(
