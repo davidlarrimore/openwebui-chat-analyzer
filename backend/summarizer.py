@@ -7,26 +7,57 @@ import os
 import re
 from collections import defaultdict
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence
-from uuid import uuid4
+from urllib.parse import urlparse
 
 import numpy as np
-from openai import OpenAI
+import requests
 from sentence_transformers import SentenceTransformer
 
 MAX_CHARS = int(os.getenv("SUMMARY_MAX_CHARS", "256"))
 SALIENT_K = int(os.getenv("SALIENT_K", "10"))
 EMB_MODEL_NAME = os.getenv("EMB_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "EMPTY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "llama3.2:3b-instruct")
+def _normalize_base_url(value: str) -> str:
+    """Normalize a host string into a usable HTTP base URL."""
+    candidate = (value or "").strip()
+    if not candidate:
+        candidate = "http://localhost:4000"
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+    parsed = urlparse(candidate)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid Open WebUI host: {value!r}")
+    return candidate.rstrip("/")
+
+
+try:
+    OWUI_BASE_URL = _normalize_base_url(os.getenv("OWUI_DIRECT_HOST", "http://localhost:4000"))
+except ValueError:
+    OWUI_BASE_URL = "http://localhost:4000"
+    logging.getLogger(__name__).warning(
+        "Invalid OWUI_DIRECT_HOST provided; falling back to %s", OWUI_BASE_URL
+    )
+
+OWUI_API_KEY = os.getenv("OWUI_DIRECT_API_KEY", "").strip()
+OWUI_COMPLETIONS_MODEL = (
+    os.getenv("OWUI_COMPLETIONS_MODEL")
+    or os.getenv("OPENAI_MODEL")
+    or "llama3.2:3b-instruct"
+).strip()
+if not OWUI_COMPLETIONS_MODEL:
+    OWUI_COMPLETIONS_MODEL = "llama3.2:3b-instruct"
+
+_OWUI_COMPLETIONS_URL = f"{OWUI_BASE_URL}/api/chat/completions"
 
 _logger = logging.getLogger(__name__)
 if not _logger.handlers:
     logging.basicConfig(level=logging.INFO)
 
 _embeddings_model = SentenceTransformer(EMB_MODEL_NAME)
-_client = OpenAI(base_url=OPENAI_BASE_URL, api_key=OPENAI_API_KEY)
+_requests_session = requests.Session()
+_requests_session.headers.update({"Accept": "application/json"})
+if OWUI_API_KEY:
+    _requests_session.headers["Authorization"] = f"Bearer {OWUI_API_KEY}"
 
 _HEADLINE_SYS = (
     "You write concise, single-line conversation summaries that describe both the topic and "
@@ -174,16 +205,43 @@ def _headline_with_llm(context: str) -> str:
     Returns:
         str: Model-generated summary trimmed to a single line.
     """
-    response = _client.chat.completions.create(
-        model=OPENAI_MODEL,
-        temperature=0.1,
-        max_tokens=64,
-        messages=[
+    payload = {
+        "model": OWUI_COMPLETIONS_MODEL,
+        "temperature": 0.1,
+        "max_tokens": 64,
+        "messages": [
             {"role": "system", "content": _HEADLINE_SYS},
             {"role": "user", "content": _HEADLINE_USER_TMPL.format(ctx=context)},
         ],
-    )
-    text = (response.choices[0].message.content or "").strip()
+    }
+
+    try:
+        response = _requests_session.post(
+            _OWUI_COMPLETIONS_URL,
+            json=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f"Open WebUI completion request failed: {exc}") from exc
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Open WebUI completion response was not valid JSON.") from exc
+
+    text = ""
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        primary = choices[0] or {}
+        message = primary.get("message")
+        if isinstance(message, dict):
+            text = str(message.get("content") or "").strip()
+        if not text:
+            text_candidate = primary.get("text")
+            if isinstance(text_candidate, str):
+                text = text_candidate.strip()
+
     return _trim_one_line(text)
 
 

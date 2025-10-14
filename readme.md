@@ -9,7 +9,7 @@ Streamlit dashboard for exploring Open WebUI chat exports locally.
 - Backend auto-loads the latest `all-chats-export-*.json` from `data/` and supports an optional `users.csv` for friendly names
 - Overview metrics for chats, messages, per-role activity, file uploads, and approximate token volume
 - Filters every visualization by Open WebUI user and model
-- Built-in summarizer generates one-line chat headlines using local sentence embeddings plus an OpenAI-compatible completion API (Ollama-ready)
+- Built-in summarizer generates one-line chat headlines using local sentence embeddings plus the Open WebUI chat completions API
 - Time analysis (daily trend, conversation length, hour-by-day heatmap) and content analysis (word cloud, message length)
 - Sentiment breakdown with TextBlob plus full-text search, paginated browsing, and per-thread JSON downloads
 - CSV exports for both chat metadata and individual messages
@@ -28,7 +28,7 @@ Streamlit dashboard for exploring Open WebUI chat exports locally.
 4. (Optional) Tune the summarizer:
    - `SUMMARY_MAX_CHARS` / `SALIENT_K` – Control headline length and how many salient utterances feed the LLM.
    - `EMB_MODEL` – Sentence-transformer used to pick salient lines (`sentence-transformers/all-MiniLM-L6-v2` by default).
-   - `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` – OpenAI-compatible completion endpoint used for headline generation. Defaults work with `ollama serve` listening on port 11434.
+   - `OWUI_COMPLETIONS_MODEL` – Chat completion model identifier requested from your Open WebUI deployment.
 5. Restart the backend (and Streamlit) after changing environment variables. The first summarizer run will download embeddings locally.
 
 ## Input Data
@@ -105,7 +105,7 @@ Run `uvicorn backend.app:app --reload` during development to keep the API availa
 
 - Summaries are persisted in the `summary_128` field for each chat and surface throughout the Browse and Overview experiences.
 - Every dataset update (direct sync or file upload) queues the summarizer; progress is shown in the Load Data processing log with toast notifications.
-- The summarizer picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the OpenAI-compatible endpoint configured via `OPENAI_BASE_URL` / `OPENAI_MODEL`. Point these at Ollama, OpenAI, or another gateway.
+- The summarizer picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the Open WebUI chat completions endpoint exposed at `OWUI_DIRECT_HOST` using `OWUI_COMPLETIONS_MODEL`.
 - Rebuild summaries anytime from **Load Data → Admin Tools → Rerun summaries** or through the API (`POST /api/v1/summaries/rebuild` + `/summaries/status`).
 
 ## Dashboard Tour
@@ -161,7 +161,7 @@ All requests stay on your machine—the Streamlit UI only talks to the bundled F
 ## Troubleshooting
 
 - If Streamlit crashes during sentiment analysis, install the TextBlob corpora with `python -m textblob.download_corpora`.
-- Summaries failing or timing out? Confirm the OpenAI-compatible endpoint configured in `.env` is running and reachable, and that the sentence-transformers model has been downloaded (first run may take a minute).
+- Summaries failing or timing out? Confirm your Open WebUI deployment at `OWUI_DIRECT_HOST` is reachable, the API key is valid, and that the sentence-transformers model has been downloaded (first run may take a minute).
 - Some environments need a font package for `wordcloud`; installing system fonts (for example `sudo apt-get install fonts-dejavu`) fixes blank visuals.
 - Adjust `STREAMLIT_SERVER_PORT` or the Docker port mapping if 8501 is already in use.
 - Seeing “Unable to connect to the backend API”? Make sure `uvicorn backend.app:app --port 8502` (or the Docker `backend` service) is running and reachable.
