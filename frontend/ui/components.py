@@ -18,6 +18,7 @@ from frontend.core.processing import (
     build_user_options,
     determine_dataset_source,
     filter_dataframes_by_user_model,
+    format_day,
     format_relative_time,
     format_timestamp,
 )
@@ -470,7 +471,8 @@ def render_search_interface(
             continue
         chat_info = chat_info_rows.iloc[0]
         subject = chat_info["title"] or cid
-        date = chat_info["created_at"].strftime("%Y-%m-%d") if pd.notna(chat_info["created_at"]) else "Unknown"
+        date_display = format_day(chat_info["created_at"])
+        date = "Unknown" if date_display in {"N/A", ""} else date_display
         models = [m for m in conv_msgs["model"].unique() if m]
         model_name = models[0] if models else "Unknown"
         user_display = chat_user_map.get(cid, chat_info.get("user_display", chat_info.get("user_id", "User")))
@@ -484,7 +486,8 @@ def render_search_interface(
             )
             for _, msg in conv_msgs.iterrows():
                 highlighted = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", str(msg["content"]))
-                timestamp = msg["timestamp"].strftime("%Y-%m-%d %H:%M") if pd.notna(msg["timestamp"]) else "--:--"
+                timestamp_display = format_timestamp(msg["timestamp"])
+                timestamp = "--:--" if timestamp_display in {"N/A", ""} else timestamp_display
                 if msg["role"] == "user":
                     st.markdown(
                         f"<div style='background-color:#e6f7ff; padding:8px; border-radius:5px; margin-bottom:4px;'>"
@@ -606,8 +609,9 @@ def render_browse_data(
     for _, row in first_prompts.iterrows():
         thread_id = row["chat_id"]
         title = row["title"] or thread_id
-        timestamp = row["timestamp"]
-        date = timestamp.strftime("%Y-%m-%d %H:%M") if pd.notna(timestamp) else "Unknown"
+        timestamp_value = row["timestamp"]
+        started_display = format_timestamp(timestamp_value)
+        date = "Unknown" if started_display in {"N/A", ""} else started_display
         chat_rows = filtered_chats[filtered_chats["chat_id"] == thread_id]
         if chat_rows.empty:
             continue
@@ -631,7 +635,8 @@ def render_browse_data(
                 title=title,
             )
             for _, msg in thread_msgs.iterrows():
-                timestamp = msg["timestamp"].strftime("%Y-%m-%d %H:%M") if pd.notna(msg["timestamp"]) else "--:--"
+                timestamp_display = format_timestamp(msg["timestamp"])
+                timestamp = "--:--" if timestamp_display in {"N/A", ""} else timestamp_display
                 content = str(msg["content"]).replace("\n", "<br>")
                 if msg["role"] == "user":
                     st.markdown(

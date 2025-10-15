@@ -7,15 +7,34 @@ import plotly.express as px
 import plotly.graph_objects as go
 from wordcloud import WordCloud
 
+from frontend.core.timezone import DISPLAY_TIMEZONE, coerce_to_display_timezone
+
+
+def _ensure_display_timezone(series: pd.Series) -> pd.Series:
+    """Return a series localised to the app's display timezone."""
+    converted = series.map(coerce_to_display_timezone)
+    converted = pd.to_datetime(converted, errors="coerce")
+    if getattr(converted.dt, "tz", None) is None:
+        return converted.dt.tz_localize(DISPLAY_TIMEZONE)
+    return converted.dt.tz_convert(DISPLAY_TIMEZONE)
+
 
 def create_time_series_chart(messages_df: pd.DataFrame) -> go.Figure:
     """Create a daily message volume chart."""
     if messages_df.empty or "timestamp" not in messages_df.columns:
         return go.Figure()
 
+    working = messages_df.dropna(subset=["timestamp"]).copy()
+    if working.empty:
+        return go.Figure()
+
+    working["timestamp"] = _ensure_display_timezone(working["timestamp"])
+    working = working.dropna(subset=["timestamp"])
+    if working.empty:
+        return go.Figure()
+
     daily_counts = (
-        messages_df.dropna(subset=["timestamp"])
-        .copy()
+        working
         .assign(date=lambda df: df["timestamp"].dt.normalize())
         .groupby("date")
         .size()
@@ -26,10 +45,9 @@ def create_time_series_chart(messages_df: pd.DataFrame) -> go.Figure:
     if daily_counts.empty:
         return go.Figure()
 
-    tz_info = daily_counts["date"].dt.tz
     date_min = daily_counts["date"].min()
     date_max = daily_counts["date"].max()
-    date_range = pd.date_range(date_min, date_max, freq="D", tz=tz_info)
+    date_range = pd.date_range(date_min, date_max, freq="D", tz=DISPLAY_TIMEZONE)
     daily_counts = (
         daily_counts.set_index("date")
         .reindex(date_range, fill_value=0)
@@ -68,6 +86,11 @@ def create_user_activity_chart(messages_df: pd.DataFrame) -> go.Figure:
         return go.Figure()
 
     active_messages = messages_df.dropna(subset=["timestamp"]).copy()
+    if active_messages.empty:
+        return go.Figure()
+
+    active_messages["timestamp"] = _ensure_display_timezone(active_messages["timestamp"])
+    active_messages = active_messages.dropna(subset=["timestamp"])
     if active_messages.empty:
         return go.Figure()
 
@@ -177,6 +200,11 @@ def create_token_consumption_chart(messages_df: pd.DataFrame) -> go.Figure:
     if token_df.empty:
         return go.Figure()
 
+    token_df["timestamp"] = _ensure_display_timezone(token_df["timestamp"])
+    token_df = token_df.dropna(subset=["timestamp"])
+    if token_df.empty:
+        return go.Figure()
+
     token_df["token_count"] = token_df["content"].astype(str).str.len()
     token_df["date"] = token_df["timestamp"].dt.normalize()
     daily_tokens = (
@@ -188,12 +216,11 @@ def create_token_consumption_chart(messages_df: pd.DataFrame) -> go.Figure:
     if daily_tokens.empty:
         return go.Figure()
 
-    tz_info = daily_tokens["date"].dt.tz
     full_range = pd.date_range(
         daily_tokens["date"].min(),
         daily_tokens["date"].max(),
         freq="D",
-        tz=tz_info,
+        tz=DISPLAY_TIMEZONE,
     )
     daily_tokens = (
         daily_tokens.set_index("date")
@@ -253,7 +280,8 @@ def create_user_adoption_chart(
     if user_messages.empty:
         return None
 
-    user_messages["timestamp"] = pd.to_datetime(user_messages["timestamp"], errors="coerce")
+    user_messages = user_messages.copy()
+    user_messages["timestamp"] = _ensure_display_timezone(user_messages["timestamp"])
     user_messages = user_messages.dropna(subset=["timestamp"])
     if user_messages.empty:
         return None
@@ -284,14 +312,25 @@ def create_user_adoption_chart(
     start_date = first_activity_date - pd.Timedelta(days=1)
 
     if date_max is not None:
-        date_max = pd.to_datetime(date_max)
+        date_max = coerce_to_display_timezone(date_max)
     if date_min is not None:
-        date_min = pd.to_datetime(date_min)
+        date_min = coerce_to_display_timezone(date_min)
+
+    range_start = start_date
+    if date_min is not None and date_min < range_start:
+        range_start = date_min
+    range_end = date_max or daily_new_users["first_date"].max()
+
+    range_start = coerce_to_display_timezone(range_start)
+    range_end = coerce_to_display_timezone(range_end)
+    if range_start is None or range_end is None:
+        return None
 
     full_range = pd.date_range(
-        start=start_date if date_min is None else min(start_date, date_min),
-        end=date_max or daily_new_users["first_date"].max(),
+        start=range_start,
+        end=range_end,
         freq="D",
+        tz=DISPLAY_TIMEZONE,
     )
     daily_new_users = (
         daily_new_users.set_index("first_date")

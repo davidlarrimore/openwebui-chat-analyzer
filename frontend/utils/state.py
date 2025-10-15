@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
 from frontend.core.constants import ALL_MODELS_OPTION, ALL_USERS_OPTION
 from frontend.core.models import DatasetMeta, ProcessedData
+from frontend.core.timezone import now_in_display_timezone
 
 
 DIRECT_CONNECT_LOG_KEY = "direct_connect_log"
@@ -51,7 +51,7 @@ def reset_direct_connect_log(show: bool = True) -> None:
 def append_direct_connect_log(message: str, emoji: str = "ℹ️ ") -> None:
     ensure_direct_connect_state()
     set_processing_log_source("direct_connect")
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = now_in_display_timezone().strftime("%H:%M:%S")
     st.session_state[DIRECT_CONNECT_LOG_KEY].append(
         {
             "timestamp": timestamp,
@@ -66,7 +66,7 @@ def set_direct_connect_progress(completed: int, total: int) -> None:
     idx = st.session_state.get(DIRECT_CONNECT_PROGRESS_INDEX_KEY)
     percent = (completed / total * 100) if total else 0.0
     entry_message = f"Building chat summaries... {completed}/{total} ({percent:.1f}%)"
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = now_in_display_timezone().strftime("%H:%M:%S")
     if idx is None:
         append_direct_connect_log(entry_message, "🧠")
         st.session_state[DIRECT_CONNECT_PROGRESS_INDEX_KEY] = len(st.session_state[DIRECT_CONNECT_LOG_KEY]) - 1
@@ -134,7 +134,7 @@ def reset_admin_log(show: bool = True) -> None:
 def append_admin_log(message: str, emoji: str = "ℹ️ ") -> None:
     ensure_admin_log_state()
     set_processing_log_source("admin")
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = now_in_display_timezone().strftime("%H:%M:%S")
     st.session_state[ADMIN_LOG_KEY].append(
         {
             "timestamp": timestamp,
@@ -149,7 +149,7 @@ def set_admin_progress(completed: int, total: int) -> None:
     idx = st.session_state.get(ADMIN_PROGRESS_INDEX_KEY)
     percent = (completed / total * 100) if total else 0.0
     entry_message = f"Building chat summaries... {completed}/{total} ({percent:.1f}%)"
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = now_in_display_timezone().strftime("%H:%M:%S")
     if idx is None:
         append_admin_log(entry_message, "🧠")
         st.session_state[ADMIN_PROGRESS_INDEX_KEY] = len(st.session_state[ADMIN_LOG_KEY]) - 1
@@ -217,7 +217,7 @@ def reset_upload_log(show: bool = True) -> None:
 def append_upload_log(message: str, emoji: str = "ℹ️ ") -> None:
     ensure_upload_log_state()
     set_processing_log_source("upload")
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = now_in_display_timezone().strftime("%H:%M:%S")
     st.session_state[UPLOAD_LOG_KEY].append(
         {
             "timestamp": timestamp,
@@ -232,7 +232,7 @@ def set_upload_progress(completed: int, total: int) -> None:
     idx = st.session_state.get(UPLOAD_PROGRESS_INDEX_KEY)
     percent = (completed / total * 100) if total else 0.0
     entry_message = f"Building chat summaries... {completed}/{total} ({percent:.1f}%)"
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = now_in_display_timezone().strftime("%H:%M:%S")
     if idx is None:
         append_upload_log(entry_message, "🧠")
         st.session_state[UPLOAD_PROGRESS_INDEX_KEY] = len(st.session_state[UPLOAD_LOG_KEY]) - 1

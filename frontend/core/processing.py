@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import html
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -9,6 +9,7 @@ from textblob import TextBlob
 
 from .constants import ALL_MODELS_OPTION, ALL_USERS_OPTION
 from .models import DatasetMeta, DatasetPanel, DatasetSourceInfo, SummaryStatus
+from .timezone import DISPLAY_TIMEZONE, coerce_to_display_timezone
 
 
 def calculate_engagement_metrics(
@@ -137,42 +138,28 @@ def perform_sentiment_analysis(messages_df: pd.DataFrame) -> pd.DataFrame:
     return user_messages
 
 
-def format_timestamp(value: Optional[str]) -> str:
-    """Format an ISO timestamp to a friendly string."""
-    if not value:
+def format_timestamp(value: Optional[Any]) -> str:
+    """Format a timestamp for display in the app's configured timezone."""
+    if value in (None, "", "NaT"):
         return "N/A"
-    try:
-        ts_value = pd.to_datetime(value)
-    except Exception:
-        return str(value)
-    if pd.isna(ts_value):
-        return "N/A"
-    if getattr(ts_value, "tzinfo", None) is None:
-        return ts_value.strftime("%Y-%m-%d %H:%M")
-    return ts_value.tz_convert("UTC").strftime("%Y-%m-%d %H:%M UTC")
+
+    ts_value = coerce_to_display_timezone(value)
+    if ts_value is None:
+        return str(value) if value not in (None, "") else "N/A"
+
+    return f"{ts_value.strftime('%Y-%m-%d %H:%M')} ET"
 
 
-def format_relative_time(value: Optional[str]) -> str:
+def format_relative_time(value: Optional[Any]) -> str:
     """Return a relative time delta such as '5 minutes ago'."""
-    if not value:
+    if value in (None, "", "NaT"):
         return ""
-    try:
-        ts_value = pd.to_datetime(value)
-    except Exception:
+
+    ts_value = coerce_to_display_timezone(value)
+    if ts_value is None:
         return ""
-    if pd.isna(ts_value):
-        return ""
-    try:
-        if getattr(ts_value, "tzinfo", None) is None:
-            ts_value = ts_value.tz_localize("UTC")
-        else:
-            ts_value = ts_value.tz_convert("UTC")
-    except Exception:
-        try:
-            ts_value = pd.Timestamp(ts_value).tz_localize("UTC")
-        except Exception:
-            return ""
-    now = pd.Timestamp.now(tz="UTC")
+
+    now = pd.Timestamp.now(tz=DISPLAY_TIMEZONE)
     delta = now - ts_value
     seconds = max(delta.total_seconds(), 0.0)
     if seconds < 60:
@@ -192,16 +179,15 @@ def format_relative_time(value: Optional[str]) -> str:
     return f"{days} {unit} ago"
 
 
-def format_day(value: Optional[str]) -> str:
-    """Return a YYYY-MM-DD representation of a date."""
-    if not value:
+def format_day(value: Optional[Any]) -> str:
+    """Return a YYYY-MM-DD representation of a date in the display timezone."""
+    if value in (None, "", "NaT"):
         return "N/A"
-    try:
-        dt_value = pd.to_datetime(value)
-    except Exception:
-        return str(value)
-    if pd.isna(dt_value):
-        return "N/A"
+
+    dt_value = coerce_to_display_timezone(value)
+    if dt_value is None:
+        return str(value) if value not in (None, "") else "N/A"
+
     return dt_value.strftime("%Y-%m-%d")
 
 
@@ -354,8 +340,14 @@ def compute_date_summary(messages_df: pd.DataFrame) -> Dict[str, Optional[str]]:
     if ts_series.empty:
         return {"date_min": "N/A", "date_max": "N/A", "total_days": 0, "date_range": "N/A"}
 
-    date_min_dt = ts_series.min()
-    date_max_dt = ts_series.max()
+    converted_values = [
+        ts for ts in (coerce_to_display_timezone(val) for val in ts_series) if ts is not None
+    ]
+    if not converted_values:
+        return {"date_min": "N/A", "date_max": "N/A", "total_days": 0, "date_range": "N/A"}
+
+    date_min_dt = min(converted_values)
+    date_max_dt = max(converted_values)
     date_min = date_min_dt.strftime("%m/%d")
     date_max = date_max_dt.strftime("%m/%d")
     total_days = (date_max_dt.date() - date_min_dt.date()).days + 1
