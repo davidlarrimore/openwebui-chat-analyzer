@@ -373,7 +373,7 @@ def render_filters(
     col_user, col_model = st.columns(2)
     with col_user:
         user_index = user_options.index(st.session_state.user_filter)
-        st.selectbox(
+        selected_user = st.selectbox(
             "Select user",
             options=user_options,
             index=user_index,
@@ -383,7 +383,7 @@ def render_filters(
         )
     with col_model:
         model_index = model_options.index(st.session_state.model_filter)
-        st.selectbox(
+        selected_model = st.selectbox(
             "Select model",
             options=model_options,
             index=model_index,
@@ -394,12 +394,12 @@ def render_filters(
     filtered_chats, filtered_messages = filter_dataframes_by_user_model(
         chats_df,
         messages_df,
-        user_id=st.session_state.user_filter,
-        model_name=st.session_state.model_filter,
+        user_id=selected_user,
+        model_name=selected_model,
     )
 
-    model_key = st.session_state.model_filter or ALL_MODELS_OPTION
-    user_key = "AllUsers" if st.session_state.user_filter == ALL_USERS_OPTION else st.session_state.user_filter
+    model_key = selected_model or ALL_MODELS_OPTION
+    user_key = "AllUsers" if selected_user == ALL_USERS_OPTION else selected_user
     raw_filter_key = f"{filter_prefix}_{model_key}_{user_key}"
     filter_key = re.sub(r"\W+", "_", str(raw_filter_key))
     app_state.update_filter_key(filter_key)

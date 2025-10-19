@@ -16,11 +16,18 @@ class Chat(BaseModel):
         summary_128: Locally generated, truncated summary string.
         created_at: Creation timestamp pulled from the export.
         updated_at: Last modification timestamp pulled from the export.
+        timestamp: Primary Open WebUI timestamp for the chat, when present.
         archived: Whether the chat is marked archived.
         pinned: Whether the chat is pinned in the source system.
         tags: Optional tags carried over from the export metadata.
         files_uploaded: Number of files attached to the chat.
         files: Opaque metadata about uploaded files, if any.
+        meta: Raw metadata dictionary provided by the export.
+        models: Recorded model identifiers for the chat.
+        params: Conversation parameter overrides recorded in the export.
+        share_id: Shared link identifier from the source system.
+        folder_id: Folder grouping identifier if the chat was organized.
+        history_current_id: Identifier of the currently active history node.
     """
 
     chat_id: str = Field(..., description="Unique identifier for the chat")
@@ -38,6 +45,9 @@ class Chat(BaseModel):
     updated_at: Optional[datetime] = Field(
         default=None, description="Timestamp when the chat was last updated"
     )
+    timestamp: Optional[datetime] = Field(
+        default=None, description="Primary Open WebUI timestamp associated with the chat"
+    )
     archived: bool = Field(default=False, description="Whether the chat is archived")
     pinned: bool = Field(default=False, description="Whether the chat is pinned")
     tags: List[str] = Field(default_factory=list, description="Tags associated with chat")
@@ -47,6 +57,30 @@ class Chat(BaseModel):
     files: List[Any] = Field(
         default_factory=list,
         description="Raw file metadata from the chat export, if present",
+    )
+    meta: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Raw metadata dictionary emitted by the Open WebUI export",
+    )
+    models: List[str] = Field(
+        default_factory=list,
+        description="Models recorded by the export as having participated in the chat",
+    )
+    params: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Conversation parameter overrides included in the export payload",
+    )
+    share_id: Optional[str] = Field(
+        default=None,
+        description="Shared link identifier associated with the chat, if any",
+    )
+    folder_id: Optional[str] = Field(
+        default=None,
+        description="Folder grouping identifier assigned within Open WebUI",
+    )
+    history_current_id: Optional[str] = Field(
+        default=None,
+        description="Identifier of the currently selected history branch from the export",
     )
 
 
@@ -62,6 +96,19 @@ class Message(BaseModel):
         timestamp: Source timestamp from the export, if provided.
         model: Name of the model that produced the response (if assistant).
         models: Alternate model names when the export contains multiple values.
+        children_ids: Identifiers of direct child messages in the conversation tree.
+        follow_ups: Suggested follow-up prompts surfaced by Open WebUI.
+        status_history: Step-by-step LLM tool/action trace for the message.
+        sources: Retrieval sources or citations associated with the message.
+        files: Files directly attached to the message.
+        annotation: Structured annotation payload (if the message was reviewed).
+        model_name: Human-friendly model display name from the export.
+        model_index: Numeric model index recorded by the export.
+        last_sentence: Final sentence recorded by the export for assistant messages.
+        done: Flag indicating whether the assistant marked the response complete.
+        favorite: Flag indicating whether the message was favorited.
+        feedback_id: Identifier of any feedback entry tied to the message.
+        error: Error payload when the source LLM invocation failed.
     """
 
     chat_id: str = Field(..., description="Identifier of the chat this message belongs to")
@@ -77,6 +124,46 @@ class Message(BaseModel):
     model: str = Field(default="", description="Model name associated with the message")
     models: List[str] = Field(
         default_factory=list, description="List of alternative model names, if any"
+    )
+    children_ids: List[str] = Field(
+        default_factory=list, description="Identifiers for messages that reply to this one"
+    )
+    follow_ups: List[str] = Field(
+        default_factory=list, description="Suggested follow-up prompts captured in the export"
+    )
+    status_history: List[Dict[str, Any]] = Field(
+        default_factory=list, description="LLM status trace entries for this message"
+    )
+    sources: List[Dict[str, Any]] = Field(
+        default_factory=list, description="Retrieval source metadata attached to the message"
+    )
+    files: List[Dict[str, Any]] = Field(
+        default_factory=list, description="Files attached directly to the message"
+    )
+    annotation: Optional[Dict[str, Any]] = Field(
+        default=None, description="Structured annotation metadata for the message"
+    )
+    model_name: Optional[str] = Field(
+        default=None, description="Display name for the model recorded by the export"
+    )
+    model_index: Optional[int] = Field(
+        default=None, description="Index of the model within the export payload"
+    )
+    last_sentence: Optional[str] = Field(
+        default=None,
+        description="Last sentence extracted by the export for assistant responses",
+    )
+    done: Optional[bool] = Field(
+        default=None, description="Whether Open WebUI marked the assistant reply as complete"
+    )
+    favorite: Optional[bool] = Field(
+        default=None, description="Whether the message was favorited in Open WebUI"
+    )
+    feedback_id: Optional[str] = Field(
+        default=None, description="Identifier of any feedback item linked to the message"
+    )
+    error: Optional[Dict[str, Any]] = Field(
+        default=None, description="Error metadata when the message generation failed"
     )
 
 

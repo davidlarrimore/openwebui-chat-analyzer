@@ -73,6 +73,21 @@ def _ensure_list(value: Any) -> List[Any]:
     return [value]
 
 
+def _normalize_bool(value: Any) -> Optional[bool]:
+    """Interpret loose boolean-like values and return a strict boolean when possible."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in {"true", "1", "yes", "y"}:
+            return True
+        if candidate in {"false", "0", "no", "n"}:
+            return False
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    return None
+
+
 def _parse_chat_export(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Parse the Open WebUI chat export JSON into chat/message payloads."""
     if not raw_bytes:
@@ -89,29 +104,223 @@ def _parse_chat_export(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[Dic
     chats: List[Dict[str, Any]] = []
     messages: List[Dict[str, Any]] = []
 
+    def _build_message(chat_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return None
+
+        message_id_raw = (
+            payload.get("id")
+            or payload.get("message_id")
+            or payload.get("_id")
+            or payload.get("uuid")
+        )
+        if message_id_raw in (None, "", []):
+            return None
+        message_id = str(message_id_raw)
+
+        parent_raw = payload.get("parentId") or payload.get("parent_id") or payload.get("parent")
+        parent_id = None
+        if parent_raw not in (None, "", []):
+            parent_id = str(parent_raw)
+
+        children_ids: List[str] = []
+        for child in _ensure_list(payload.get("childrenIds") or payload.get("children_ids")):
+            child_str = str(child).strip()
+            if child_str and child_str.lower() != "none":
+                children_ids.append(child_str)
+
+        follow_ups: List[str] = []
+        for follow_up in _ensure_list(payload.get("followUps")):
+            if isinstance(follow_up, str):
+                follow_candidate = follow_up.strip()
+                if follow_candidate:
+                    follow_ups.append(follow_candidate)
+
+        status_history = [
+            entry for entry in _ensure_list(payload.get("statusHistory")) if isinstance(entry, dict)
+        ]
+        sources = [
+            entry for entry in _ensure_list(payload.get("sources")) if isinstance(entry, dict)
+        ]
+        attached_files = [
+            entry for entry in _ensure_list(payload.get("files")) if isinstance(entry, dict)
+        ]
+
+        annotation = payload.get("annotation")
+        if not isinstance(annotation, dict):
+            annotation = None
+
+        error_value = payload.get("error")
+        if isinstance(error_value, str):
+            error_value = {"message": error_value}
+        elif not isinstance(error_value, dict):
+            error_value = None
+
+        done = _normalize_bool(payload.get("done"))
+        favorite = _normalize_bool(payload.get("favorite"))
+
+        feedback_id = payload.get("feedbackId")
+        if feedback_id in (None, "", []):
+            feedback_id = None
+        else:
+            feedback_id = str(feedback_id)
+
+        model_name = payload.get("modelName")
+        if model_name in (None, "", []):
+            model_name = None
+        else:
+            model_name = str(model_name)
+
+        model_index: Optional[int]
+        model_idx_raw = payload.get("modelIdx")
+        try:
+            model_index = int(model_idx_raw)
+        except (TypeError, ValueError):
+            model_index = None
+
+        last_sentence = payload.get("lastSentence")
+        if last_sentence in (None, "", []):
+            last_sentence = None
+        else:
+            last_sentence = str(last_sentence)
+
+        models: List[str] = []
+        for model_entry in _ensure_list(payload.get("models")):
+            model_str = str(model_entry).strip()
+            if model_str:
+                models.append(model_str)
+
+        timestamp = _coerce_timestamp(
+            payload.get("timestamp") or payload.get("created_at") or payload.get("updated_at")
+        )
+        content_value = (
+            payload.get("content")
+            or payload.get("message")
+            or payload.get("text")
+            or payload.get("body")
+        )
+
+        message_info: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "parent_id": parent_id,
+            "role": str(payload.get("role") or payload.get("type") or payload.get("sender") or ""),
+            "content": _stringify_content(content_value),
+            "timestamp": timestamp,
+            "model": str(payload.get("model") or payload.get("model_id") or payload.get("assistant") or ""),
+            "models": models,
+            "children_ids": children_ids,
+            "follow_ups": follow_ups,
+            "status_history": status_history,
+            "sources": sources,
+            "files": attached_files,
+            "annotation": annotation,
+            "model_name": model_name,
+            "model_index": model_index,
+            "last_sentence": last_sentence,
+            "done": done,
+            "favorite": favorite,
+            "feedback_id": feedback_id,
+            "error": error_value,
+        }
+        return message_info
+
     for item in data:
         if not isinstance(item, dict):
             continue
         chat_meta = item.get("chat", {}) if isinstance(item.get("chat"), dict) else {}
-        files = chat_meta.get("files", [])
+        files_raw = chat_meta.get("files")
+        files: List[Any] = list(files_raw) if isinstance(files_raw, list) else []
+
+        meta_sections: List[Dict[str, Any]] = []
+        if isinstance(item.get("meta"), dict):
+            meta_sections.append(dict(item["meta"]))
+        chat_meta_meta = chat_meta.get("meta")
+        if isinstance(chat_meta_meta, dict):
+            meta_sections.append(dict(chat_meta_meta))
+
+        merged_meta: Dict[str, Any] = {}
+        tags: List[str] = []
+        for meta_section in meta_sections:
+            merged_meta.update(meta_section)
+            for tag in _ensure_list(meta_section.get("tags")):
+                tag_str = str(tag).strip()
+                if tag_str and tag_str not in tags:
+                    tags.append(tag_str)
+        for tag in _ensure_list(chat_meta.get("tags")):
+            tag_str = str(tag).strip()
+            if tag_str and tag_str not in tags:
+                tags.append(tag_str)
+
+        chat_id_raw = item.get("id") or chat_meta.get("id")
+        chat_id = str(chat_id_raw or "")
+
+        user_id_raw = item.get("user_id") or chat_meta.get("user_id")
+        user_id = str(user_id_raw) if user_id_raw not in (None, "", []) else ""
+
+        share_id_raw = item.get("share_id") or chat_meta.get("share_id")
+        share_id = str(share_id_raw) if share_id_raw not in (None, "", []) else None
+
+        folder_id_raw = item.get("folder_id") or chat_meta.get("folder_id")
+        folder_id = str(folder_id_raw) if folder_id_raw not in (None, "", []) else None
+
+        models: List[str] = []
+        for model_entry in _ensure_list(chat_meta.get("models")):
+            model_str = str(model_entry).strip()
+            if model_str:
+                models.append(model_str)
+
+        params = dict(chat_meta.get("params")) if isinstance(chat_meta.get("params"), dict) else {}
+
+        created_at = _coerce_timestamp(chat_meta.get("created_at") or item.get("created_at"))
+        updated_at = _coerce_timestamp(chat_meta.get("updated_at") or item.get("updated_at"))
+        timestamp_value = _coerce_timestamp(chat_meta.get("timestamp") or item.get("timestamp"))
+
+        archived = bool(chat_meta.get("archived") or item.get("archived", False))
+        pinned = bool(chat_meta.get("pinned") or item.get("pinned", False))
+
+        history = chat_meta.get("history") if isinstance(chat_meta.get("history"), dict) else {}
+        history_current_id_raw = history.get("currentId")
+        history_current_id = (
+            str(history_current_id_raw) if history_current_id_raw not in (None, "", []) else None
+        )
+        history_messages_raw = history.get("messages")
+        history_messages: Dict[str, Dict[str, Any]] = {}
+        if isinstance(history_messages_raw, dict):
+            for msg_id, payload in history_messages_raw.items():
+                if not isinstance(payload, dict):
+                    continue
+                msg_key = str(msg_id) if msg_id not in (None, "", []) else str(payload.get("id", ""))
+                if not msg_key:
+                    continue
+                merged_payload = dict(payload)
+                merged_payload.setdefault("id", msg_key)
+                history_messages[msg_key] = merged_payload
 
         chat_info: Dict[str, Any] = {
-            "chat_id": str(item.get("id", "")),
-            "user_id": str(item.get("user_id", "")) if item.get("user_id") is not None else "",
-            "title": item.get("title") or "",
-            "created_at": _coerce_timestamp(item.get("created_at")),
-            "updated_at": _coerce_timestamp(item.get("updated_at")),
-            "archived": bool(item.get("archived", False)),
-            "pinned": bool(item.get("pinned", False)),
-            "tags": _ensure_list(item.get("meta", {}).get("tags") if isinstance(item.get("meta"), dict) else []),
-            "files_uploaded": len(files) if isinstance(files, list) else 0,
-            "files": files if isinstance(files, list) else [],
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "title": item.get("title") or chat_meta.get("title") or "",
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "timestamp": timestamp_value,
+            "archived": archived,
+            "pinned": pinned,
+            "tags": tags,
+            "files_uploaded": len(files),
+            "files": files,
+            "meta": merged_meta,
+            "models": models,
+            "params": params,
+            "share_id": share_id,
+            "folder_id": folder_id,
+            "history_current_id": history_current_id,
         }
         summary_value = item.get(SUMMARY_EXPORT_FIELD)
         chat_summary_value = None
         if isinstance(summary_value, str):
             chat_summary_value = summary_value
-        elif isinstance(chat_meta, dict):
+        else:
             nested_summary = chat_meta.get(SUMMARY_EXPORT_FIELD)
             if isinstance(nested_summary, str):
                 chat_summary_value = nested_summary
@@ -120,21 +329,29 @@ def _parse_chat_export(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[Dic
 
         chats.append(chat_info)
 
+        processed_ids: Set[str] = set()
         chat_messages = chat_meta.get("messages", [])
         if isinstance(chat_messages, list):
             for msg in chat_messages:
                 if not isinstance(msg, dict):
                     continue
-                message_info: Dict[str, Any] = {
-                    "chat_id": chat_info["chat_id"],
-                    "message_id": str(msg.get("id", "")),
-                    "parent_id": str(msg.get("parentId")) if msg.get("parentId") not in (None, "") else None,
-                    "role": str(msg.get("role", "")),
-                    "content": msg.get("content") or "",
-                    "timestamp": _coerce_timestamp(msg.get("timestamp")),
-                    "model": msg.get("model") or "",
-                    "models": _ensure_list(msg.get("models")),
-                }
+                msg_id_raw = msg.get("id")
+                msg_id = str(msg_id_raw) if msg_id_raw not in (None, "", []) else None
+                merged_payload = dict(history_messages.get(msg_id, {}))
+                merged_payload.update(msg)
+                if msg_id:
+                    merged_payload["id"] = msg_id
+                message_info = _build_message(chat_id, merged_payload)
+                if message_info:
+                    messages.append(message_info)
+                    if msg_id:
+                        processed_ids.add(msg_id)
+
+        for msg_id, payload in history_messages.items():
+            if msg_id in processed_ids:
+                continue
+            message_info = _build_message(chat_id, payload)
+            if message_info:
                 messages.append(message_info)
 
     return chats, messages
