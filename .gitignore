@@ -135,6 +135,14 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Next.js build artifacts
+.next/
+out/
+.turbo/
+frontend-next/.next/
+frontend-next/.turbo/
+frontend-next/.pnpm-store/
+
 # Next.js workspace overrides
 !frontend-next/lib/
 !frontend-next/lib/**
