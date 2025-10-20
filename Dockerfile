@@ -53,3 +53,38 @@ COPY frontend/ /app/frontend
 
 EXPOSE 8501
 CMD ["streamlit", "run", "frontend/home.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+
+# ------------------------------------------------------------
+# Frontend Next.js image
+# ------------------------------------------------------------
+FROM node:20-alpine AS frontend-next-builder
+
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NODE_ENV=production
+
+RUN apk add --no-cache libc6-compat && corepack enable
+
+COPY frontend-next/pnpm-lock.yaml frontend-next/package.json ./
+RUN pnpm install --frozen-lockfile
+
+COPY frontend-next/ .
+RUN pnpm build
+
+FROM node:20-alpine AS frontend-next
+
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NODE_ENV=production
+
+RUN apk add --no-cache libc6-compat && corepack enable
+
+COPY --from=frontend-next-builder /app/public ./public
+COPY --from=frontend-next-builder /app/.next ./.next
+COPY --from=frontend-next-builder /app/package.json ./package.json
+COPY --from=frontend-next-builder /app/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY --from=frontend-next-builder /app/node_modules ./node_modules
+COPY --from=frontend-next-builder /app/next.config.mjs ./next.config.mjs
+
+EXPOSE 3000
+CMD ["pnpm", "start"]

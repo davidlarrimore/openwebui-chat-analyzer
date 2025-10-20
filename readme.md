@@ -1,6 +1,8 @@
 # 💬 Open WebUI Chat Analyzer
 
-Streamlit dashboard for exploring Open WebUI chat exports locally.
+Local analytics stack for exploring Open WebUI chat exports. The Streamlit UI remains the primary experience while a new Next.js frontend (`frontend-next/`) is under active development.
+
+> The project is in a transitional phase: both frontends ship side by side while we migrate functionality from Streamlit to Next.js.
 
 ## Highlights
 
@@ -13,6 +15,7 @@ Streamlit dashboard for exploring Open WebUI chat exports locally.
 - Time analysis (daily trend, conversation length, hour-by-day heatmap) and content analysis (word cloud, message length)
 - Sentiment breakdown with TextBlob plus full-text search, paginated browsing, and per-thread JSON downloads
 - CSV exports for both chat metadata and individual messages
+- Preview Next.js dashboard with richer charts, modern auth, and dashboard layouts (work in progress)
 
 ## Configuration
 
@@ -49,13 +52,13 @@ cp .env.example .env          # optional: set OWUI_API_BASE_URL to http://backen
 make up            # or: docker compose up -d
 ```
 
-The Streamlit UI listens on `http://localhost:8501` and the FastAPI backend on `http://localhost:8502`. Use `make down` to stop, `make logs` to tail the container, and `make help` for the complete command catalog.
+The Streamlit UI listens on `http://localhost:8501`, the FastAPI backend on `http://localhost:8502`, and the experimental Next.js frontend on `http://localhost:8503`. Use `make down` to stop, `make logs` to tail the container, and `make help` for the complete command catalog.
 The compose stack now bind-mounts the `frontend/` directory, so Streamlit changes land immediately without rebuilding.
 
 ### Handy Make Commands
 
 - `make help` – List every available helper target with a short description.
-- `make up` / `make down` – Start or stop both backend and frontend services.
+- `make up` / `make down` – Start or stop all services (backend, Streamlit frontend, and the Next.js preview).
 - `make up-frontend` / `make up-backend` – Launch a single service.
 - `make build` / `make rebuild` – Build images (all) or rebuild and restart.
 - `make destroy` – Remove all services, volumes, and orphan containers.
@@ -138,7 +141,14 @@ Run `uvicorn backend.app:app --reload` during development to keep the API availa
 - `docker-compose.yml` defines production, development (live reload), and optional Nginx proxy profiles. Use `docker compose --profile development up frontend-dev` or `make dev` for auto-reload.
 - The `Makefile` centralizes build and lifecycle commands — start with `make help`.
 - Python dependencies are split between `backend/requirements.txt` and `frontend/requirements.txt` (aggregate via root `requirements.txt`). The multi-stage Dockerfile builds dedicated images for each service and downloads the TextBlob corpora for the Streamlit frontend.
+- The root Dockerfile now includes a dedicated Next.js stage so you can build `frontend-next` alongside the Python services (`docker build --target frontend-next .`). The preview app also has its own `frontend-next/Dockerfile` optimized for the standalone project.
 
+## Next.js Preview Frontend
+
+- The preview lives under `frontend-next/` and mirrors the backend API endpoints used by Streamlit.
+- Run `docker compose up frontend-next` (or `pnpm dev` inside `frontend-next/`) to explore the new dashboard at `http://localhost:8503`.
+- Environment variables such as `FRONTEND_NEXT_BACKEND_BASE_URL` and `NEXTAUTH_SECRET` control API routing and auth. See `.env.example` for defaults.
+- Expect ongoing changes while we migrate Streamlit pages — gaps or regressions are tracked in `AGENTS.md` and upcoming milestones.
 ## Frontend Architecture
 
 ### Adding a New Page or Chart
