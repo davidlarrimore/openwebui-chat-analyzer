@@ -135,6 +135,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Next.js workspace overrides
+!frontend-next/lib/
+!frontend-next/lib/**
+
 # Sample data (include examples but not real data)
 !sample_data/
 !example_data/
