@@ -1,10 +1,24 @@
 """API routes for the Open WebUI Chat Analyzer backend."""
 
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
 
-from .models import Chat, DatasetMeta, Message, ModelInfo, OpenWebUISyncRequest, UploadResponse, User
+from .models import (
+    AuthLoginRequest,
+    AuthLoginResponse,
+    AuthStatus,
+    AuthUserCreate,
+    AuthUserPublic,
+    Chat,
+    DatasetMeta,
+    Message,
+    IngestLogEntry,
+    ModelInfo,
+    OpenWebUISyncRequest,
+    UploadResponse,
+    User,
+)
 from .services import DataService, get_data_service
 
 router = APIRouter(prefix="/api/v1", tags=["data"])
@@ -72,6 +86,17 @@ def dataset_meta(service: DataService = Depends(get_data_service)) -> DatasetMet
         DatasetMeta: Summary statistics and provenance indicators.
     """
     return service.get_meta()
+
+
+@router.get("/logs/ingest", response_model=List[IngestLogEntry])
+def list_ingest_logs(
+    limit: int = 50,
+    service: DataService = Depends(get_data_service),
+) -> List[IngestLogEntry]:
+    """Return recent ingest log entries."""
+    sanitized_limit = max(1, min(limit, 500))
+    logs = service.get_ingest_logs(limit=sanitized_limit)
+    return [IngestLogEntry(**log) for log in logs]
 
 
 @router.post(
@@ -279,3 +304,78 @@ def rebuild_summaries(service: DataService = Depends(get_data_service)) -> dict:
     """
     status_state = service.rebuild_summaries()
     return {"ok": True, "status": status_state}
+
+
+@router.get("/auth/status", response_model=AuthStatus, tags=["auth"])
+def auth_status(service: DataService = Depends(get_data_service)) -> AuthStatus:
+    """Report whether any authentication users have been created."""
+    return AuthStatus(has_users=service.has_auth_users())
+
+
+@router.post(
+    "/auth/bootstrap",
+    response_model=AuthLoginResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["auth"],
+)
+def bootstrap_first_user(
+    payload: AuthUserCreate,
+    service: DataService = Depends(get_data_service),
+) -> AuthLoginResponse:
+    """Create the initial authentication user when none exist yet."""
+    if service.has_auth_users():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Authentication users already exist.",
+        )
+    try:
+        created = service.create_auth_user(payload.username, payload.password, name=payload.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    token = service.issue_access_token(created["username"])
+    user_public = AuthUserPublic(
+        id=created["username"],
+        username=created["username"],
+        email=created["username"],
+        name=created["name"],
+    )
+    return AuthLoginResponse(access_token=token, token_type="bearer", user=user_public)
+
+
+@router.post("/auth/login", response_model=AuthLoginResponse, tags=["auth"])
+def login(
+    payload: AuthLoginRequest,
+    service: DataService = Depends(get_data_service),
+) -> AuthLoginResponse:
+    """Authenticate user credentials and return a bearer token."""
+    user_record = service.authenticate_credentials(payload.username, payload.password)
+    if user_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password.",
+        )
+    token = service.issue_access_token(user_record["username"])
+    user_public = AuthUserPublic(**user_record)
+    return AuthLoginResponse(access_token=token, token_type="bearer", user=user_public)
+
+
+@router.get("/users/me", response_model=AuthUserPublic, tags=["auth"])
+def current_user(
+    authorization: Optional[str] = Header(default=None, convert_underscores=False),
+    service: DataService = Depends(get_data_service),
+) -> AuthUserPublic:
+    """Resolve the current authenticated user from an Authorization header."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header with Bearer token required.",
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    user_record = service.resolve_user_from_token(token)
+    if user_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token.",
+        )
+    return AuthUserPublic(**user_record)

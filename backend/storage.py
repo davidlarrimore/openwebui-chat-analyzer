@@ -1,0 +1,380 @@
+"""PostgreSQL persistence helpers for the Open WebUI Chat Analyzer."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, Iterable, List, Optional
+
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import SQLAlchemyError
+
+from .db import init_database, session_scope
+from .db_models import (
+    Account,
+    ChatRecord,
+    DatasetSnapshot,
+    IngestLog,
+    MessageRecord,
+    ModelRecord,
+    OpenWebUIUser,
+    Setting,
+)
+
+
+@dataclass(slots=True)
+class DatabaseState:
+    """Container for hydrated database records."""
+
+    chats: List[Dict[str, Any]]
+    messages: List[Dict[str, Any]]
+    users: List[Dict[str, Any]]
+    models: List[Dict[str, Any]]
+    accounts: List[Dict[str, Any]]
+    snapshot: Optional[Dict[str, Any]]
+    settings: Dict[str, Any]
+
+
+class PostgresStorage:
+    """Utility class encapsulating all database reads and writes."""
+
+    def __init__(self) -> None:
+        init_database()
+
+    # ------------------------------------------------------------------
+    # Hydration helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _chat_to_dict(record: ChatRecord) -> Dict[str, Any]:
+        return {
+            "chat_id": record.chat_id,
+            "user_id": record.user_id,
+            "title": record.title,
+            "summary_128": record.summary_128,
+            "created_at": record.created_ts,
+            "updated_at": record.updated_ts,
+            "timestamp": record.timestamp,
+            "archived": bool(record.archived),
+            "pinned": bool(record.pinned),
+            "tags": list(record.tags or []),
+            "files_uploaded": int(record.files_uploaded or 0),
+            "files": list(record.files or []),
+            "meta": dict(record.meta or {}),
+            "models": list(record.models or []),
+            "params": dict(record.params or {}),
+            "share_id": record.share_id,
+            "folder_id": record.folder_id,
+            "history_current_id": record.history_current_id,
+        }
+
+    @staticmethod
+    def _message_to_dict(record: MessageRecord) -> Dict[str, Any]:
+        return {
+            "chat_id": record.chat_id,
+            "message_id": record.message_id,
+            "parent_id": record.parent_id,
+            "role": record.role,
+            "content": record.content,
+            "timestamp": record.timestamp,
+            "model": record.model,
+            "models": list(record.models or []),
+            "children_ids": list(record.children_ids or []),
+            "follow_ups": list(record.follow_ups or []),
+            "status_history": list(record.status_history or []),
+            "sources": list(record.sources or []),
+            "files": list(record.files or []),
+            "annotation": record.annotation,
+            "model_name": record.model_name,
+            "model_index": record.model_index,
+            "last_sentence": record.last_sentence,
+            "done": record.done,
+            "favorite": record.favorite,
+            "feedback_id": record.feedback_id,
+            "error": record.error,
+        }
+
+    @staticmethod
+    def _user_to_dict(record: OpenWebUIUser) -> Dict[str, Any]:
+        return {"user_id": record.user_id, "name": record.name}
+
+    @staticmethod
+    def _model_to_dict(record: ModelRecord) -> Dict[str, Any]:
+        return {
+            "model_id": record.model_id,
+            "name": record.name,
+            "owned_by": record.owned_by,
+            "connection_type": record.connection_type,
+            "object": record.object_type,
+            "raw": record.raw,
+        }
+
+    @staticmethod
+    def _account_to_dict(record: Account) -> Dict[str, Any]:
+        return {
+            "username": record.username,
+            "display_name": record.display_name,
+            "password_hash": record.password_hash,
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+            "is_active": bool(record.is_active),
+        }
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
+    def load_state(self) -> DatabaseState:
+        """Load the current dataset and metadata from the database."""
+        with session_scope() as session:
+            chats = [self._chat_to_dict(row) for row in session.execute(select(ChatRecord)).scalars()]
+            messages = [
+                self._message_to_dict(row) for row in session.execute(select(MessageRecord)).scalars()
+            ]
+            users = [self._user_to_dict(row) for row in session.execute(select(OpenWebUIUser)).scalars()]
+            models = [self._model_to_dict(row) for row in session.execute(select(ModelRecord)).scalars()]
+            accounts = [self._account_to_dict(row) for row in session.execute(select(Account)).scalars()]
+            last_snapshot = (
+                session.execute(
+                    select(DatasetSnapshot).order_by(DatasetSnapshot.updated_at.desc()).limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            snapshot = None
+            if last_snapshot is not None:
+                snapshot = {
+                    "dataset_source": last_snapshot.dataset_source,
+                    "dataset_pulled_at": last_snapshot.dataset_pulled_at,
+                    "chats_uploaded_at": last_snapshot.chats_uploaded_at,
+                    "users_uploaded_at": last_snapshot.users_uploaded_at,
+                    "models_uploaded_at": last_snapshot.models_uploaded_at,
+                    "first_chat_day": last_snapshot.first_chat_day,
+                    "last_chat_day": last_snapshot.last_chat_day,
+                    "chat_count": last_snapshot.chat_count,
+                    "user_count": last_snapshot.user_count,
+                    "model_count": last_snapshot.model_count,
+                    "message_count": last_snapshot.message_count,
+                }
+
+            settings = {
+                row.key: row.value for row in session.execute(select(Setting)).scalars()
+            }
+
+        return DatabaseState(
+            chats=chats,
+            messages=messages,
+            users=users,
+            models=models,
+            accounts=accounts,
+            snapshot=snapshot,
+            settings=settings,
+        )
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _chat_from_dict(payload: Dict[str, Any]) -> ChatRecord:
+        return ChatRecord(
+            chat_id=str(payload.get("chat_id")),
+            user_id=payload.get("user_id"),
+            title=payload.get("title"),
+            summary_128=payload.get("summary_128"),
+            created_ts=payload.get("created_at"),
+            updated_ts=payload.get("updated_at"),
+            timestamp=payload.get("timestamp"),
+            archived=bool(payload.get("archived", False)),
+            pinned=bool(payload.get("pinned", False)),
+            tags=payload.get("tags") or [],
+            files_uploaded=int(payload.get("files_uploaded") or 0),
+            files=payload.get("files") or [],
+            meta=payload.get("meta") or {},
+            models=payload.get("models") or [],
+            params=payload.get("params") or {},
+            share_id=payload.get("share_id"),
+            folder_id=payload.get("folder_id"),
+            history_current_id=payload.get("history_current_id"),
+        )
+
+    @staticmethod
+    def _message_from_dict(payload: Dict[str, Any]) -> MessageRecord:
+        return MessageRecord(
+            chat_id=str(payload.get("chat_id")),
+            message_id=str(payload.get("message_id")),
+            parent_id=payload.get("parent_id"),
+            role=str(payload.get("role") or ""),
+            content=str(payload.get("content") or ""),
+            timestamp=payload.get("timestamp"),
+            model=payload.get("model"),
+            models=payload.get("models") or [],
+            children_ids=payload.get("children_ids") or [],
+            follow_ups=payload.get("follow_ups") or [],
+            status_history=payload.get("status_history") or [],
+            sources=payload.get("sources") or [],
+            files=payload.get("files") or [],
+            annotation=payload.get("annotation"),
+            model_name=payload.get("model_name"),
+            model_index=payload.get("model_index"),
+            last_sentence=payload.get("last_sentence"),
+            done=payload.get("done"),
+            favorite=payload.get("favorite"),
+            feedback_id=payload.get("feedback_id"),
+            error=payload.get("error"),
+        )
+
+    @staticmethod
+    def _user_from_dict(payload: Dict[str, Any]) -> OpenWebUIUser:
+        return OpenWebUIUser(
+            user_id=str(payload.get("user_id")),
+            name=str(payload.get("name") or ""),
+        )
+
+    @staticmethod
+    def _model_from_dict(payload: Dict[str, Any]) -> ModelRecord:
+        return ModelRecord(
+            model_id=str(payload.get("model_id")),
+            name=payload.get("name"),
+            owned_by=payload.get("owned_by"),
+            connection_type=payload.get("connection_type"),
+            object_type=payload.get("object"),
+            raw=payload.get("raw") or {},
+        )
+
+    @staticmethod
+    def _account_from_dict(payload: Dict[str, Any]) -> Account:
+        account = Account(
+            username=str(payload.get("username")).lower(),
+            display_name=str(payload.get("display_name") or payload.get("username") or ""),
+            password_hash=str(payload.get("password_hash") or ""),
+            is_active=bool(payload.get("is_active", True)),
+        )
+        created_at = payload.get("created_at")
+        if isinstance(created_at, datetime):
+            account.created_at = created_at
+        updated_at = payload.get("updated_at")
+        if isinstance(updated_at, datetime):
+            account.updated_at = updated_at
+        return account
+
+    def replace_dataset(
+        self,
+        chats: Iterable[Dict[str, Any]],
+        messages: Iterable[Dict[str, Any]],
+    ) -> None:
+        with session_scope() as session:
+            session.execute(delete(MessageRecord))
+            session.execute(delete(ChatRecord))
+            chat_records = [self._chat_from_dict(item) for item in chats if item.get("chat_id")]
+            message_records = [
+                self._message_from_dict(item) for item in messages if item.get("message_id")
+            ]
+            if chat_records:
+                session.bulk_save_objects(chat_records)
+            if message_records:
+                session.bulk_save_objects(message_records)
+
+    def replace_users(self, users: Iterable[Dict[str, Any]]) -> None:
+        with session_scope() as session:
+            session.execute(delete(OpenWebUIUser))
+            user_records = [self._user_from_dict(item) for item in users if item.get("user_id")]
+            if user_records:
+                session.bulk_save_objects(user_records)
+
+    def replace_models(self, models: Iterable[Dict[str, Any]]) -> None:
+        with session_scope() as session:
+            session.execute(delete(ModelRecord))
+            model_records = [self._model_from_dict(item) for item in models if item.get("model_id")]
+            if model_records:
+                session.bulk_save_objects(model_records)
+
+    def replace_accounts(self, accounts: Iterable[Dict[str, Any]]) -> None:
+        with session_scope() as session:
+            session.execute(delete(Account))
+            account_records = [self._account_from_dict(item) for item in accounts if item.get("username")]
+            if account_records:
+                session.bulk_save_objects(account_records)
+
+    def record_snapshot(self, payload: Dict[str, Any]) -> None:
+        snapshot = DatasetSnapshot(
+            dataset_source=payload.get("dataset_source"),
+            dataset_pulled_at=payload.get("dataset_pulled_at"),
+            chats_uploaded_at=payload.get("chats_uploaded_at"),
+            users_uploaded_at=payload.get("users_uploaded_at"),
+            models_uploaded_at=payload.get("models_uploaded_at"),
+            first_chat_day=payload.get("first_chat_day"),
+            last_chat_day=payload.get("last_chat_day"),
+            chat_count=int(payload.get("chat_count") or 0),
+            user_count=int(payload.get("user_count") or 0),
+            model_count=int(payload.get("model_count") or 0),
+            message_count=int(payload.get("message_count") or 0),
+        )
+        with session_scope() as session:
+            session.add(snapshot)
+
+    def write_settings(self, values: Dict[str, Any]) -> None:
+        with session_scope() as session:
+            existing = {row.key: row for row in session.execute(select(Setting)).scalars()}
+            for key, value in values.items():
+                current = existing.get(key)
+                if current is None:
+                    session.add(Setting(key=key, value=value))
+                else:
+                    current.value = value
+
+    def record_ingest(
+        self,
+        *,
+        operation: str,
+        source: Optional[str],
+        record_count: int,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        log = IngestLog(
+            operation=operation,
+            source=source,
+            record_count=record_count,
+            details=details or {},
+        )
+        try:
+            with session_scope() as session:
+                session.add(log)
+        except SQLAlchemyError:
+            # Logging ingestion failures should never block the primary flow.
+            pass
+
+    def update_chat_summaries(self, summaries: Dict[str, str]) -> None:
+        if not summaries:
+            return
+        with session_scope() as session:
+            for chat_id, summary in summaries.items():
+                session.execute(
+                    update(ChatRecord)
+                    .where(ChatRecord.chat_id == chat_id)
+                    .values(summary_128=summary)
+                )
+
+    def fetch_ingest_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with session_scope() as session:
+            logs = (
+                session.execute(
+                    select(IngestLog)
+                    .order_by(IngestLog.created_at.desc())
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+        return [
+            {
+                "id": log.id,
+                "operation": log.operation,
+                "source": log.source,
+                "record_count": log.record_count,
+                "details": dict(log.details or {}),
+                "created_at": log.created_at,
+                "updated_at": log.updated_at,
+                "started_at": log.started_at,
+                "finished_at": log.finished_at,
+                "notes": log.notes,
+            }
+            for log in logs
+        ]

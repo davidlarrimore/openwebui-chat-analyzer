@@ -220,6 +220,9 @@ class AppMetadata(BaseModel):
     chat_count: int = Field(..., description="Number of chat records currently available")
     user_count: int = Field(..., description="Number of user records currently available")
     model_count: int = Field(..., description="Number of model records currently available")
+    auth_user_count: int = Field(
+        ..., description="Number of application login users configured"
+    )
 
 
 class DatasetMeta(BaseModel):
@@ -246,6 +249,64 @@ class DatasetMeta(BaseModel):
         default=None,
         description="Aggregated metadata persisted to app.json for frontend display",
     )
+
+
+class IngestLogEntry(BaseModel):
+    """Audit record describing dataset ingestion actions."""
+
+    id: int = Field(..., description="Primary key for the ingest log entry")
+    operation: str = Field(..., description="Identifier for the ingest operation that ran")
+    source: Optional[str] = Field(default=None, description="Optional source label provided by the caller")
+    record_count: int = Field(..., description="Number of records processed during the operation")
+    details: Dict[str, Any] = Field(default_factory=dict, description="Structured metadata captured for the run")
+    created_at: datetime = Field(..., description="Timestamp when the log entry was created")
+    updated_at: datetime = Field(..., description="Timestamp when the log entry was last updated")
+    started_at: Optional[datetime] = Field(default=None, description="Optional start time for long running jobs")
+    finished_at: Optional[datetime] = Field(default=None, description="Optional end time for long running jobs")
+    notes: Optional[str] = Field(default=None, description="Additional notes captured during ingestion")
+
+
+class AuthUserPublic(BaseModel):
+    """Public representation of an authenticated user account."""
+
+    id: str = Field(..., description="Canonical identifier for the user")
+    username: str = Field(..., description="Username/email for authentication")
+    email: str = Field(..., description="Email address, matches the username")
+    name: str = Field(..., description="Display name for the authenticated user")
+
+
+class AuthStatus(BaseModel):
+    """Indicates whether any authentication users exist."""
+
+    has_users: bool = Field(..., description="True if at least one auth user exists")
+
+
+class AuthLoginRequest(BaseModel):
+    """Login request payload."""
+
+    username: str = Field(..., description="Username/email used to authenticate")
+    password: str = Field(..., description="Plain text password to verify")
+
+
+class AuthUserCreate(BaseModel):
+    """Payload for creating the initial auth user."""
+
+    username: str = Field(..., description="Username/email for the new account")
+    password: str = Field(..., description="Plain text password for the new account")
+    name: Optional[str] = Field(
+        default=None,
+        description="Optional human-friendly display name; defaults to the username",
+    )
+
+
+class AuthLoginResponse(BaseModel):
+    """Login response payload returned to the frontend."""
+
+    access_token: str = Field(..., description="Opaque token representing the session")
+    token_type: Literal["bearer"] = Field(
+        ..., description="Token type (always 'bearer' for compatibility)"
+    )
+    user: AuthUserPublic = Field(..., description="Public user details for the session")
 
 
 class DatasetSyncStats(BaseModel):

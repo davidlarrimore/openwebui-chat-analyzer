@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import csv
+import base64
+import hashlib
 import json
 import logging
 import math
 import os
-from datetime import datetime, timezone, date
+import secrets
+import hmac
+from datetime import datetime, timezone, date, timedelta
 from io import BytesIO
 from pathlib import Path
 from threading import Lock, Thread
@@ -21,6 +24,7 @@ from urllib.parse import urlparse, urlunparse
 from .config import DATA_DIR
 from .models import AppMetadata, DatasetMeta, DatasetSyncStats
 from .summarizer import summarize_chats
+from .storage import DatabaseState, PostgresStorage
 
 
 class SummaryJobCancelled(Exception):
@@ -786,6 +790,10 @@ class DataService:
         self._messages: List[Dict[str, Any]] = []
         self._users: List[Dict[str, str]] = []
         self._models: List[Dict[str, Any]] = []
+        self._auth_users: Dict[str, Dict[str, Any]] = {}
+        self._auth_users_updated_at: Optional[datetime] = None
+        self._auth_tokens: Dict[str, Dict[str, Any]] = {}
+        self._auth_token_ttl = timedelta(hours=24)
         self._dataset_id = uuid4().hex
         self._source = "no dataset loaded"
         self._source_origin: Optional[Tuple[str, str]] = None
@@ -813,17 +821,168 @@ class DataService:
         self._summary_target_dataset_id: Optional[str] = None
         self._summary_job_counter: int = 0
         self._summary_active_job_id: Optional[int] = None
-        self._load_app_metadata()
-        self.load_initial_data()
+        self._storage = PostgresStorage()
+        self._hydrate_from_storage()
         with self._lock:
-            should_persist = not self._app_metadata_path.exists()
-            self._refresh_app_metadata(persist=should_persist)
+            self._refresh_app_metadata(persist=True)
 
     # ------------------------------------------------------------------
     # Utility helpers
     # ------------------------------------------------------------------
-    def _ensure_data_dir(self) -> None:
-        self._data_dir.mkdir(parents=True, exist_ok=True)
+    def _apply_database_state(self, state: DatabaseState) -> None:
+        """Populate in-memory caches from the hydrated database state."""
+        with self._lock:
+            self._chats = [chat.copy() for chat in state.chats]
+            self._messages = [message.copy() for message in state.messages]
+            self._users = [user.copy() for user in state.users]
+            self._models = [model.copy() for model in state.models]
+
+            self._auth_users = {}
+            latest_auth_ts: Optional[datetime] = None
+            for account in state.accounts:
+                username = account.get("username")
+                password_hash = account.get("password_hash")
+                if not isinstance(username, str) or not isinstance(password_hash, str):
+                    continue
+                display_name = account.get("display_name") or username
+                created_at = account.get("created_at")
+                updated_at = account.get("updated_at") or created_at
+                if isinstance(updated_at, datetime):
+                    candidate_ts = updated_at
+                elif isinstance(created_at, datetime):
+                    candidate_ts = created_at
+                else:
+                    candidate_ts = None
+                if candidate_ts is not None and (
+                    latest_auth_ts is None or candidate_ts > latest_auth_ts
+                ):
+                    latest_auth_ts = candidate_ts
+                self._auth_users[username] = {
+                    "username": username,
+                    "display_name": display_name,
+                    "password_hash": password_hash,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                }
+            self._auth_users_updated_at = latest_auth_ts
+
+            snapshot = state.snapshot or {}
+            self._dataset_source_override = snapshot.get("dataset_source")
+            self._dataset_pulled_at = snapshot.get("dataset_pulled_at")
+            self._chat_uploaded_at = snapshot.get("chats_uploaded_at")
+            self._users_uploaded_at = snapshot.get("users_uploaded_at")
+            self._models_uploaded_at = snapshot.get("models_uploaded_at")
+            self._first_chat_day = snapshot.get("first_chat_day")
+            self._last_chat_day = snapshot.get("last_chat_day")
+
+            # Preserve the last known dataset source for logging / API payloads.
+            if isinstance(self._dataset_source_override, str):
+                self._source = self._dataset_source_override
+            elif snapshot.get("dataset_source"):
+                self._source = snapshot["dataset_source"]
+
+            settings_display = state.settings.get("dataset_source_display")
+            if (not self._dataset_source_override) and isinstance(settings_display, str):
+                self._dataset_source_override = settings_display
+                self._source = settings_display
+
+            self._last_updated = self._now_utc()
+
+    def _seed_initial_state_from_files(self) -> Optional[DatabaseState]:
+        """Populate the database from legacy app.json metadata if necessary."""
+        if not self._app_metadata_path.exists():
+            return None
+        try:
+            payload = json.loads(self._app_metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+        settings_payload: Dict[str, Any] = {}
+        if isinstance(payload, dict):
+            for key in ("owui_direct_host", "owui_direct_api_key"):
+                value = payload.get(key)
+                if value is not None:
+                    settings_payload[key] = value
+
+        snapshot_payload: Dict[str, Any] = {}
+        if isinstance(payload, dict):
+            snapshot_payload = {
+                "dataset_source": payload.get("dataset_source"),
+                "dataset_pulled_at": self._parse_datetime(payload.get("dataset_pulled_at")),
+                "chats_uploaded_at": self._parse_datetime(
+                    (payload.get("chats") or {}).get("uploaded_at")
+                ),
+                "users_uploaded_at": self._parse_datetime(
+                    (payload.get("users") or {}).get("uploaded_at")
+                ),
+                "models_uploaded_at": self._parse_datetime(
+                    (payload.get("models") or {}).get("uploaded_at")
+                ),
+                "first_chat_day": self._parse_date((payload.get("chats") or {}).get("first_day")),
+                "last_chat_day": self._parse_date((payload.get("chats") or {}).get("last_day")),
+                "chat_count": (payload.get("chats") or {}).get("count") or 0,
+                "user_count": (payload.get("users") or {}).get("count") or 0,
+                "model_count": (payload.get("models") or {}).get("count") or 0,
+                "message_count": (payload.get("messages") or {}).get("count") or 0,
+            }
+
+        accounts_payload: List[Dict[str, Any]] = []
+        auth_section = payload.get("auth_users") if isinstance(payload, dict) else None
+        if isinstance(auth_section, dict):
+            for record in auth_section.get("records") or []:
+                if not isinstance(record, dict):
+                    continue
+                username = record.get("username")
+                password_hash = record.get("password_hash")
+                if not username or not password_hash:
+                    continue
+                accounts_payload.append(
+                    {
+                        "username": str(username),
+                        "display_name": str(record.get("name") or username),
+                        "password_hash": str(password_hash),
+                        "is_active": True,
+                    }
+                )
+
+        if settings_payload:
+            self._storage.write_settings(settings_payload)
+        if snapshot_payload:
+            self._storage.record_snapshot(snapshot_payload)
+        if accounts_payload:
+            self._storage.replace_accounts(accounts_payload)
+
+        return self._storage.load_state()
+
+    def _hydrate_from_storage(self) -> None:
+        """Ensure the in-memory caches reflect the persistent database state."""
+        state = self._storage.load_state()
+        if (
+            not state.chats
+            and not state.users
+            and not state.models
+            and not state.accounts
+            and state.snapshot is None
+        ):
+            seeded_state = self._seed_initial_state_from_files()
+            if seeded_state is not None:
+                state = seeded_state
+        self._apply_database_state(state)
+
+    def _persist_auth_users(self) -> None:
+        accounts: List[Dict[str, Any]] = []
+        for record in sorted(self._auth_users.values(), key=lambda item: item["username"]):
+            accounts.append(
+                {
+                    "username": record["username"],
+                    "display_name": record.get("display_name") or record["username"],
+                    "password_hash": record["password_hash"],
+                    "created_at": record.get("created_at"),
+                    "updated_at": record.get("updated_at"),
+                    "is_active": True,
+                }
+            )
+        self._storage.replace_accounts(accounts)
 
     @staticmethod
     def _now_utc() -> datetime:
@@ -874,43 +1033,70 @@ class DataService:
             return None
         return value.isoformat()
 
-    def _save_app_metadata(self, payload: Dict[str, Any]) -> None:
-        self._ensure_data_dir()
-        self._app_metadata_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+    @staticmethod
+    def _normalize_username(value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Username must be a string.")
+        username = value.strip().lower()
+        if not username:
+            raise ValueError("Username or email is required.")
+        return username
 
-    def _load_app_metadata(self) -> None:
-        if not self._app_metadata_path.exists():
-            return
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        if not isinstance(password, str) or not password:
+            raise ValueError("Password must not be empty.")
+        salt = secrets.token_bytes(16)
+        iterations = 150_000
+        key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        salt_b64 = base64.urlsafe_b64encode(salt).decode("utf-8").rstrip("=")
+        key_b64 = base64.urlsafe_b64encode(key).decode("utf-8").rstrip("=")
+        return f"pbkdf2_sha256${iterations}${salt_b64}${key_b64}"
+
+    @staticmethod
+    def _verify_password(password: str, encoded: str) -> bool:
+        if not isinstance(password, str) or not isinstance(encoded, str):
+            return False
         try:
-            payload = json.loads(self._app_metadata_path.read_text(encoding="utf-8"))
-        except Exception:
-            return
+            algorithm, iterations_str, salt_b64, key_b64 = encoded.split("$", 3)
+        except ValueError:
+            return False
+        if algorithm != "pbkdf2_sha256":
+            return False
+        try:
+            iterations = int(iterations_str)
+        except ValueError:
+            return False
+        padding = "=" * (-len(salt_b64) % 4)
+        key_padding = "=" * (-len(key_b64) % 4)
+        try:
+            salt = base64.urlsafe_b64decode(salt_b64 + padding)
+            expected_key = base64.urlsafe_b64decode(key_b64 + key_padding)
+        except (ValueError, TypeError):
+            return False
+        candidate_key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(candidate_key, expected_key)
 
-        dataset_source = payload.get("dataset_source")
-        if isinstance(dataset_source, str) and dataset_source.strip():
-            self._dataset_source_override = dataset_source.strip()
-
-        self._dataset_pulled_at = self._parse_datetime(payload.get("dataset_pulled_at"))
+    def _save_app_metadata(self, payload: Dict[str, Any]) -> None:
+        """Persist aggregate dataset metadata into Postgres."""
         chats_section = payload.get("chats") or {}
         users_section = payload.get("users") or {}
         models_section = payload.get("models") or {}
-
-        self._chat_uploaded_at = self._parse_datetime(chats_section.get("uploaded_at"))
-        self._users_uploaded_at = self._parse_datetime(users_section.get("uploaded_at"))
-        self._models_uploaded_at = self._parse_datetime(models_section.get("uploaded_at"))
-        self._first_chat_day = self._parse_date(chats_section.get("first_day"))
-        self._last_chat_day = self._parse_date(chats_section.get("last_day"))
-        source_candidate = None
-        if isinstance(self._source, str) and self._source.startswith("openwebui:"):
-            parts = self._source.split(":", 1)
-            if len(parts) == 2:
-                source_candidate = parts[1]
-        if source_candidate is None:
-            source_candidate = dataset_source
-        self._source_origin = _normalize_source_for_compare(source_candidate)
+        snapshot_payload = {
+            "dataset_source": payload.get("dataset_source"),
+            "dataset_pulled_at": self._parse_datetime(payload.get("dataset_pulled_at")),
+            "chats_uploaded_at": self._parse_datetime(chats_section.get("uploaded_at")),
+            "users_uploaded_at": self._parse_datetime(users_section.get("uploaded_at")),
+            "models_uploaded_at": self._parse_datetime(models_section.get("uploaded_at")),
+            "first_chat_day": self._parse_date(chats_section.get("first_day")),
+            "last_chat_day": self._parse_date(chats_section.get("last_day")),
+            "chat_count": chats_section.get("count") or 0,
+            "user_count": users_section.get("count") or 0,
+            "model_count": models_section.get("count") or 0,
+            "message_count": payload.get("message_count") or len(self._messages),
+        }
+        self._storage.record_snapshot(snapshot_payload)
+        self._storage.write_settings({"dataset_source_display": payload.get("dataset_source")})
 
     def _determine_dataset_source(self) -> str:
         source = (self._source or "").strip()
@@ -1040,12 +1226,13 @@ class DataService:
             dataset_pulled_at=self._dataset_pulled_at,
             chat_uploaded_at=self._chat_uploaded_at,
             users_uploaded_at=self._users_uploaded_at,
-             models_uploaded_at=self._models_uploaded_at,
+            models_uploaded_at=self._models_uploaded_at,
             first_chat_day=self._first_chat_day,
             last_chat_day=self._last_chat_day,
             chat_count=len(self._chats),
             user_count=len(self._users),
             model_count=len(self._models),
+            auth_user_count=len(self._auth_users),
         )
 
     def _summary_now_iso(self) -> str:
@@ -1117,7 +1304,6 @@ class DataService:
             else:
                 chats_snapshot = [chat.copy() for chat in self._chats]
                 messages_snapshot = [message.copy() for message in self._messages]
-            export_path = self._find_latest_chat_export()
             dataset_id = self._dataset_id
 
         total = len(chats_snapshot)
@@ -1206,7 +1392,7 @@ class DataService:
 
         worker = Thread(
             target=self._summary_worker,
-            args=(chats_snapshot, messages_snapshot, export_path, dataset_id, reason, job_id, progress),
+            args=(chats_snapshot, messages_snapshot, dataset_id, reason, job_id, progress),
             daemon=True,
         )
         with self._summary_state_lock:
@@ -1218,7 +1404,6 @@ class DataService:
         self,
         chats_snapshot: List[Dict[str, Any]],
         messages_snapshot: List[Dict[str, Any]],
-        export_path: Optional[Path],
         target_dataset_id: str,
         reason: str,
         job_id: int,
@@ -1262,17 +1447,10 @@ class DataService:
                     chat_id = str(chat.get("chat_id") or "")
                     if chat_id in summary_map:
                         chat["summary_128"] = summary_map[chat_id]
-
-                if export_path is not None and export_path.exists():
-                    try:
-                        raw_bytes = export_path.read_bytes()
-                        updated_bytes = _annotate_export_bytes(raw_bytes, summary_map)
-                        export_path.write_bytes(updated_bytes)
-                    except Exception as exc:
-                        logger.warning("Failed to persist summaries to %s: %s", export_path, exc)
-
                 self._bump_version()
                 self._refresh_app_metadata(persist=False)
+
+            self._storage.update_chat_summaries(summary_map)
 
             logger.info("Summary job %s finished successfully.", job_id)
             self._update_summary_state(
@@ -1298,265 +1476,13 @@ class DataService:
                     self._summary_target_dataset_id = None
                     self._summary_active_job_id = None
 
-    def _build_target_path(
-        self,
-        original_filename: Optional[str],
-        prefix: str,
-        suffix: str,
-    ) -> Path:
-        timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
-        default_name = f"{prefix}-{timestamp}{suffix}"
-
-        if original_filename:
-            candidate = Path(original_filename).name.strip()
-            if candidate:
-                stem = Path(candidate).stem or prefix
-                extension = suffix if suffix.startswith(".") else f".{suffix}"
-                if candidate.lower().endswith(extension.lower()):
-                    name = candidate
-                else:
-                    name = f"{stem}{extension}"
-                target = self._data_dir / name
-                if target.exists():
-                    name = f"{stem}-{timestamp}{extension}"
-                return self._data_dir / name
-
-        return self._data_dir / default_name
-
-    def _persist_file(
-        self,
-        raw_bytes: bytes,
-        original_filename: Optional[str],
-        prefix: str,
-        suffix: str,
-        exclusive: bool = False,
-    ) -> Path:
-        self._ensure_data_dir()
-        if exclusive:
-            # Remove any existing files that share the prefix/suffix.
-            extension = suffix if suffix.startswith(".") else f".{suffix}"
-            pattern = f"{prefix}*{extension}"
-            for existing in self._data_dir.glob(pattern):
-                existing.unlink(missing_ok=True)
-            target_path = self._data_dir / f"{prefix}{extension}"
-        else:
-            target_path = self._build_target_path(original_filename, prefix, suffix)
-        target_path.write_bytes(raw_bytes)
-        return target_path
-
-    def _load_existing_export_entries(self) -> List[Dict[str, Any]]:
-        export_path = self._find_latest_chat_export()
-        if export_path is None or not export_path.exists():
-            return []
-        try:
-            payload = json.loads(export_path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-        if isinstance(payload, list):
-            return payload
-        return []
-
-    def _combine_export_entries(
-        self,
-        existing_entries: Iterable[Dict[str, Any]],
-        new_entries: Iterable[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        combined: List[Dict[str, Any]] = []
-        seen: Set[str] = set()
-        for entry in existing_entries:
-            chat_id = _extract_chat_id_from_export_entry(entry)
-            if not chat_id or chat_id in seen:
-                continue
-            combined.append(entry)
-            seen.add(chat_id)
-        for entry in new_entries:
-            chat_id = _extract_chat_id_from_export_entry(entry)
-            if not chat_id or chat_id in seen:
-                continue
-            combined.append(entry)
-            seen.add(chat_id)
-        return combined
-
-    def _write_users_json(self, users: List[Dict[str, Any]]) -> Path:
-        self._ensure_data_dir()
-        target_path = self._data_dir / "users.json"
-        target_path.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding="utf-8")
-        return target_path
-
-    def _write_users_csv(self, users: List[Dict[str, Any]]) -> Path:
-        self._ensure_data_dir()
-        target_path = self._data_dir / "users.csv"
-        fieldnames = ["user_id", "name"]
-        with target_path.open("w", encoding="utf-8", newline="") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            for user in users:
-                writer.writerow(
-                    {
-                        "user_id": str(user.get("user_id", "") or ""),
-                        "name": str(user.get("name", "") or ""),
-                    }
-                )
-        return target_path
-
-    def _write_models_json(self, models: List[Dict[str, Any]]) -> Path:
-        self._ensure_data_dir()
-        target_path = self._data_dir / "models.json"
-        target_path.write_text(json.dumps(models, ensure_ascii=False, indent=2), encoding="utf-8")
-        return target_path
-
-    def _load_users_from_json(
-        self,
-        json_path: Path,
-        source_label: str,
-        bump_version: bool = False,
-        persist_metadata: bool = True,
-    ) -> None:
-        try:
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise ValueError(f"Invalid users JSON at {json_path}") from exc
-
-        if not isinstance(payload, list):
-            raise ValueError("Users JSON must be a list of objects.")
-
-        normalized: List[Dict[str, str]] = []
-        for entry in payload:
-            if not isinstance(entry, dict):
-                continue
-            user_id = entry.get("user_id")
-            name = entry.get("name")
-            if user_id is None or name is None:
-                continue
-            normalized.append({"user_id": str(user_id), "name": str(name)})
-
-        with self._lock:
-            self._users = normalized
-            self._source = source_label
-            if bump_version:
-                self._bump_version()
-            else:
-                self._last_updated = self._now_utc()
-            self._refresh_app_metadata(persist=persist_metadata)
-
-    def _load_models_from_json(
-        self,
-        json_path: Path,
-        source_label: str,
-        bump_version: bool = False,
-        persist_metadata: bool = True,
-    ) -> None:
-        try:
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise ValueError(f"Invalid models JSON at {json_path}") from exc
-
-        normalized = _normalize_models_payload(payload)
-
-        with self._lock:
-            self._models = normalized
-            if not self._source or self._source == "no dataset loaded":
-                self._source = source_label
-            if bump_version:
-                self._bump_version()
-            else:
-                self._last_updated = self._now_utc()
-            self._refresh_app_metadata(
-                models_updated=bool(normalized),
-                persist=persist_metadata,
-                force_timestamp=bool(normalized),
-            )
-
     # ------------------------------------------------------------------
     # Initialization helpers
     # ------------------------------------------------------------------
     def load_initial_data(self) -> None:
-        """Load default dataset from the data directory if present."""
-        default_chat_export = self._find_latest_chat_export()
-        if default_chat_export is not None:
-            try:
-                raw_bytes = default_chat_export.read_bytes()
-                self.update_chat_export(
-                    raw_bytes,
-                    f"default:{default_chat_export.name}",
-                    bump_version=False,
-                    record_upload=False,
-                    persist_metadata=False,
-                    run_summarizer=False,
-                )
-            except Exception:
-                # Leave dataset empty but continue boot if default fails
-                self._source = f"failed to load {default_chat_export.name}"
-
-        default_users_json = self._find_users_json()
-        if default_users_json is not None:
-            try:
-                self._load_users_from_json(
-                    default_users_json,
-                    f"default:{default_users_json.name}",
-                    bump_version=False,
-                    persist_metadata=False,
-                )
-            except Exception:
-                pass
-        else:
-            default_users_csv = self._find_users_file()
-            if default_users_csv is not None:
-                try:
-                    raw_bytes = default_users_csv.read_bytes()
-                    self.update_users(
-                        raw_bytes,
-                        f"default:{default_users_csv.name}",
-                        bump_version=False,
-                        persist_filename=default_users_csv.name,
-                        record_upload=False,
-                        persist_metadata=False,
-                    )
-                except Exception:
-                    pass
-
-        default_models_json = self._find_models_json()
-        if default_models_json is not None:
-            try:
-                self._load_models_from_json(
-                    default_models_json,
-                    f"default:{default_models_json.name}",
-                    bump_version=False,
-                    persist_metadata=False,
-                )
-            except Exception:
-                pass
-
-        # Always ensure metadata is current even if no files loaded
+        """Hydrate the in-memory caches from the database."""
+        self._hydrate_from_storage()
         self._last_updated = datetime.utcnow().replace(tzinfo=timezone.utc)
-
-    def _find_latest_chat_export(self) -> Optional[Path]:
-        if not self._data_dir.exists():
-            return None
-        candidates = sorted(
-            self._data_dir.glob("all-chats-export*.json"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        return candidates[0] if candidates else None
-
-    def _find_users_file(self) -> Optional[Path]:
-        if not self._data_dir.exists():
-            return None
-        users_file = self._data_dir / "users.csv"
-        return users_file if users_file.exists() else None
-
-    def _find_users_json(self) -> Optional[Path]:
-        if not self._data_dir.exists():
-            return None
-        users_json = self._data_dir / "users.json"
-        return users_json if users_json.exists() else None
-
-    def _find_models_json(self) -> Optional[Path]:
-        if not self._data_dir.exists():
-            return None
-        models_json = self._data_dir / "models.json"
-        return models_json if models_json.exists() else None
 
     # ------------------------------------------------------------------
     # Dataset mutations
@@ -1568,21 +1494,13 @@ class DataService:
         messages: List[Dict[str, Any]],
         normalized_users: List[Dict[str, str]],
         normalized_models: List[Dict[str, Any]],
-        export_payload: List[Dict[str, Any]],
     ) -> Tuple[List[str], int, List[str], List[str], List[str], bool]:
         new_chat_ids: List[str] = []
         new_user_ids: List[str] = []
         new_model_ids: List[str] = []
         new_message_count = 0
         chats_missing_summary: Set[str] = set()
-        chats_needing_export_update: Set[str] = set()
         models_changed = False
-
-        export_entries_by_chat_id: Dict[str, Dict[str, Any]] = {}
-        for entry in export_payload:
-            chat_id = _extract_chat_id_from_export_entry(entry)
-            if chat_id:
-                export_entries_by_chat_id[chat_id] = entry
 
         with self._lock:
             existing_chat_ids: Set[str] = set()
@@ -1609,16 +1527,12 @@ class DataService:
                 summary_text = str(chat.get("summary_128") or "").strip()
                 if chat_id in existing_chat_ids:
                     existing_chat = self._chats[existing_chats_index[chat_id]]
-                    before_snapshot = existing_chat.copy()
                     previous_summary = str(existing_chat.get("summary_128") or "").strip()
                     existing_chat.update(chat)
-                    if existing_chat != before_snapshot:
-                        chats_needing_export_update.add(chat_id)
                     current_summary = str(existing_chat.get("summary_128") or "").strip()
                     if previous_summary and not current_summary:
                         existing_chat["summary_128"] = previous_summary
                         current_summary = previous_summary
-                        chats_needing_export_update.add(chat_id)
                     if not summary_text and not current_summary:
                         chats_missing_summary.add(chat_id)
                 else:
@@ -1626,7 +1540,6 @@ class DataService:
                     existing_chat_ids.add(chat_id)
                     existing_chats_index[chat_id] = len(self._chats) - 1
                     new_chat_ids.append(chat_id)
-                    chats_needing_export_update.add(chat_id)
                     if not summary_text:
                         chats_missing_summary.add(chat_id)
 
@@ -1640,7 +1553,6 @@ class DataService:
                 new_message_count += 1
                 chat_id_value = str(message.get("chat_id") or "").strip()
                 if chat_id_value:
-                    chats_needing_export_update.add(chat_id_value)
                     target_idx = existing_chats_index.get(chat_id_value)
                     if target_idx is not None:
                         target_chat = self._chats[target_idx]
@@ -1694,7 +1606,6 @@ class DataService:
 
             if models_changed:
                 self._models = updated_models
-                self._write_models_json(self._models)
 
             self._dataset_source_override = None
             self._source = f"openwebui:{base_url}"
@@ -1702,78 +1613,6 @@ class DataService:
                 self._bump_version()
             else:
                 self._last_updated = self._now_utc()
-
-            if chats_needing_export_update:
-                existing_entries = self._load_existing_export_entries()
-                existing_map: Dict[str, Dict[str, Any]] = {}
-                order: List[str] = []
-                for entry in existing_entries:
-                    existing_chat_id = _extract_chat_id_from_export_entry(entry)
-                    if not existing_chat_id:
-                        continue
-                    if existing_chat_id not in existing_map:
-                        order.append(existing_chat_id)
-                    existing_map[existing_chat_id] = entry
-
-                for chat_id in chats_needing_export_update:
-                    replacement = export_entries_by_chat_id.get(chat_id)
-                    if replacement is None:
-                        continue
-                    existing_idx = existing_chats_index.get(chat_id)
-                    chat_summary = ""
-                    if existing_idx is not None:
-                        chat_summary = str(self._chats[existing_idx].get("summary_128") or "").strip()
-                    if chat_summary:
-                        replacement = dict(replacement)
-                        replacement["summary_128"] = chat_summary
-                    existing_map[chat_id] = replacement
-                    if chat_id not in order:
-                        order.append(chat_id)
-
-                combined_entries: List[Dict[str, Any]] = []
-                seen_ids: Set[str] = set()
-                for chat_id in order:
-                    entry = existing_map.get(chat_id)
-                    if entry is None or chat_id in seen_ids:
-                        continue
-                    if "summary_128" not in entry or not str(entry.get("summary_128") or "").strip():
-                        existing_idx = existing_chats_index.get(chat_id)
-                        chat_summary = ""
-                        if existing_idx is not None:
-                            chat_summary = str(self._chats[existing_idx].get("summary_128") or "").strip()
-                        if chat_summary:
-                            entry = dict(entry)
-                            entry["summary_128"] = chat_summary
-                    combined_entries.append(entry)
-                    seen_ids.add(chat_id)
-
-                for chat_id, entry in existing_map.items():
-                    if chat_id not in seen_ids:
-                        if "summary_128" not in entry or not str(entry.get("summary_128") or "").strip():
-                            existing_idx = existing_chats_index.get(chat_id)
-                            chat_summary = ""
-                            if existing_idx is not None:
-                                chat_summary = str(
-                                    self._chats[existing_idx].get("summary_128") or ""
-                                ).strip()
-                            if chat_summary:
-                                entry = dict(entry)
-                                entry["summary_128"] = chat_summary
-                        combined_entries.append(entry)
-                        seen_ids.add(chat_id)
-
-                export_bytes = json.dumps(combined_entries, ensure_ascii=False, indent=2).encode("utf-8")
-                self._persist_file(
-                    export_bytes,
-                    "all-chats-export-openwebui.json",
-                    "all-chats-export",
-                    ".json",
-                    exclusive=True,
-                )
-
-            if new_user_ids:
-                self._write_users_json(self._users)
-                self._write_users_csv(self._users)
 
             force_timestamp = not new_chat_ids and not new_user_ids and not new_model_ids
             self._refresh_app_metadata(
@@ -1818,23 +1657,14 @@ class DataService:
         logging.getLogger(__name__).info(
             "Summaries prepared for %d chats (total=%d)", len(summary_map), len(chats)
         )
-        export_bytes = _annotate_export_bytes(raw_bytes, summary_map)
+        self._storage.replace_dataset(chats, messages)
         with self._lock:
             if record_upload:
                 self._dataset_source_override = None
             self._chats = chats
             self._messages = messages
-            if persist_filename is not None:
-                saved_path = self._persist_file(
-                    export_bytes,
-                    persist_filename,
-                    "all-chats-export",
-                    ".json",
-                    exclusive=True,
-                )
-                self._source = f"upload:{saved_path.name}"
-            else:
-                self._source = source_label or "chat export upload"
+            self._source = source_label or "chat export upload"
+            self._source_origin = None
             if bump_version:
                 self._bump_version()
             else:
@@ -1846,6 +1676,15 @@ class DataService:
                 if str(chat.get("chat_id") or "").strip()
                 and not str(chat.get("summary_128") or "").strip()
             ]
+        self._storage.record_ingest(
+            operation="chat_export_replace",
+            source=self._source,
+            record_count=len(chats),
+            details={
+                "messages": len(messages),
+                "source_label": source_label,
+            },
+        )
 
         if run_summarizer and missing_summary_chat_ids:
             self._enqueue_summary_job("chat export upload", chat_ids=missing_summary_chat_ids)
@@ -1861,34 +1700,25 @@ class DataService:
     ) -> None:
         """Replace the current user metadata dataset."""
         users = _parse_users_csv(raw_bytes)
+        self._storage.replace_users(users)
         with self._lock:
             self._users = users
-            if persist_filename is not None:
-                saved_path = self._persist_file(
-                    raw_bytes,
-                    persist_filename,
-                    "users",
-                    ".csv",
-                    exclusive=True,
-                )
-            else:
-                saved_path = None
-
-            json_path = self._write_users_json(users)
-            self._write_users_csv(users)
-
-            if saved_path is not None:
-                self._source = f"upload:{json_path.name}"
-            else:
-                self._source = source_label or f"json:{json_path.name}"
+            self._source = source_label or "users upload"
             if bump_version:
                 self._bump_version()
             else:
                 self._last_updated = self._now_utc()
             self._refresh_app_metadata(users_updated=record_upload, persist=persist_metadata)
+        self._storage.record_ingest(
+            operation="users_replace",
+            source=self._source,
+            record_count=len(users),
+            details={"source_label": source_label},
+        )
 
     def clear_users(self) -> None:
         """Clear user metadata."""
+        self._storage.replace_users([])
         with self._lock:
             self._users = []
             self._users_uploaded_at = None
@@ -1910,10 +1740,10 @@ class DataService:
             raise ValueError("Invalid models JSON.") from exc
 
         normalized = _normalize_models_payload(payload)
+        self._storage.replace_models(normalized)
 
         with self._lock:
             self._models = normalized
-            self._write_models_json(normalized)
             if source_label:
                 self._source = source_label
             if bump_version:
@@ -1926,9 +1756,16 @@ class DataService:
                 persist=persist_metadata,
                 force_timestamp=record_upload and models_present,
             )
+        self._storage.record_ingest(
+            operation="models_replace",
+            source=self._source,
+            record_count=len(normalized),
+            details={"source_label": source_label},
+        )
 
     def clear_models(self) -> None:
         """Clear model metadata."""
+        self._storage.replace_models([])
         with self._lock:
             self._models = []
             self._models_uploaded_at = None
@@ -1955,20 +1792,11 @@ class DataService:
                 }
             )
 
-        with self._lock:
-            if self._data_dir.exists():
-                for pattern in ("all-chats-export*.json", "users.csv", "users.json", "models.json"):
-                    for candidate in self._data_dir.glob(pattern):
-                        try:
-                            candidate.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                if self._app_metadata_path.exists():
-                    try:
-                        self._app_metadata_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+        self._storage.replace_dataset([])
+        self._storage.replace_users([])
+        self._storage.replace_models([])
 
+        with self._lock:
             self._chats = []
             self._messages = []
             self._users = []
@@ -1984,6 +1812,13 @@ class DataService:
             self._source_origin = None
             self._bump_version()
             self._refresh_app_metadata(persist=True)
+
+        self._storage.record_ingest(
+            operation="dataset_reset",
+            source="manual-reset",
+            record_count=0,
+            details=None,
+        )
 
         return self.get_meta()
 
@@ -2044,16 +1879,6 @@ class DataService:
         export_payload = _build_export_payload_from_openwebui(chats_payload)
         export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
         chats, messages = _parse_chat_export(export_bytes)
-        summary_map: Dict[str, str] = {}
-        for chat in chats:
-            chat_id = str(chat.get("chat_id") or "")
-            if not chat_id:
-                continue
-            summary_text = str(chat.get("summary_128") or "").strip()
-            if summary_text:
-                summary_map[chat_id] = summary_text
-        _apply_summaries_to_export_payload(export_payload, summary_map)
-        export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
 
         normalized_users = _normalize_openwebui_users(users_payload)
         normalized_models = _normalize_models_payload(models_payload)
@@ -2093,7 +1918,21 @@ class DataService:
                 messages,
                 normalized_users,
                 normalized_models,
-                export_payload,
+            )
+            self._storage.replace_dataset(self._chats, self._messages)
+            self._storage.replace_users(self._users)
+            self._storage.replace_models(self._models)
+            self._storage.record_ingest(
+                operation="openwebui_incremental",
+                source=f"openwebui:{base_url}",
+                record_count=len(self._chats),
+                details={
+                    "new_chats": len(new_chat_ids),
+                    "new_messages": new_message_count,
+                    "new_users": len(new_user_ids),
+                    "new_models": len(new_model_ids),
+                    "models_changed": models_changed,
+                },
             )
             summarizer_enqueued = False
             if chats_missing_summary:
@@ -2148,6 +1987,10 @@ class DataService:
                 self._source_origin = requested_origin
             return dataset_meta, stats
 
+        self._storage.replace_dataset(chats, messages)
+        self._storage.replace_users(normalized_users)
+        self._storage.replace_models(normalized_models)
+
         with self._lock:
             self._dataset_source_override = None
             self._chats = chats
@@ -2160,17 +2003,6 @@ class DataService:
                 if str(chat.get("chat_id") or "").strip()
                 and not str(chat.get("summary_128") or "").strip()
             ]
-            self._ensure_data_dir()
-            self._persist_file(
-                export_bytes,
-                "all-chats-export-openwebui.json",
-                "all-chats-export",
-                ".json",
-                exclusive=True,
-            )
-            self._write_users_json(normalized_users)
-            self._write_users_csv(normalized_users)
-            self._write_models_json(self._models)
             self._source = f"openwebui:{base_url}"
             self._source_origin = requested_origin
             self._bump_version()
@@ -2181,6 +2013,16 @@ class DataService:
         if missing_summary_chat_ids:
             self._enqueue_summary_job("Open WebUI sync", chat_ids=missing_summary_chat_ids)
             summarizer_enqueued = True
+        self._storage.record_ingest(
+            operation="openwebui_full",
+            source=f"openwebui:{base_url}",
+            record_count=len(chats),
+            details={
+                "messages": len(messages),
+                "users": len(normalized_users),
+                "models": len(normalized_models),
+            },
+        )
         stats = DatasetSyncStats(
             mode="full",
             source_matched=False,
@@ -2205,6 +2047,117 @@ class DataService:
         """Trigger asynchronous summarization on the current dataset."""
         return self._enqueue_summary_job("manual rebuild")
 
+    def _build_public_user(self, record: Dict[str, Any]) -> Dict[str, str]:
+        return {
+            "id": record["username"],
+            "username": record["username"],
+            "email": record["username"],
+            "name": record["display_name"],
+        }
+
+    def _prune_tokens(self, *, now: Optional[datetime] = None) -> None:
+        reference = now or self._now_utc()
+        expired: List[str] = []
+        for token, info in self._auth_tokens.items():
+            issued_at = info.get("issued_at")
+            if not isinstance(issued_at, datetime):
+                expired.append(token)
+                continue
+            if reference - issued_at > self._auth_token_ttl:
+                expired.append(token)
+        for token in expired:
+            self._auth_tokens.pop(token, None)
+
+    def issue_access_token(self, username: str) -> str:
+        normalized = self._normalize_username(username)
+        token = secrets.token_urlsafe(32)
+        now = self._now_utc()
+        with self._lock:
+            self._prune_tokens(now=now)
+            self._auth_tokens[token] = {"username": normalized, "issued_at": now}
+        return token
+
+    def resolve_user_from_token(self, token: str) -> Optional[Dict[str, str]]:
+        if not token:
+            return None
+        now = self._now_utc()
+        with self._lock:
+            self._prune_tokens(now=now)
+            info = self._auth_tokens.get(token)
+            if not info:
+                return None
+            username = info.get("username")
+            if not isinstance(username, str):
+                return None
+            remaining = info.get("issued_at")
+            if isinstance(remaining, datetime) and now - remaining > self._auth_token_ttl:
+                self._auth_tokens.pop(token, None)
+                return None
+            record = self._auth_users.get(username)
+            if record is None:
+                return None
+            return self._build_public_user(record)
+
+    def has_auth_users(self) -> bool:
+        with self._lock:
+            return bool(self._auth_users)
+
+    def list_auth_users(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [
+                {
+                    "username": record["username"],
+                    "name": record["display_name"],
+                    "created_at": record.get("created_at"),
+                    "updated_at": record.get("updated_at"),
+                }
+                for record in self._auth_users.values()
+            ]
+
+    def auth_user_count(self) -> int:
+        with self._lock:
+            return len(self._auth_users)
+
+    def create_auth_user(self, username: str, password: str, *, name: Optional[str] = None) -> Dict[str, Any]:
+        normalized_username = self._normalize_username(username)
+        stored_name = (name or normalized_username).strip()
+        if not stored_name:
+            stored_name = normalized_username
+        password_hash = self._hash_password(password)
+        now = self._now_utc()
+        with self._lock:
+            if normalized_username in self._auth_users:
+                raise ValueError("A user with that email already exists.")
+            record = {
+                "username": normalized_username,
+                "display_name": stored_name,
+                "password_hash": password_hash,
+                "created_at": now,
+                "updated_at": now,
+            }
+            self._auth_users[normalized_username] = record
+            self._auth_users_updated_at = now
+            self._persist_auth_users()
+            self._refresh_app_metadata(persist=True, force_timestamp=False)
+            return {
+                "username": normalized_username,
+                "name": stored_name,
+                "created_at": now,
+            }
+
+    def authenticate_credentials(self, username: str, password: str) -> Optional[Dict[str, str]]:
+        try:
+            normalized_username = self._normalize_username(username)
+        except ValueError:
+            return None
+        with self._lock:
+            record = self._auth_users.get(normalized_username)
+            if record is None:
+                return None
+            if not self._verify_password(password, record["password_hash"]):
+                return None
+            return self._build_public_user(record)
+
     def _bump_version(self) -> None:
         self._dataset_id = uuid4().hex
         self._last_updated = self._now_utc()
@@ -2212,6 +2165,9 @@ class DataService:
     # ------------------------------------------------------------------
     # Accessors
     # ------------------------------------------------------------------
+    def get_ingest_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        return self._storage.fetch_ingest_logs(limit)
+
     def get_chats(self) -> List[Dict[str, Any]]:
         with self._lock:
             return [chat.copy() for chat in self._chats]

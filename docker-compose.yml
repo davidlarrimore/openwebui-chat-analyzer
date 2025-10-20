@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: openwebui-chat-analyzer-db
+    environment:
+      - POSTGRES_DB=${OWUI_DB_NAME:-openwebui_chat_analyzer}
+      - POSTGRES_USER=${OWUI_DB_USER:-owui}
+      - POSTGRES_PASSWORD=${OWUI_DB_PASSWORD:-owui_password}
+    ports:
+      - "${OWUI_DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${OWUI_DB_USER:-owui} -d ${OWUI_DB_NAME:-openwebui_chat_analyzer}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   frontend:
     build:
       context: .
@@ -24,7 +42,8 @@ services:
       - TZ=${TZ:-UTC}
       - OWUI_API_BASE_URL=http://backend:8502
     depends_on:
-      - backend
+      backend:
+        condition: service_started
     restart: unless-stopped
 
   backend:
@@ -44,6 +63,9 @@ services:
     environment:
       - TZ=${TZ:-UTC}
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   frontend-dev:
     build:
@@ -68,7 +90,61 @@ services:
       - TZ=${TZ:-UTC}
       - OWUI_API_BASE_URL=http://backend:8502
     depends_on:
-      - backend
+      backend:
+        condition: service_started
+    profiles:
+      - development
+    restart: unless-stopped
+
+  frontend-next:
+    build:
+      context: ./frontend-next
+    container_name: openwebui-chat-analyzer-frontend-next
+    ports:
+      - "${FRONTEND_NEXT_PORT:-8503}:3000"
+    environment:
+      - NODE_ENV=production
+      - BACKEND_BASE_URL=${FRONTEND_NEXT_BACKEND_BASE_URL:-http://backend:8502}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-dev-secret}
+      - NEXTAUTH_URL=${FRONTEND_NEXT_PUBLIC_URL:-http://localhost:${FRONTEND_NEXT_PORT:-8503}}
+      - GITHUB_OAUTH_ENABLED=${GITHUB_OAUTH_ENABLED:-false}
+      - NEXT_PUBLIC_GITHUB_OAUTH_ENABLED=${NEXT_PUBLIC_GITHUB_OAUTH_ENABLED:-false}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - PORT=3000
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend-next-dev:
+    image: node:20-alpine
+    container_name: openwebui-chat-analyzer-frontend-next-dev
+    working_dir: /app
+    command: >
+      sh -c "corepack enable &&
+      pnpm install &&
+      pnpm dev"
+    ports:
+      - "${FRONTEND_NEXT_PORT:-8503}:3000"
+    volumes:
+      - ./frontend-next:/app:rw
+      - frontend_next_node_modules:/app/node_modules
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=dev
+      - BACKEND_BASE_URL=${FRONTEND_NEXT_BACKEND_BASE_URL:-http://backend:8502}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-dev-secret}
+      - NEXTAUTH_URL=${FRONTEND_NEXT_PUBLIC_URL:-http://localhost:${FRONTEND_NEXT_PORT:-8503}}
+      - GITHUB_OAUTH_ENABLED=${GITHUB_OAUTH_ENABLED:-false}
+      - NEXT_PUBLIC_GITHUB_OAUTH_ENABLED=${NEXT_PUBLIC_GITHUB_OAUTH_ENABLED:-false}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - PORT=3000
+    depends_on:
+      backend:
+        condition: service_started
     profiles:
       - development
     restart: unless-stopped
@@ -83,7 +159,12 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/ssl:/etc/nginx/ssl:ro
     depends_on:
-      - frontend
+      frontend:
+        condition: service_started
     restart: unless-stopped
     profiles:
       - production
+
+volumes:
+  frontend_next_node_modules:
+  postgres_data:

@@ -35,6 +35,10 @@ def render_direct_connect_section(
     """Render the direct connect panel with full workflow."""
     source_info = determine_dataset_source(meta)
     app_state.ensure_direct_connect_state()
+    app_state.set_default_openwebui_values(
+        config.direct_host_default,
+        config.direct_api_key_default,
+    )
     render_log = log_renderer or (lambda: None)
 
     direct_connect_active = dataset_ready and source_info.label == "Direct Connect"
