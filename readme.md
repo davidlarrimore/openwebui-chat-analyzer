@@ -11,7 +11,7 @@ Local analytics stack for exploring Open WebUI chat exports. The Streamlit UI re
 - Backend auto-loads the latest `all-chats-export-*.json` from `data/` and supports an optional `users.csv` for friendly names
 - Overview metrics for chats, messages, per-role activity, file uploads, and approximate token volume
 - Filters every visualization by Open WebUI user and model
-- Built-in summarizer generates one-line chat headlines using local sentence embeddings plus the Open WebUI chat completions API
+- Built-in summarizer generates one-line chat headlines using local sentence embeddings plus the bundled Ollama service (with Open WebUI completions as a fallback)
 - Time analysis (daily trend, conversation length, hour-by-day heatmap) and content analysis (word cloud, message length)
 - Sentiment breakdown with TextBlob plus full-text search, paginated browsing, and per-thread JSON downloads
 - CSV exports for both chat metadata and individual messages
@@ -28,10 +28,14 @@ Local analytics stack for exploring Open WebUI chat exports. The Streamlit UI re
 3. (Optional) Prefill the Direct Connect form:
    - `OWUI_DIRECT_HOST` – Default Open WebUI base URL shown on the Load Data page.
    - `OWUI_DIRECT_API_KEY` – Optional API token that appears in the Direct Connect form (stored only in your local `.env`).
-4. (Optional) Tune the summarizer:
+4. (Optional) Tune the summarizer and GenAI helpers:
    - `SUMMARY_MAX_CHARS` / `SALIENT_K` – Control headline length and how many salient utterances feed the LLM.
    - `EMB_MODEL` – Sentence-transformer used to pick salient lines (`sentence-transformers/all-MiniLM-L6-v2` by default).
-   - `OWUI_COMPLETIONS_MODEL` – Chat completion model identifier requested from your Open WebUI deployment.
+   - `OLLAMA_BASE_URL` / `OLLAMA_PORT` – Where the FastAPI backend reaches the Ollama runtime (`http://host.docker.internal:11434` when the backend runs in Docker, `http://localhost:11434` for bare-metal).
+   - `OLLAMA_PRELOAD_MODELS` – Space-separated list of models pulled on container start (defaults to summary, long-form, and embedding models).
+   - `OLLAMA_SUMMARY_MODEL` / `OLLAMA_LONGFORM_MODEL` / `OLLAMA_EMBED_MODEL` – Defaults for summaries (`llama3.1`), long-form generation (`phi3:mini`), and embeddings (`nomic-embed-text`).
+   - `OLLAMA_DEFAULT_TEMPERATURE` / `OLLAMA_TIMEOUT_SECONDS` – Runtime defaults applied to requests.
+   - `OWUI_COMPLETIONS_MODEL` – Chat completion model identifier requested from your Open WebUI deployment (legacy fallback path).
 5. Restart the backend (and Streamlit) after changing environment variables. The first summarizer run will download embeddings locally.
 
 ## Input Data
@@ -54,6 +58,16 @@ make up            # or: docker compose up -d
 
 The Streamlit UI listens on `http://localhost:8501`, the FastAPI backend on `http://localhost:8502`, and the experimental Next.js frontend on `http://localhost:8503`. Use `make down` to stop, `make logs` to tail the container, and `make help` for the complete command catalog.
 The compose stack now bind-mounts the `frontend/` directory, so Streamlit changes land immediately without rebuilding.
+
+### Ollama GenAI Service
+
+- The main `docker-compose.yml` includes an `ollama` service exposed on `http://localhost:11434`; it comes up automatically with `make up`.
+- When running services outside Docker, point `OLLAMA_BASE_URL` to `http://localhost:11434`.
+- Models listed in `OLLAMA_PRELOAD_MODELS` are pulled automatically on startup by `scripts/ollama-bootstrap.sh`; edit the env var to change the preload set.
+- By default the `.env.example` preloads `llama3.1` (summaries), `phi3:mini` (general generation), and `nomic-embed-text` (embeddings); swap in heavier weights like `llama3.1:70b` when you have the hardware.
+- Pull additional models manually with `docker compose run --rm ollama ollama pull <model>` and inspect the cache via `docker compose exec ollama ollama list`.
+- Tune runtime behaviour with the `OLLAMA_*` environment variables (`OLLAMA_DEFAULT_TEMPERATURE`, `OLLAMA_TIMEOUT_SECONDS`, etc.) and restart the backend.
+- For GPU acceleration, add the appropriate `--gpus` flag or device mapping to the `ollama` service before rebuilding the stack.
 
 ### Handy Make Commands
 
@@ -108,7 +122,7 @@ Run `uvicorn backend.app:app --reload` during development to keep the API availa
 
 - Summaries are persisted in the `summary_128` field for each chat and surface throughout the Browse and Overview experiences.
 - Every dataset update (direct sync or file upload) queues the summarizer; progress is shown in the Load Data processing log with toast notifications.
-- The summarizer picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the Open WebUI chat completions endpoint exposed at `OWUI_DIRECT_HOST` using `OWUI_COMPLETIONS_MODEL`.
+- The summarizer picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the bundled Ollama service (`OLLAMA_SUMMARY_MODEL`) with an automatic fallback to the Open WebUI completions endpoint at `OWUI_DIRECT_HOST`.
 - Rebuild summaries anytime from **Load Data → Admin Tools → Rerun summaries** or through the API (`POST /api/v1/summaries/rebuild` + `/summaries/status`).
 
 ## Dashboard Tour
@@ -172,6 +186,7 @@ All requests stay on your machine—the Streamlit UI only talks to the bundled F
 
 - If Streamlit crashes during sentiment analysis, install the TextBlob corpora with `python -m textblob.download_corpora`.
 - Summaries failing or timing out? Confirm your Open WebUI deployment at `OWUI_DIRECT_HOST` is reachable, the API key is valid, and that the sentence-transformers model has been downloaded (first run may take a minute).
+- Seeing 5xx errors from `/api/v1/genai/*`? Ensure the `ollama` container is healthy (`docker compose ps`, `docker compose logs ollama`) and that the required models are preloaded (`docker compose exec ollama ollama list`).
 - Some environments need a font package for `wordcloud`; installing system fonts (for example `sudo apt-get install fonts-dejavu`) fixes blank visuals.
 - Adjust `STREAMLIT_SERVER_PORT` or the Docker port mapping if 8501 is already in use.
 - Seeing “Unable to connect to the backend API”? Make sure `uvicorn backend.app:app --port 8502` (or the Docker `backend` service) is running and reachable.

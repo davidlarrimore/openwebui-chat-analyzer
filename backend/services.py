@@ -32,6 +32,7 @@ class SummaryJobCancelled(Exception):
 
 
 SUMMARY_EXPORT_FIELD = "owca_summary_128"
+DEFAULT_DIRECT_CONNECT_HOST = "http://localhost:4000"
 
 
 def _coerce_timestamp(value: Any) -> Optional[datetime]:
@@ -807,6 +808,7 @@ class DataService:
         self._first_chat_day: Optional[date] = None
         self._last_chat_day: Optional[date] = None
         self._summary_state_lock = Lock()
+        self._settings: Dict[str, Any] = {}
         self._summary_state: Dict[str, Any] = {
             "state": "idle",
             "total": 0,
@@ -823,6 +825,7 @@ class DataService:
         self._summary_active_job_id: Optional[int] = None
         self._storage = PostgresStorage()
         self._hydrate_from_storage()
+        self._ensure_direct_connect_defaults_seeded()
         with self._lock:
             self._refresh_app_metadata(persist=True)
 
@@ -831,6 +834,7 @@ class DataService:
     # ------------------------------------------------------------------
     def _apply_database_state(self, state: DatabaseState) -> None:
         """Populate in-memory caches from the hydrated database state."""
+        legacy_updates: Dict[str, Any] = {}
         with self._lock:
             self._chats = [chat.copy() for chat in state.chats]
             self._messages = [message.copy() for message in state.messages]
@@ -886,7 +890,45 @@ class DataService:
                 self._dataset_source_override = settings_display
                 self._source = settings_display
 
+            self._settings = {key: value for key, value in state.settings.items()}
+            legacy_host = self._settings.get("owui_direct_host")
+            if legacy_host is not None and "OWUI_DIRECT_HOST" not in self._settings:
+                self._settings["OWUI_DIRECT_HOST"] = legacy_host
+                legacy_updates["OWUI_DIRECT_HOST"] = legacy_host
+            legacy_api_key = self._settings.get("owui_direct_api_key")
+            if legacy_api_key is not None and "OWUI_DIRECT_API_KEY" not in self._settings:
+                self._settings["OWUI_DIRECT_API_KEY"] = legacy_api_key
+                legacy_updates["OWUI_DIRECT_API_KEY"] = legacy_api_key
+
             self._last_updated = self._now_utc()
+
+        if legacy_updates:
+            self._storage.write_settings(legacy_updates)
+
+    def _ensure_direct_connect_defaults_seeded(self) -> None:
+        """Ensure the settings table stores Direct Connect defaults."""
+        env_host = os.getenv("OWUI_DIRECT_HOST", "").strip()
+        env_api_key = os.getenv("OWUI_DIRECT_API_KEY", "").strip()
+        default_host = env_host or DEFAULT_DIRECT_CONNECT_HOST
+
+        with self._lock:
+            has_host_setting = any(
+                key in self._settings for key in ("OWUI_DIRECT_HOST", "owui_direct_host")
+            )
+            has_key_setting = any(
+                key in self._settings for key in ("OWUI_DIRECT_API_KEY", "owui_direct_api_key")
+            )
+
+        updates: Dict[str, Any] = {}
+        if not has_host_setting:
+            updates["OWUI_DIRECT_HOST"] = default_host
+        if not has_key_setting:
+            updates["OWUI_DIRECT_API_KEY"] = env_api_key
+
+        if updates:
+            self._storage.write_settings(updates)
+            with self._lock:
+                self._settings.update(updates)
 
     def _seed_initial_state_from_files(self) -> Optional[DatabaseState]:
         """Populate the database from legacy app.json metadata if necessary."""
@@ -902,7 +944,7 @@ class DataService:
             for key in ("owui_direct_host", "owui_direct_api_key"):
                 value = payload.get(key)
                 if value is not None:
-                    settings_payload[key] = value
+                    settings_payload[key.upper()] = value
 
         snapshot_payload: Dict[str, Any] = {}
         if isinstance(payload, dict):
@@ -1096,7 +1138,10 @@ class DataService:
             "message_count": payload.get("message_count") or len(self._messages),
         }
         self._storage.record_snapshot(snapshot_payload)
-        self._storage.write_settings({"dataset_source_display": payload.get("dataset_source")})
+        dataset_source_display = payload.get("dataset_source")
+        self._storage.write_settings({"dataset_source_display": dataset_source_display})
+        with self._lock:
+            self._settings["dataset_source_display"] = dataset_source_display
 
     def _determine_dataset_source(self) -> str:
         source = (self._source or "").strip()
@@ -1274,6 +1319,8 @@ class DataService:
         self,
         reason: str,
         chat_ids: Optional[Iterable[str]] = None,
+        *,
+        force_resummarize: bool = False,
     ) -> Dict[str, Any]:
         chat_id_filter: Optional[Set[str]] = None
         if chat_ids is not None:
@@ -1367,6 +1414,13 @@ class DataService:
                     return "Skipped chat without a valid chat_id"
                 if payload_type == "empty_context":
                     return f"No summarizable content for chat {payload.get('chat_id') or 'unknown'}"
+                if payload_type == "chunk":
+                    chat_id_value = payload.get("chat_id") or "unknown"
+                    chunk_index = payload.get("chunk_index")
+                    chunk_count = payload.get("chunk_count")
+                    if isinstance(chunk_index, int) and isinstance(chunk_count, int) and chunk_count > 0:
+                        return f"Summarizing chunk {chunk_index}/{chunk_count} for chat {chat_id_value}"
+                    return f"Summarizing chat {chat_id_value}"
                 return default_outcome.capitalize()
 
             with self._summary_state_lock:
@@ -1392,7 +1446,15 @@ class DataService:
 
         worker = Thread(
             target=self._summary_worker,
-            args=(chats_snapshot, messages_snapshot, dataset_id, reason, job_id, progress),
+            args=(
+                chats_snapshot,
+                messages_snapshot,
+                dataset_id,
+                reason,
+                job_id,
+                force_resummarize,
+                progress,
+            ),
             daemon=True,
         )
         with self._summary_state_lock:
@@ -1407,6 +1469,7 @@ class DataService:
         target_dataset_id: str,
         reason: str,
         job_id: int,
+        force_resummarize: bool,
         progress_cb: Callable[[int, int, str, str, Optional[Dict[str, Any]]], None],
     ) -> None:
         logger = logging.getLogger(__name__)
@@ -1421,6 +1484,7 @@ class DataService:
                 chats_snapshot,
                 messages_snapshot,
                 on_progress=progress_cb,
+                replace_existing=force_resummarize,
             )
 
             with self._summary_state_lock:
@@ -2045,7 +2109,64 @@ class DataService:
 
     def rebuild_summaries(self) -> Dict[str, Any]:
         """Trigger asynchronous summarization on the current dataset."""
-        return self._enqueue_summary_job("manual rebuild")
+        return self._enqueue_summary_job("manual rebuild", force_resummarize=True)
+
+    # ------------------------------------------------------------------
+    # Admin settings
+    # ------------------------------------------------------------------
+    def get_direct_connect_settings(self) -> Dict[str, Any]:
+        """Return Direct Connect defaults with their origin metadata."""
+        env_host = os.getenv("OWUI_DIRECT_HOST", "").strip()
+        env_api_key = os.getenv("OWUI_DIRECT_API_KEY", "").strip()
+
+        with self._lock:
+            stored_host = self._settings.get("OWUI_DIRECT_HOST") or self._settings.get("owui_direct_host")
+            stored_api_key = self._settings.get("OWUI_DIRECT_API_KEY") or self._settings.get("owui_direct_api_key")
+
+        host_value = (stored_host or "").strip() if isinstance(stored_host, str) else ""
+        api_key_value = (stored_api_key or "").strip() if isinstance(stored_api_key, str) else ""
+
+        if host_value:
+            host = host_value
+            host_source = "database"
+        elif env_host:
+            host = env_host
+            host_source = "environment"
+        else:
+            host = DEFAULT_DIRECT_CONNECT_HOST
+            host_source = "default"
+
+        if api_key_value:
+            api_key = api_key_value
+            api_key_source = "database"
+        elif env_api_key:
+            api_key = env_api_key
+            api_key_source = "environment"
+        else:
+            api_key = ""
+            api_key_source = "empty"
+
+        return {
+            "host": host,
+            "api_key": api_key,
+            "host_source": host_source,
+            "api_key_source": api_key_source,
+        }
+
+    def update_direct_connect_settings(self, *, host: Optional[str], api_key: Optional[str]) -> Dict[str, Any]:
+        """Persist updated Direct Connect defaults and return the effective values."""
+        updates: Dict[str, Any] = {}
+        if host is not None:
+            updates["OWUI_DIRECT_HOST"] = host.strip()
+        if api_key is not None:
+            updates["OWUI_DIRECT_API_KEY"] = api_key.strip()
+
+        if updates:
+            self._storage.write_settings(updates)
+            with self._lock:
+                self._settings.update(updates)
+
+        return self.get_direct_connect_settings()
 
     def _build_public_user(self, record: Dict[str, Any]) -> Dict[str, str]:
         return {

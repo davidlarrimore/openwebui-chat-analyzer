@@ -1,6 +1,7 @@
 import { ReactNode } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import SidebarHealthStatus from "@/components/sidebar-health-status";
 import { Button } from "@/components/ui/button";
 import { getServerAuthSession } from "@/lib/auth";
 
@@ -44,6 +45,9 @@ export default async function DashboardLayout({ children }: { children: ReactNod
             ))}
           </ul>
         </nav>
+        <div className="border-t px-4 py-6">
+          <SidebarHealthStatus />
+        </div>
         <div className="border-t px-4 py-6">
           <form action="/api/auth/signout" method="post">
             <Button className="w-full" type="submit" variant="ghost">

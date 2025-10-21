@@ -17,6 +17,28 @@ services:
       retries: 5
     restart: unless-stopped
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: openwebui-chat-analyzer-ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    env_file:
+      - .env
+    environment:
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-24h}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-4}
+      - OLLAMA_PRELOAD_MODELS=${OLLAMA_PRELOAD_MODELS:-}
+    volumes:
+      - ./scripts/ollama-bootstrap.sh:/usr/local/bin/ollama-bootstrap.sh:ro
+      - ollama_data:/root/.ollama
+    entrypoint: ["/bin/sh", "/usr/local/bin/ollama-bootstrap.sh"]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   frontend:
     build:
       context: .
@@ -64,37 +86,10 @@ services:
       - TZ=${TZ:-UTC}
     restart: unless-stopped
     depends_on:
+      ollama:
+        condition: service_healthy
       postgres:
         condition: service_healthy
-
-  frontend-dev:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: frontend
-    container_name: openwebui-chat-analyzer-frontend-dev
-    command: ["streamlit", "run", "frontend/home.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--server.fileWatcherType=auto", "--server.runOnSave=true"]
-    ports:
-      - "8501:8501"
-    volumes:
-      - ./frontend:/app/frontend:rw
-      - ./data:/app/data:rw
-      - ./uploads:/app/uploads:rw
-      - ./.streamlit:/app/.streamlit:ro
-    env_file:
-      - .env
-    environment:
-      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=auto
-      - STREAMLIT_SERVER_RUN_ON_SAVE=true
-      - MPLCONFIGDIR=${MPLCONFIGDIR:-/tmp/matplotlib}
-      - TZ=${TZ:-UTC}
-      - OWUI_API_BASE_URL=http://backend:8502
-    depends_on:
-      backend:
-        condition: service_started
-    profiles:
-      - development
-    restart: unless-stopped
 
   frontend-next:
     build:
@@ -117,38 +112,6 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  frontend-next-dev:
-    image: node:20-alpine
-    container_name: openwebui-chat-analyzer-frontend-next-dev
-    working_dir: /app
-    command: >
-      sh -c "corepack enable &&
-      pnpm install &&
-      pnpm dev"
-    ports:
-      - "${FRONTEND_NEXT_PORT:-8503}:3000"
-    volumes:
-      - ./frontend-next:/app:rw
-      - frontend_next_node_modules:/app/node_modules
-    env_file:
-      - .env
-    environment:
-      - NODE_ENV=dev
-      - BACKEND_BASE_URL=${FRONTEND_NEXT_BACKEND_BASE_URL:-http://backend:8502}
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-dev-secret}
-      - NEXTAUTH_URL=${FRONTEND_NEXT_PUBLIC_URL:-http://localhost:${FRONTEND_NEXT_PORT:-8503}}
-      - GITHUB_OAUTH_ENABLED=${GITHUB_OAUTH_ENABLED:-false}
-      - NEXT_PUBLIC_GITHUB_OAUTH_ENABLED=${NEXT_PUBLIC_GITHUB_OAUTH_ENABLED:-false}
-      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
-      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
-      - PORT=3000
-    depends_on:
-      backend:
-        condition: service_started
-    profiles:
-      - development
-    restart: unless-stopped
-
   nginx:
     image: nginx:alpine
     container_name: openwebui-chat-analyzer-proxy
@@ -168,3 +131,4 @@ services:
 volumes:
   frontend_next_node_modules:
   postgres_data:
+  ollama_data:

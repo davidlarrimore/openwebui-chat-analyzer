@@ -4,6 +4,8 @@ import type { DatasetMeta } from "@/lib/types";
 import { getDirectConnectDefaults } from "@/lib/direct-connect-defaults";
 
 export const revalidate = 0;
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 
 export default async function LoadDataPage() {
   let initialMeta: DatasetMeta | null = null;
@@ -15,7 +17,7 @@ export default async function LoadDataPage() {
     initialError = error instanceof Error ? error.message : "Unable to reach backend API.";
   }
 
-  const defaults = getDirectConnectDefaults();
+  const defaults = await getDirectConnectDefaults();
 
   return <LoadDataClient defaults={defaults} initialError={initialError} initialMeta={initialMeta} />;
 }

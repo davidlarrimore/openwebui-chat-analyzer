@@ -6,15 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
+import type { DirectConnectDefaultResult } from "@/lib/direct-connect-defaults";
 import type { AppMetadata, DatasetMeta, SummaryStatus, UploadResult, UploadStats } from "@/lib/types";
 
 interface LoadDataClientProps {
   initialMeta: DatasetMeta | null;
   initialError: string | null;
-  defaults: {
-    host?: string;
-    apiKey?: string;
-  };
+  defaults: DirectConnectDefaultResult;
 }
 
 interface LogEntry {
@@ -49,6 +47,7 @@ interface DatasetSummary {
 
 const SUMMARY_POLL_INTERVAL_MS = 2000;
 const TERMINAL_SUMMARY_STATES = new Set(["idle", "completed", "failed", "cancelled"]);
+const SUMMARY_WARNING_EVENT_TYPES = new Set(["invalid_chat", "empty_context"]);
 type LogSource = "direct" | "admin";
 const PROCESSING_LOG_META: Record<
   LogSource,
@@ -70,6 +69,16 @@ const DEFAULT_PROCESSING_LOG_META = {
   description: "Processing log collects updates from Direct Connect and Admin actions.",
   empty: "Trigger a sync or admin action to see messages here."
 };
+
+interface SummaryProgressTracker {
+  lastCompleted: number;
+  lastTotal: number;
+  lastPercent: number;
+}
+
+function createProgressTracker(): SummaryProgressTracker {
+  return { lastCompleted: -1, lastTotal: -1, lastPercent: -1 };
+}
 
 function safeUuid(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -355,6 +364,15 @@ function formatSummaryEvent(event: Record<string, unknown>): string {
     }
     return `Unexpected outcome while summarizing chat ${chatId}`;
   }
+  if (type === "chunk") {
+    const chatId = typeof event.chat_id === "string" ? event.chat_id : "unknown";
+    const chunkIndex = Number(event.chunk_index) || 0;
+    const chunkCount = Number(event.chunk_count) || 0;
+    if (chunkIndex > 0 && chunkCount > 0) {
+      return `Summarizing chunk ${chunkIndex}/${chunkCount} for chat ${chatId}`;
+    }
+    return `Summarizing chat ${chatId}`;
+  }
   const message = typeof event.message === "string" ? event.message.trim() : "";
   return message || "Processing error encountered.";
 }
@@ -363,7 +381,8 @@ function updateSummaryStatus(
   status: SummaryStatus,
   appendLog: (icon: string, message: string) => void,
   setProgress: (progress: ProgressState) => void,
-  seenEvents: Set<string>
+  seenEvents: Set<string>,
+  tracker?: SummaryProgressTracker
 ): void {
   const event = status.last_event;
   if (event && typeof event === "object") {
@@ -371,27 +390,59 @@ function updateSummaryStatus(
     const eventId = typeof record.event_id === "string" ? record.event_id : undefined;
     const type = typeof record.type === "string" ? record.type : "";
     const outcome = typeof record.outcome === "string" ? record.outcome : "";
+    const isWarning = SUMMARY_WARNING_EVENT_TYPES.has(type);
     const isError = (type === "chat" && outcome === "failed") || type === "error";
-    if (isError) {
-      if (!eventId || !seenEvents.has(eventId)) {
-        if (eventId) {
-          seenEvents.add(eventId);
-        }
+    const isChunk = type === "chunk";
+    const shouldLog = isError || isWarning || isChunk;
+    if (shouldLog && (!eventId || !seenEvents.has(eventId))) {
+      if (eventId) {
+        seenEvents.add(eventId);
+      }
+      if (isChunk) {
+        const chunkIndex = Number(record.chunk_index) || 0;
+        const chunkCount = Number(record.chunk_count) || 0;
+        const chatId = typeof record.chat_id === "string" ? record.chat_id : "unknown";
+        const message =
+          typeof record.message === "string" && record.message.trim().length
+            ? record.message
+            : chunkCount > 0 && chunkIndex > 0
+              ? `Summarizing chunk ${chunkIndex}/${chunkCount} for chat ${chatId}`
+              : `Summarizing chat ${chatId}`;
+        appendLog("🧩", message);
+      } else {
         appendLog("⚠️", formatSummaryEvent(record));
       }
     }
   }
 
+  const total = Math.max(0, Math.trunc(status.total ?? 0));
+  const completed = Math.max(0, Math.trunc(status.completed ?? 0));
+
   if (status.state === "running") {
     setProgress({
-      completed: status.completed ?? 0,
-      total: status.total ?? 0
+      completed,
+      total
     });
+
+    if (tracker && total > 0) {
+      const percent = Math.floor((completed / total) * 100);
+      const isInitial = tracker.lastCompleted < 0 || tracker.lastTotal !== total;
+      const advancedFivePercent = percent >= tracker.lastPercent + 5;
+      const reachedMilestone = completed === 0 || completed === total;
+
+      if (isInitial || advancedFivePercent || reachedMilestone) {
+        tracker.lastCompleted = completed;
+        tracker.lastTotal = total;
+        tracker.lastPercent = percent;
+        const progressSummary = `${completed.toLocaleString()} / ${total.toLocaleString()} (${percent}%)`;
+        appendLog("📊", `Summary progress: ${progressSummary}`);
+      }
+    }
   } else if (isTerminalSummaryState(status.state)) {
-    if (status.total) {
+    if (total > 0) {
       setProgress({
-        completed: status.completed ?? status.total,
-        total: status.total
+        completed: completed || total,
+        total
       });
     } else {
       setProgress(null);
@@ -466,8 +517,8 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
 
   const [datasetMeta, setDatasetMeta] = useState<DatasetMeta | null>(initialMeta);
   const [metaError, setMetaError] = useState<string | null>(initialError);
-  const [hostname, setHostname] = useState(() => defaults.host?.trim() ?? "");
-  const [apiKey, setApiKey] = useState(() => defaults.apiKey?.trim() ?? "");
+  const [hostname, setHostname] = useState(() => defaults.host.trim());
+  const [apiKey, setApiKey] = useState(() => defaults.apiKey.trim());
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [directLogs, setDirectLogs] = useState<LogEntry[]>([]);
@@ -630,7 +681,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
     if (toastShownRef.current) {
       return;
     }
-    const hasDefaults = Boolean((defaults.host && defaults.host.trim()) || (defaults.apiKey && defaults.apiKey.trim()));
+    const hasDefaults = Boolean(defaults.host.trim() || defaults.apiKey.trim());
     if (hasDefaults) {
       toast({
         title: "Defaults applied",
@@ -750,11 +801,13 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
           appendDirectLog("🤖", `Creating new summaries for ${formatCount(targetCount, "chat")}.`);
           appendDirectLog("🧠", "Building chat summaries...");
           const seenEvents = new Set<string>();
+          const progressTracker = createProgressTracker();
 
           let finalStatus: SummaryStatus | null = null;
           try {
             finalStatus = await pollSummaries({
-              onStatus: (status) => updateSummaryStatus(status, appendDirectLog, setDirectProgress, seenEvents)
+              onStatus: (status) =>
+                updateSummaryStatus(status, appendDirectLog, setDirectProgress, seenEvents, progressTracker)
             });
           } catch (error) {
             const message = error instanceof Error ? error.message : "Unknown error";
@@ -865,6 +918,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
     appendAdminLog("🔁", "Queuing manual summary rebuild...");
 
     const seenEvents = new Set<string>();
+    const progressTracker = createProgressTracker();
     try {
       let initialStatus: SummaryStatus;
       try {
@@ -880,7 +934,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
         return;
       }
 
-      updateSummaryStatus(initialStatus, appendAdminLog, setAdminProgress, seenEvents);
+      updateSummaryStatus(initialStatus, appendAdminLog, setAdminProgress, seenEvents, progressTracker);
 
       const state = initialStatus.state;
       if (state === "failed") {
@@ -905,7 +959,8 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
       let finalStatus: SummaryStatus;
       try {
         finalStatus = await pollSummaries({
-          onStatus: (status) => updateSummaryStatus(status, appendAdminLog, setAdminProgress, seenEvents),
+          onStatus: (status) =>
+            updateSummaryStatus(status, appendAdminLog, setAdminProgress, seenEvents, progressTracker),
           initialStatus
         });
       } catch (error) {
@@ -1122,8 +1177,8 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
                 <Button
                   disabled={isSyncing}
                   onClick={() => {
-                    setHostname(defaults.host?.trim() ?? "");
-                    setApiKey(defaults.apiKey?.trim() ?? "");
+                    setHostname(defaults.host.trim());
+                    setApiKey(defaults.apiKey.trim());
                   }}
                   type="button"
                   variant="outline"

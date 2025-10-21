@@ -1,6 +1,7 @@
 """API routes for the Open WebUI Chat Analyzer backend."""
 
-from typing import List, Optional
+import logging
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
 
@@ -10,6 +11,8 @@ from .models import (
     AuthStatus,
     AuthUserCreate,
     AuthUserPublic,
+    AdminDirectConnectSettings,
+    AdminDirectConnectSettingsUpdate,
     Chat,
     DatasetMeta,
     Message,
@@ -18,10 +21,64 @@ from .models import (
     OpenWebUISyncRequest,
     UploadResponse,
     User,
+    GenAIGenerateRequest,
+    GenAIGenerateResponse,
+    GenAIChatRequest,
+    GenAIChatResponse,
+    GenAIEmbedRequest,
+    GenAIEmbedResponse,
+    GenAISummarizeRequest,
+    GenAISummarizeResponse,
+    GenAIMessage,
 )
 from .services import DataService, get_data_service
+from .clients import OllamaClientError, OllamaOutOfMemoryError, get_ollama_client
+from .config import (
+    OLLAMA_DEFAULT_TEMPERATURE,
+    OLLAMA_EMBED_MODEL,
+    OLLAMA_LONGFORM_MODEL,
+    OLLAMA_SUMMARY_MODEL,
+    OLLAMA_SUMMARY_FALLBACK_MODEL,
+)
+from .summarizer import MAX_CHARS, _HEADLINE_SYS, _HEADLINE_USER_TMPL, _trim_one_line
+from .health import check_database_health, check_ollama_health
 
+LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["data"])
+
+
+def require_authenticated_user(
+    authorization: Optional[str] = Header(default=None, convert_underscores=False),
+    service: DataService = Depends(get_data_service),
+) -> AuthUserPublic:
+    """Resolve the current authenticated user or raise an HTTP 401 error."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header with Bearer token required.",
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    user_record = service.resolve_user_from_token(token)
+    if user_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token.",
+        )
+    return AuthUserPublic(**user_record)
+
+
+@router.get("/health/ollama", tags=["health"])
+def health_ollama() -> Dict[str, Any]:
+    """Return the health status for the Ollama service."""
+    result = check_ollama_health()
+    return result.to_dict()
+
+
+@router.get("/health/database", tags=["health"])
+def health_database() -> Dict[str, Any]:
+    """Return the health status for the database connection."""
+    result = check_database_health()
+    return result.to_dict()
 
 
 @router.get("/chats", response_model=List[Chat])
@@ -281,6 +338,166 @@ def sync_openwebui(
     )
 
 
+@router.post(
+    "/genai/summarize",
+    response_model=GenAISummarizeResponse,
+    tags=["genai"],
+)
+def generate_summary(payload: GenAISummarizeRequest) -> GenAISummarizeResponse:
+    """Generate a concise summary using the Ollama service."""
+    context = payload.context.strip()
+    primary_model = payload.model or OLLAMA_SUMMARY_MODEL
+    fallback_model = (
+        OLLAMA_SUMMARY_FALLBACK_MODEL
+        if not payload.model
+        and OLLAMA_SUMMARY_FALLBACK_MODEL
+        and OLLAMA_SUMMARY_FALLBACK_MODEL != primary_model
+        else None
+    )
+    char_limit = payload.max_chars or MAX_CHARS
+    temperature = (
+        payload.temperature if payload.temperature is not None else OLLAMA_DEFAULT_TEMPERATURE
+    )
+
+    if not context:
+        return GenAISummarizeResponse(summary="", model=primary_model)
+
+    client = get_ollama_client()
+    prompt = _HEADLINE_USER_TMPL.format(ctx=context)
+    options = {
+        "temperature": temperature,
+        "num_predict": max(128, min(char_limit * 2, 512)),
+    }
+
+    active_model = primary_model
+    try:
+        result = client.generate(
+            prompt=prompt,
+            model=active_model,
+            system=_HEADLINE_SYS,
+            options=options,
+        )
+    except OllamaOutOfMemoryError as exc:
+        if not fallback_model:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        LOGGER.warning(
+            "Primary Ollama model %s ran out of memory; retrying with fallback model %s.",
+            active_model,
+            fallback_model,
+            exc_info=True,
+        )
+        active_model = fallback_model
+        try:
+            result = client.generate(
+                prompt=prompt,
+                model=active_model,
+                system=_HEADLINE_SYS,
+                options=options,
+            )
+        except OllamaClientError as fallback_exc:
+            raise HTTPException(status_code=502, detail=str(fallback_exc)) from fallback_exc
+    except OllamaClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    summary = _trim_one_line(result.response, char_limit)
+    return GenAISummarizeResponse(summary=summary, model=result.model or active_model)
+
+
+@router.post(
+    "/genai/generate",
+    response_model=GenAIGenerateResponse,
+    tags=["genai"],
+)
+def generate_text(payload: GenAIGenerateRequest) -> GenAIGenerateResponse:
+    """Run a single-prompt generation request against Ollama."""
+    if not payload.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt must not be empty.")
+
+    client = get_ollama_client()
+    model = payload.model or OLLAMA_LONGFORM_MODEL
+    options = dict(payload.options or {})
+    options.setdefault("temperature", OLLAMA_DEFAULT_TEMPERATURE)
+
+    try:
+        result = client.generate(
+            prompt=payload.prompt,
+            model=model,
+            system=payload.system,
+            options=options or None,
+        )
+    except OllamaClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return GenAIGenerateResponse(text=result.response, model=result.model or model, raw=result.raw)
+
+
+@router.post(
+    "/genai/chat",
+    response_model=GenAIChatResponse,
+    tags=["genai"],
+)
+def chat(payload: GenAIChatRequest) -> GenAIChatResponse:
+    """Run a multi-turn chat completion against Ollama."""
+    if not payload.messages:
+        raise HTTPException(status_code=400, detail="At least one message is required.")
+
+    client = get_ollama_client()
+    model = payload.model or OLLAMA_LONGFORM_MODEL
+    options = dict(payload.options or {})
+    options.setdefault("temperature", OLLAMA_DEFAULT_TEMPERATURE)
+
+    try:
+        result = client.chat(
+            messages=[message.dict() for message in payload.messages],
+            model=model,
+            options=options or None,
+        )
+    except OllamaClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    assistant_message = GenAIMessage(**result.message)
+    return GenAIChatResponse(message=assistant_message, model=result.model or model, raw=result.raw)
+
+
+@router.post(
+    "/genai/embed",
+    response_model=GenAIEmbedResponse,
+    tags=["genai"],
+)
+def embed(payload: GenAIEmbedRequest) -> GenAIEmbedResponse:
+    """Generate embeddings for a list of strings."""
+    if not payload.inputs:
+        raise HTTPException(status_code=400, detail="inputs must not be empty.")
+
+    client = get_ollama_client()
+    model = payload.model or OLLAMA_EMBED_MODEL
+
+    try:
+        result = client.embed(inputs=payload.inputs, model=model)
+    except OllamaClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return GenAIEmbedResponse(
+        embeddings=result.embeddings,
+        model=result.model or model,
+        raw=result.raw,
+    )
+
+
+@router.get(
+    "/genai/models",
+    response_model=List[Dict[str, Any]],
+    tags=["genai"],
+)
+def list_genai_models() -> List[Dict[str, Any]]:
+    """Return the set of models currently available within Ollama."""
+    client = get_ollama_client()
+    try:
+        return client.list_models()
+    except OllamaClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @router.get("/summaries/status")
 def summary_status(service: DataService = Depends(get_data_service)) -> dict:
     """Return the current status of the summary job.
@@ -361,21 +578,38 @@ def login(
 
 
 @router.get("/users/me", response_model=AuthUserPublic, tags=["auth"])
-def current_user(
-    authorization: Optional[str] = Header(default=None, convert_underscores=False),
-    service: DataService = Depends(get_data_service),
-) -> AuthUserPublic:
+def current_user(user: AuthUserPublic = Depends(require_authenticated_user)) -> AuthUserPublic:
     """Resolve the current authenticated user from an Authorization header."""
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header with Bearer token required.",
-        )
-    token = authorization.split(" ", 1)[1].strip()
-    user_record = service.resolve_user_from_token(token)
-    if user_record is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token.",
-        )
-    return AuthUserPublic(**user_record)
+    return user
+
+
+@router.get(
+    "/admin/settings/direct-connect",
+    response_model=AdminDirectConnectSettings,
+    tags=["admin"],
+)
+def get_admin_direct_connect_settings(
+    _: AuthUserPublic = Depends(require_authenticated_user),
+    service: DataService = Depends(get_data_service),
+) -> AdminDirectConnectSettings:
+    """Return stored Direct Connect defaults for authenticated admins."""
+    settings = service.get_direct_connect_settings()
+    return AdminDirectConnectSettings(**settings)
+
+
+@router.put(
+    "/admin/settings/direct-connect",
+    response_model=AdminDirectConnectSettings,
+    tags=["admin"],
+)
+def update_admin_direct_connect_settings(
+    payload: AdminDirectConnectSettingsUpdate,
+    _: AuthUserPublic = Depends(require_authenticated_user),
+    service: DataService = Depends(get_data_service),
+) -> AdminDirectConnectSettings:
+    """Update Direct Connect defaults stored in the database."""
+    settings = service.update_direct_connect_settings(
+        host=payload.host,
+        api_key=payload.api_key,
+    )
+    return AdminDirectConnectSettings(**settings)

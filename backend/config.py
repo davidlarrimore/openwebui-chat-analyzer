@@ -31,3 +31,11 @@ API_PORT = int(os.getenv("OWUI_API_PORT", "8502"))
 API_ALLOWED_ORIGINS = _split_origins(os.getenv("OWUI_API_ALLOWED_ORIGINS", DEFAULT_ALLOWED_ORIGINS))
 # Resolve the data directory eagerly so downstream code can rely on absolute paths.
 DATA_DIR = Path(os.getenv("OWUI_DATA_DIR", str(DEFAULT_DATA_DIR))).resolve()
+
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_SUMMARY_MODEL = os.getenv("OLLAMA_SUMMARY_MODEL", "llama3.1")
+OLLAMA_LONGFORM_MODEL = os.getenv("OLLAMA_LONGFORM_MODEL", "phi3:mini")
+OLLAMA_SUMMARY_FALLBACK_MODEL = os.getenv("OLLAMA_SUMMARY_FALLBACK_MODEL") or OLLAMA_LONGFORM_MODEL
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+OLLAMA_DEFAULT_TEMPERATURE = float(os.getenv("OLLAMA_DEFAULT_TEMPERATURE", "0.2"))
+OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "30"))

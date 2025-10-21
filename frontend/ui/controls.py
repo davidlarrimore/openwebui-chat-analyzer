@@ -599,8 +599,10 @@ def render_admin_section(
                 event_id = str(event_payload.get("event_id") or "")
                 event_type = event_payload.get("type")
                 outcome = event_payload.get("outcome")
+                warning_types = {"invalid_chat", "empty_context"}
+                is_warning = event_type in warning_types
                 is_error = (event_type == "chat" and outcome == "failed") or event_type == "error"
-                if is_error:
+                if is_error or is_warning:
                     should_log = True
                     if event_id:
                         should_log = app_state.register_admin_event(event_id)

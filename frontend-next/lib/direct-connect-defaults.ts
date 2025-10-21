@@ -1,21 +1,78 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { apiGet } from "@/lib/api";
+import type { DirectConnectSettings } from "@/lib/types";
+
 type EnvCache = Record<string, string>;
 
 let cachedEnv: EnvCache | null = null;
+
+const FALLBACK_DIRECT_HOST = "http://localhost:4000";
+
+export type DirectConnectDefaultResult = {
+  host: string;
+  apiKey: string;
+  hostSource: "database" | "environment" | "default";
+  apiKeySource: "database" | "environment" | "empty";
+};
+
+function collectSearchDirectories(): string[] {
+  const seeds = [
+    process.cwd(),
+    __dirname,
+    process.env.PWD,
+    process.env.INIT_CWD,
+    process.env.ORIGINAL_CWD
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => path.resolve(value));
+
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+
+  const registerDir = (dir: string) => {
+    if (!seen.has(dir)) {
+      seen.add(dir);
+      ordered.push(dir);
+    }
+  };
+
+  for (const seed of seeds) {
+    let current = seed;
+    let depth = 0;
+    while (true) {
+      registerDir(current);
+      const parent = path.dirname(current);
+      if (parent === current || depth >= 10) {
+        break;
+      }
+      current = parent;
+      depth += 1;
+    }
+  }
+
+  return ordered;
+}
 
 function loadEnvFile(): EnvCache {
   if (cachedEnv) {
     return cachedEnv;
   }
 
-  const envPaths = [
-    path.resolve(process.cwd(), ".env.local"),
-    path.resolve(process.cwd(), ".env"),
-    path.resolve(process.cwd(), "..", ".env.local"),
-    path.resolve(process.cwd(), "..", ".env")
-  ];
+  const searchDirs = collectSearchDirectories();
+  const envPaths: string[] = [];
+  const pathSeen = new Set<string>();
+
+  for (const dir of searchDirs) {
+    for (const filename of [".env.local", ".env"]) {
+      const candidate = path.join(dir, filename);
+      if (!pathSeen.has(candidate)) {
+        pathSeen.add(candidate);
+        envPaths.push(candidate);
+      }
+    }
+  }
 
   const result: EnvCache = {};
 
@@ -65,16 +122,42 @@ function resolveEnv(key: string): string | undefined {
   return value?.trim() ? value.trim() : undefined;
 }
 
-export function getDirectConnectDefaults() {
-  const host =
-    resolveEnv("NEXT_PUBLIC_OWUI_DIRECT_HOST") ??
-    resolveEnv("OWUI_DIRECT_HOST") ??
-    "http://localhost:4000";
+function loadEnvDefaults(): DirectConnectDefaultResult {
+  const envHost =
+    resolveEnv("NEXT_PUBLIC_OWUI_DIRECT_HOST") ?? resolveEnv("OWUI_DIRECT_HOST") ?? "";
+  const envApiKey =
+    resolveEnv("NEXT_PUBLIC_OWUI_DIRECT_API_KEY") ?? resolveEnv("OWUI_DIRECT_API_KEY") ?? "";
 
-  const apiKey =
-    resolveEnv("NEXT_PUBLIC_OWUI_DIRECT_API_KEY") ??
-    resolveEnv("OWUI_DIRECT_API_KEY") ??
-    "";
+  const host = envHost || FALLBACK_DIRECT_HOST;
+  const hostSource: DirectConnectDefaultResult["hostSource"] = envHost ? "environment" : "default";
 
-  return { host, apiKey };
+  const apiKey = envApiKey || "";
+  const apiKeySource: DirectConnectDefaultResult["apiKeySource"] = envApiKey ? "environment" : "empty";
+
+  return { host, apiKey, hostSource, apiKeySource };
+}
+
+export async function getDirectConnectDefaults(): Promise<DirectConnectDefaultResult> {
+  const fallback = loadEnvDefaults();
+
+  try {
+    const payload = await apiGet<DirectConnectSettings>("api/v1/admin/settings/direct-connect");
+    if (!payload || typeof payload !== "object") {
+      return fallback;
+    }
+
+    const host =
+      typeof payload.host === "string" && payload.host.trim() ? payload.host.trim() : fallback.host;
+    const apiKey =
+      typeof payload.api_key === "string" ? payload.api_key : fallback.apiKey;
+
+    return {
+      host,
+      apiKey,
+      hostSource: payload.host_source ?? (host !== fallback.host ? "database" : fallback.hostSource),
+      apiKeySource: payload.api_key_source ?? (apiKey !== fallback.apiKey ? "database" : fallback.apiKeySource)
+    };
+  } catch (error) {
+    return fallback;
+  }
 }

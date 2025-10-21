@@ -113,3 +113,10 @@ export interface AuthResponse {
   token_type: "bearer";
   user: AuthSessionUser;
 }
+
+export interface DirectConnectSettings {
+  host: string;
+  api_key: string;
+  host_source: "database" | "environment" | "default";
+  api_key_source: "database" | "environment" | "empty";
+}

@@ -368,3 +368,138 @@ class OpenWebUISyncRequest(BaseModel):
     api_key: Optional[str] = Field(
         default=None, description="Bearer token used to authenticate with Open WebUI"
     )
+
+
+class AdminDirectConnectSettings(BaseModel):
+    """Admin-configurable defaults for Open WebUI Direct Connect."""
+
+    host: str = Field(
+        ...,
+        description="Effective base URL used for Direct Connect operations.",
+    )
+    api_key: str = Field(
+        ...,
+        description="Effective API key used for Direct Connect operations.",
+    )
+    host_source: Literal["database", "environment", "default"] = Field(
+        ...,
+        description="Origin for the host value (database, environment, or built-in default).",
+    )
+    api_key_source: Literal["database", "environment", "empty"] = Field(
+        ...,
+        description="Origin for the API key value (database, environment, or empty when unset).",
+    )
+
+
+class AdminDirectConnectSettingsUpdate(BaseModel):
+    """Payload allowing admins to update Direct Connect defaults."""
+
+    host: Optional[str] = Field(
+        default=None,
+        description="New base URL for Open WebUI Direct Connect; omit to keep existing value.",
+    )
+    api_key: Optional[str] = Field(
+        default=None,
+        description="New API key for Open WebUI Direct Connect; omit to keep existing value.",
+    )
+
+
+class GenAIMessage(BaseModel):
+    """Chat message payload exchanged with Ollama."""
+
+    role: Literal["system", "user", "assistant"] = Field(
+        ..., description="Speaker role for the chat turn"
+    )
+    content: str = Field(..., description="Content of the chat message")
+
+
+class GenAISummarizeRequest(BaseModel):
+    """Request payload for summary generation."""
+
+    context: str = Field(..., description="Conversation or document snippet to summarize")
+    model: Optional[str] = Field(
+        default=None, description="Override the default summary model identifier"
+    )
+    max_chars: Optional[int] = Field(
+        default=None, description="Optional character limit for the returned summary"
+    )
+    temperature: Optional[float] = Field(
+        default=None, description="Optional temperature override for the summary model"
+    )
+
+
+class GenAISummarizeResponse(BaseModel):
+    """Response payload for summary generation."""
+
+    summary: str = Field(..., description="Generated single-line summary text")
+    model: str = Field(..., description="Model identifier used to create the summary")
+
+
+class GenAIGenerateRequest(BaseModel):
+    """Generic text generation request payload."""
+
+    prompt: str = Field(..., description="Prompt provided to the model")
+    model: Optional[str] = Field(
+        default=None, description="Override the default model identifier"
+    )
+    system: Optional[str] = Field(
+        default=None, description="Optional system prompt to prepend"
+    )
+    options: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Low-level Ollama generation options (e.g., temperature, num_predict)",
+    )
+
+
+class GenAIGenerateResponse(BaseModel):
+    """Generic text generation response payload."""
+
+    text: str = Field(..., description="Generated text returned by the model")
+    model: str = Field(..., description="Model identifier used for the response")
+    raw: Dict[str, Any] = Field(
+        default_factory=dict, description="Raw response payload returned by Ollama"
+    )
+
+
+class GenAIChatRequest(BaseModel):
+    """Multi-turn chat generation request payload."""
+
+    messages: List[GenAIMessage] = Field(..., description="Ordered list of chat messages")
+    model: Optional[str] = Field(
+        default=None, description="Override the default chat model identifier"
+    )
+    options: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Low-level Ollama chat options (e.g., temperature, top_p)",
+    )
+
+
+class GenAIChatResponse(BaseModel):
+    """Multi-turn chat generation response payload."""
+
+    message: GenAIMessage = Field(..., description="Assistant message returned by the model")
+    model: str = Field(..., description="Model identifier used for the response")
+    raw: Dict[str, Any] = Field(
+        default_factory=dict, description="Raw response payload returned by Ollama"
+    )
+
+
+class GenAIEmbedRequest(BaseModel):
+    """Embedding generation request payload."""
+
+    inputs: List[str] = Field(..., description="Collection of strings to embed")
+    model: Optional[str] = Field(
+        default=None, description="Override the default embedding model identifier"
+    )
+
+
+class GenAIEmbedResponse(BaseModel):
+    """Embedding generation response payload."""
+
+    embeddings: List[List[float]] = Field(
+        ..., description="Embeddings returned by the Ollama service"
+    )
+    model: str = Field(..., description="Model identifier used for the embeddings")
+    raw: Dict[str, Any] = Field(
+        default_factory=dict, description="Raw response payload returned by Ollama"
+    )

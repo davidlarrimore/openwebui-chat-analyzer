@@ -3,12 +3,11 @@
 COMPOSE ?= docker compose
 FRONTEND ?= frontend
 BACKEND ?= backend
-DEV_FRONTEND ?= frontend-dev
-DEV_FRONTEND_NEXT ?= frontend-next-dev
 PROXY ?= nginx
 FRONTEND_NEXT ?= frontend-next
 DB ?= postgres
 SERVICES := $(FRONTEND) $(FRONTEND_NEXT) $(BACKEND) $(DB)
+DEV_COMPOSE_FILES ?= -f docker-compose.yml -f docker-compose.dev.yml
 
 .PHONY: help up up-frontend up-frontend-next up-backend down down-frontend \
 	down-frontend-next down-backend build build-frontend build-frontend-next \
@@ -121,15 +120,13 @@ logs-db: ## Tail logs for the database
 # Development conveniences
 # -------------------------------------------------------------------
 dev: ## Start backend plus hot-reload frontend profiles
-	$(COMPOSE) stop $(FRONTEND) $(FRONTEND_NEXT)
-	$(COMPOSE) up -d $(DB) $(BACKEND) $(DEV_FRONTEND) $(DEV_FRONTEND_NEXT)
+	$(COMPOSE) $(DEV_COMPOSE_FILES) up -d $(SERVICES)
 
 dev-down: ## Stop development profile services
-	$(COMPOSE) stop $(DEV_FRONTEND) $(DEV_FRONTEND_NEXT)
-	$(COMPOSE) rm -f $(DEV_FRONTEND) $(DEV_FRONTEND_NEXT)
+	$(COMPOSE) $(DEV_COMPOSE_FILES) down
 
 dev-restart: ## Restart development profile services
-	$(COMPOSE) restart $(DEV_FRONTEND) $(DEV_FRONTEND_NEXT)
+	$(COMPOSE) $(DEV_COMPOSE_FILES) restart $(SERVICES)
 
 shell: ## Open a shell in the long-running frontend container
 	$(COMPOSE) exec $(FRONTEND) /bin/bash
@@ -141,7 +138,7 @@ shell-frontend-next: ## Open a shell in the Next.js frontend container
 	$(COMPOSE) exec $(FRONTEND_NEXT) /bin/sh
 
 shell-frontend-next-dev: ## Open a shell in the Next.js frontend dev container
-	$(COMPOSE) exec $(DEV_FRONTEND_NEXT) /bin/sh
+	$(COMPOSE) $(DEV_COMPOSE_FILES) exec $(FRONTEND_NEXT) /bin/sh
 
 shell-backend: ## Open a shell in the backend container
 	$(COMPOSE) exec $(BACKEND) /bin/bash
@@ -150,4 +147,4 @@ shell-db: ## Open a shell in the database container
 	$(COMPOSE) exec $(DB) /bin/sh
 
 shell-dev: ## Open a shell in the hot-reload frontend container
-	$(COMPOSE) exec $(DEV_FRONTEND) /bin/bash
+	$(COMPOSE) $(DEV_COMPOSE_FILES) exec $(FRONTEND) /bin/bash
