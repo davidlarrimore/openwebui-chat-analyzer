@@ -67,3 +67,24 @@ def test_health_endpoint_uses_result(monkeypatch):
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["meta"] == {"model_count": 3}
+
+
+def test_backend_health_endpoint(monkeypatch):
+    monkeypatch.setattr("backend.app.data_service.load_initial_data", lambda: None)
+
+    fake_result = HealthResult(
+        service="backend",
+        status="ok",
+        attempts=1,
+        elapsed_seconds=0.01,
+        meta={"response": "ok"},
+    )
+
+    monkeypatch.setattr("backend.routes.check_backend_health", lambda: fake_result)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/health/backend")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["service"] == "backend"
+    assert payload["meta"] == {"response": "ok"}

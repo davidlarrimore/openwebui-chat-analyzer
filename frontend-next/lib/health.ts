@@ -1,6 +1,6 @@
 import { apiGet } from "./api";
 
-export const HEALTH_SERVICES = ["ollama", "database"] as const;
+export const HEALTH_SERVICES = ["backend", "ollama", "database"] as const;
 
 export type HealthService = (typeof HEALTH_SERVICES)[number];
 

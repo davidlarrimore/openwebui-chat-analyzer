@@ -1,30 +1,36 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchHealthStatus, HealthService, HealthStatus } from "@/lib/health";
+import { fetchHealthStatus, HealthService, HealthStatus, HEALTH_SERVICES } from "@/lib/health";
 import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 10000;
+
+const SERVICE_LABELS: Record<HealthService, string> = {
+  backend: "Backend API",
+  ollama: "Ollama",
+  database: "Database"
+};
 
 type ServiceLookup = {
   id: HealthService;
   label: string;
 };
 
+const SERVICES: ServiceLookup[] = HEALTH_SERVICES.map((service) => ({
+  id: service,
+  label: SERVICE_LABELS[service]
+}));
+
 type HealthMap = {
   [K in HealthService]: HealthStatus | null;
 };
 
-const SERVICES: ServiceLookup[] = [
-  { id: "ollama", label: "Ollama" },
-  { id: "database", label: "Database" }
-];
-
 function createInitialState(): HealthMap {
-  return {
-    ollama: null,
-    database: null
-  };
+  return SERVICES.reduce<HealthMap>((state, service) => {
+    state[service.id] = null;
+    return state;
+  }, {} as HealthMap);
 }
 
 const STATUS_STYLES: Record<
@@ -65,6 +71,14 @@ function summariseMeta(service: HealthService, status: HealthStatus | null): str
 
   if (service === "database") {
     return "Connection established";
+  }
+
+  if (service === "backend") {
+    const response = meta["response"];
+    if (response === "ok") {
+      return "API responsive";
+    }
+    return "API reachable";
   }
 
   return undefined;

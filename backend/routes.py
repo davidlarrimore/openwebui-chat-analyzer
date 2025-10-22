@@ -41,7 +41,7 @@ from .config import (
     OLLAMA_SUMMARY_FALLBACK_MODEL,
 )
 from .summarizer import MAX_CHARS, _HEADLINE_SYS, _HEADLINE_USER_TMPL, _trim_one_line
-from .health import check_database_health, check_ollama_health
+from .health import check_backend_health, check_database_health, check_ollama_health
 
 LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["data"])
@@ -78,6 +78,13 @@ def health_ollama() -> Dict[str, Any]:
 def health_database() -> Dict[str, Any]:
     """Return the health status for the database connection."""
     result = check_database_health()
+    return result.to_dict()
+
+
+@router.get("/health/backend", tags=["health"])
+def health_backend() -> Dict[str, Any]:
+    """Return the health status for the backend API."""
+    result = check_backend_health()
     return result.to_dict()
 
 

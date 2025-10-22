@@ -97,6 +97,11 @@ def _ping_database() -> Dict[str, Any]:
     return {"result": scalar}
 
 
+def _ping_backend() -> Dict[str, Any]:
+    """Return a lightweight payload confirming the API is responsive."""
+    return {"response": "ok"}
+
+
 def check_ollama_health(
     *,
     interval_seconds: float = HEALTH_CHECK_INTERVAL_SECONDS,
@@ -120,6 +125,20 @@ def check_database_health(
     return poll_health(
         _ping_database,
         service="database",
+        interval_seconds=interval_seconds,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def check_backend_health(
+    *,
+    interval_seconds: float = HEALTH_CHECK_INTERVAL_SECONDS,
+    timeout_seconds: float = HEALTH_CHECK_TIMEOUT_SECONDS,
+) -> HealthResult:
+    """Confirm the backend API is reachable."""
+    return poll_health(
+        _ping_backend,
+        service="backend",
         interval_seconds=interval_seconds,
         timeout_seconds=timeout_seconds,
     )

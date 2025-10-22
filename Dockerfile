@@ -41,6 +41,19 @@ CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8502"]
 # ------------------------------------------------------------
 # Frontend Next.js image
 # ------------------------------------------------------------
+FROM node:20-alpine AS frontend-next-dev
+
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NODE_ENV=development
+
+RUN apk add --no-cache libc6-compat && corepack enable
+
+COPY frontend-next/pnpm-lock.yaml frontend-next/package.json ./
+RUN pnpm install --frozen-lockfile
+
+COPY frontend-next/ .
+
 FROM node:20-alpine AS frontend-next-builder
 
 WORKDIR /app

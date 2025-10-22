@@ -21,7 +21,7 @@ const DISPLAY_TIMEZONE = "America/New_York";
 const palette = ["#6366f1", "#38bdf8", "#f97316", "#22c55e", "#c084fc", "#f43f5e", "#14b8a6", "#facc15"];
 
 function formatDateLabel(dateIso: string): string {
-  const date = new Date(`${dateIso}T00:00:00Z`);
+  const date = new Date(`${dateIso}T12:00:00Z`);
   return new Intl.DateTimeFormat("en-US", {
     timeZone: DISPLAY_TIMEZONE,
     month: "short",

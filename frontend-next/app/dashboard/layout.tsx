@@ -9,10 +9,9 @@ const NAV_LINKS = [
   { href: "/dashboard", label: "Overview" },
   { href: "/dashboard/time", label: "Time Analysis" },
   { href: "/dashboard/content", label: "Content Analysis" },
-  { href: "/dashboard/load-data", label: "Load Data" },
   { href: "/dashboard/search", label: "Search" },
   { href: "/dashboard/browse", label: "Browse Chats" },
-  { href: "/dashboard/exports", label: "Exports" }
+  { href: "/dashboard/load-data", label: "Load Data" }
 ];
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {

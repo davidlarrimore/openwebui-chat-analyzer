@@ -2,6 +2,12 @@ import { getRandomCharacterName } from "./character-names";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DISPLAY_TIMEZONE = "America/New_York";
+const DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: DISPLAY_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit"
+});
 
 function parseTimestamp(value: unknown): Date | null {
   if (value instanceof Date) {
@@ -32,8 +38,11 @@ function parseTimestamp(value: unknown): Date | null {
 }
 
 function toDateKey(date: Date): string {
-  const utcMidnight = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  return utcMidnight.toISOString().slice(0, 10);
+  const parts = DATE_KEY_FORMATTER.formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "01";
+  const day = parts.find((part) => part.type === "day")?.value ?? "01";
+  return `${year}-${month}-${day}`;
 }
 
 function formatMonthDay(date: Date | null): string {
@@ -49,6 +58,30 @@ function formatMonthDay(date: Date | null): string {
 
 function cloneDateOnly(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function parseDateKey(key: string): { year: number; month: number; day: number } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
+  if (!match) {
+    return null;
+  }
+  const [, year, month, day] = match;
+  return {
+    year: Number(year),
+    month: Number(month),
+    day: Number(day)
+  };
+}
+
+function getNextDateKey(key: string): string | null {
+  const parts = parseDateKey(key);
+  if (!parts) {
+    return null;
+  }
+  const base = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 12));
+  const next = new Date(base.getTime() + MS_PER_DAY);
+  const nextKey = toDateKey(next);
+  return nextKey === key ? null : nextKey;
 }
 
 export interface OverviewChat {
@@ -368,6 +401,8 @@ export function computeDateSummary(messages: OverviewMessage[]): DateSummary {
 
 export function buildTokenConsumptionSeries(messages: OverviewMessage[]): TokenSeriesPoint[] {
   const tokensByDate = new Map<string, number>();
+  let minKey: string | null = null;
+  let maxKey: string | null = null;
 
   for (const message of messages) {
     if (!message.timestamp) {
@@ -376,24 +411,32 @@ export function buildTokenConsumptionSeries(messages: OverviewMessage[]): TokenS
     const key = toDateKey(message.timestamp);
     const length = message.content?.length ?? 0;
     tokensByDate.set(key, (tokensByDate.get(key) ?? 0) + length);
+    if (!minKey || key < minKey) {
+      minKey = key;
+    }
+    if (!maxKey || key > maxKey) {
+      maxKey = key;
+    }
   }
 
-  if (!tokensByDate.size) {
+  if (!tokensByDate.size || !minKey || !maxKey) {
     return [];
   }
 
-  const dates = Array.from(tokensByDate.keys()).sort();
-  const start = new Date(`${dates[0]}T00:00:00Z`);
-  const end = new Date(`${dates[dates.length - 1]}T00:00:00Z`);
-
   const points: TokenSeriesPoint[] = [];
-  for (let time = start.getTime(); time <= end.getTime(); time += MS_PER_DAY) {
-    const date = new Date(time);
-    const key = toDateKey(date);
+  for (let key: string | null = minKey; key; ) {
     points.push({
       date: key,
       tokens: tokensByDate.get(key) ?? 0
     });
+    if (key === maxKey) {
+      break;
+    }
+    const nextKey = getNextDateKey(key);
+    if (!nextKey) {
+      break;
+    }
+    key = nextKey;
   }
 
   return points;

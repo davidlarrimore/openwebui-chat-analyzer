@@ -5,6 +5,10 @@ services:
       - ./backend:/app/backend:rw
 
   frontend-next:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-next-dev
     command: >
       sh -c "corepack enable &&
       pnpm install &&
