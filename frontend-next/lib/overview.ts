@@ -1,3 +1,5 @@
+import { getRandomCharacterName } from "./character-names";
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DISPLAY_TIMEZONE = "America/New_York";
 
@@ -173,12 +175,9 @@ export function normaliseUsers(raw: unknown): Map<string, string> {
     if (!userId) {
       continue;
     }
-    const nameValue = record.name;
-    const name =
-      typeof nameValue === "string" && nameValue.trim()
-        ? nameValue.trim()
-        : userId;
-    result.set(userId, name);
+    // Use random character name instead of actual user name
+    const randomName = getRandomCharacterName(userId);
+    result.set(userId, randomName);
   }
   return result;
 }
