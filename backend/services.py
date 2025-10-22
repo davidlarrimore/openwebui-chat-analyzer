@@ -6,15 +6,16 @@ import base64
 import hashlib
 import json
 import logging
+import hmac
 import math
 import os
 import secrets
-import hmac
+from collections import deque
 from datetime import datetime, timezone, date, timedelta
 from io import BytesIO
 from pathlib import Path
-from threading import Lock, Thread
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from threading import Lock, Thread, RLock
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 
 import pandas as pd
@@ -24,7 +25,9 @@ from urllib.parse import urlparse, urlunparse
 from .config import DATA_DIR
 from .models import AppMetadata, DatasetMeta, DatasetSyncStats
 from .summarizer import summarize_chats
-from .storage import DatabaseState, PostgresStorage
+from .storage import DatabaseState, DatabaseStorage
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SummaryJobCancelled(Exception):
@@ -33,6 +36,7 @@ class SummaryJobCancelled(Exception):
 
 SUMMARY_EXPORT_FIELD = "owca_summary_128"
 DEFAULT_DIRECT_CONNECT_HOST = "http://localhost:4000"
+SUMMARY_EVENT_HISTORY_LIMIT = 500
 
 
 def _coerce_timestamp(value: Any) -> Optional[datetime]:
@@ -389,15 +393,37 @@ def _parse_users_csv(raw_bytes: bytes) -> List[Dict[str, str]]:
     if name_col is None:
         raise ValueError("Users CSV must include a name-like column (e.g. 'name').")
 
+    # Extract email and role columns if they exist
+    email_col = next((col for col in ("email",) if col in users_df.columns), None)
+    role_col = next((col for col in ("role",) if col in users_df.columns), None)
+
+    # Build the list of columns to extract
+    cols_to_extract = [id_col, name_col]
+    rename_map = {id_col: "user_id", name_col: "name"}
+
+    if email_col:
+        cols_to_extract.append(email_col)
+        rename_map[email_col] = "email"
+
+    if role_col:
+        cols_to_extract.append(role_col)
+        rename_map[role_col] = "role"
+
     normalized = (
-        users_df[[id_col, name_col]]
-        .rename(columns={id_col: "user_id", name_col: "name"})
+        users_df[cols_to_extract]
+        .rename(columns=rename_map)
         .dropna(subset=["user_id"])
         .drop_duplicates(subset=["user_id"], keep="first")
     )
 
     normalized["user_id"] = normalized["user_id"].astype(str)
     normalized["name"] = normalized["name"].astype(str).str.strip()
+
+    if "email" in normalized.columns:
+        normalized["email"] = normalized["email"].astype(str).replace({"nan": None, "": None})
+
+    if "role" in normalized.columns:
+        normalized["role"] = normalized["role"].astype(str).replace({"nan": None, "": None})
 
     return normalized.to_dict(orient="records")
 
@@ -508,7 +534,17 @@ def _normalize_openwebui_users(payload: Any) -> List[Dict[str, str]]:
             or str(user_id)
         )
 
-        normalized.append({"user_id": str(user_id), "name": str(name)})
+        # Extract email and role if available
+        email = entry.get("email")
+        role = entry.get("role")
+
+        user_dict = {"user_id": str(user_id), "name": str(name)}
+        if email:
+            user_dict["email"] = str(email)
+        if role:
+            user_dict["role"] = str(role)
+
+        normalized.append(user_dict)
     return normalized
 
 
@@ -782,11 +818,14 @@ class DataService:
     """In-memory data repository backed by chat export files."""
 
     def __init__(self, data_dir: Optional[Path] = None) -> None:
-        self._lock = Lock()
+        # Use a re-entrant lock so helper methods that update shared state can
+        # safely call each other without deadlocking during nested acquisitions.
+        self._lock = RLock()
         if data_dir is not None:
             self._data_dir = Path(data_dir).resolve()
         else:
             self._data_dir = Path(__file__).resolve().parent.parent / "data"
+        LOGGER.info("Initializing DataService (data_dir=%s)", self._data_dir)
         self._chats: List[Dict[str, Any]] = []
         self._messages: List[Dict[str, Any]] = []
         self._users: List[Dict[str, str]] = []
@@ -819,19 +858,45 @@ class DataService:
             "updated_at": None,
             "last_event": None,
         }
+        self._summary_events: Deque[Dict[str, Any]] = deque(maxlen=SUMMARY_EVENT_HISTORY_LIMIT)
         self._summary_thread: Optional[Thread] = None
         self._summary_target_dataset_id: Optional[str] = None
         self._summary_job_counter: int = 0
         self._summary_active_job_id: Optional[int] = None
-        self._storage = PostgresStorage()
+        try:
+            self._storage = DatabaseStorage()
+        except Exception:  # pylint: disable=broad-except
+            LOGGER.exception("Failed to initialise database storage layer")
+            raise
         self._hydrate_from_storage()
         self._ensure_direct_connect_defaults_seeded()
         with self._lock:
             self._refresh_app_metadata(persist=True)
+        self._log_dataset_summary("DataService ready")
 
     # ------------------------------------------------------------------
     # Utility helpers
     # ------------------------------------------------------------------
+    def _snapshot_counts(self) -> Dict[str, int]:
+        with self._lock:
+            return {
+                "chats": len(self._chats),
+                "messages": len(self._messages),
+                "users": len(self._users),
+                "models": len(self._models),
+            }
+
+    def _log_dataset_summary(self, prefix: str) -> None:
+        counts = self._snapshot_counts()
+        LOGGER.info(
+            "%s: %d chats, %d messages, %d users, %d models",
+            prefix,
+            counts["chats"],
+            counts["messages"],
+            counts["users"],
+            counts["models"],
+        )
+
     def _apply_database_state(self, state: DatabaseState) -> None:
         """Populate in-memory caches from the hydrated database state."""
         legacy_updates: Dict[str, Any] = {}
@@ -904,6 +969,7 @@ class DataService:
 
         if legacy_updates:
             self._storage.write_settings(legacy_updates)
+        self._log_dataset_summary("Dataset hydration complete")
 
     def _ensure_direct_connect_defaults_seeded(self) -> None:
         """Ensure the settings table stores Direct Connect defaults."""
@@ -929,14 +995,24 @@ class DataService:
             self._storage.write_settings(updates)
             with self._lock:
                 self._settings.update(updates)
+            LOGGER.info(
+                "Seeded Direct Connect defaults (host=%s, api_key_present=%s)",
+                updates.get("OWUI_DIRECT_HOST"),
+                bool(updates.get("OWUI_DIRECT_API_KEY")),
+            )
 
     def _seed_initial_state_from_files(self) -> Optional[DatabaseState]:
         """Populate the database from legacy app.json metadata if necessary."""
         if not self._app_metadata_path.exists():
             return None
+        LOGGER.info(
+            "Attempting to seed database from legacy metadata file: %s",
+            self._app_metadata_path,
+        )
         try:
             payload = json.loads(self._app_metadata_path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:  # pylint: disable=broad-except
+            LOGGER.warning("Failed to read legacy metadata file: %s", exc)
             return None
 
         settings_payload: Dict[str, Any] = {}
@@ -994,11 +1070,17 @@ class DataService:
         if accounts_payload:
             self._storage.replace_accounts(accounts_payload)
 
+        LOGGER.info("Legacy metadata import succeeded; reloading state from database")
         return self._storage.load_state()
 
     def _hydrate_from_storage(self) -> None:
         """Ensure the in-memory caches reflect the persistent database state."""
-        state = self._storage.load_state()
+        LOGGER.info("Hydrating DataService state from database")
+        try:
+            state = self._storage.load_state()
+        except Exception:  # pylint: disable=broad-except
+            LOGGER.exception("Failed to load dataset state from database")
+            raise
         if (
             not state.chats
             and not state.users
@@ -1006,9 +1088,12 @@ class DataService:
             and not state.accounts
             and state.snapshot is None
         ):
+            LOGGER.info("Database state empty; attempting to seed from legacy metadata")
             seeded_state = self._seed_initial_state_from_files()
             if seeded_state is not None:
                 state = seeded_state
+            else:
+                LOGGER.info("No legacy metadata available; continuing with empty dataset")
         self._apply_database_state(state)
 
     def _persist_auth_users(self) -> None:
@@ -1120,7 +1205,7 @@ class DataService:
         return hmac.compare_digest(candidate_key, expected_key)
 
     def _save_app_metadata(self, payload: Dict[str, Any]) -> None:
-        """Persist aggregate dataset metadata into Postgres."""
+        """Persist aggregate dataset metadata into the database."""
         chats_section = payload.get("chats") or {}
         users_section = payload.get("users") or {}
         models_section = payload.get("models") or {}
@@ -1308,12 +1393,55 @@ class DataService:
             if finished_at is not None:
                 self._summary_state["finished_at"] = finished_at
             if event is not None:
-                self._summary_state["last_event"] = event
+                event_payload = dict(event)
+                event_id_raw = event_payload.get("event_id")
+                if not isinstance(event_id_raw, str) or not event_id_raw.strip():
+                    event_payload["event_id"] = f"evt-{uuid4().hex}"
+                timestamp_raw = event_payload.get("timestamp")
+                if not isinstance(timestamp_raw, str) or not timestamp_raw.strip():
+                    event_payload["timestamp"] = self._summary_now_iso()
+                event_payload.setdefault("job_id", self._summary_active_job_id)
+                self._summary_state["last_event"] = event_payload
+                self._summary_events.append(dict(event_payload))
             self._summary_state["updated_at"] = self._summary_now_iso()
 
     def get_summary_status(self) -> Dict[str, Any]:
         with self._summary_state_lock:
             return dict(self._summary_state)
+
+    def get_summary_events(self, after: Optional[str] = None, limit: Optional[int] = None) -> Dict[str, Any]:
+        """Return a slice of recent summary events queued by the worker.
+
+        Args:
+            after: Optional cursor referencing the last seen event identifier.
+            limit: Optional maximum number of events to return (most recent first).
+        Returns:
+            Dict[str, Any]: Payload containing events and a reset flag when cursors are stale.
+        """
+        with self._summary_state_lock:
+            events_snapshot = [dict(event) for event in self._summary_events]
+
+        reset = False
+        cursor = (after or "").strip()
+        if cursor:
+            idx = None
+            for position, event in enumerate(events_snapshot):
+                event_id = str(event.get("event_id") or "")
+                if event_id == cursor:
+                    idx = position
+                    break
+            if idx is None:
+                reset = True
+            else:
+                events_snapshot = events_snapshot[idx + 1 :]
+
+        if limit is not None and isinstance(limit, int) and limit > 0:
+            events_snapshot = events_snapshot[-limit:]
+
+        return {
+            "events": events_snapshot,
+            "reset": reset,
+        }
 
     def _enqueue_summary_job(
         self,
@@ -1365,7 +1493,7 @@ class DataService:
             )
             return self.get_summary_status()
 
-        logger = logging.getLogger(__name__)
+        logger = LOGGER
         with self._summary_state_lock:
             if self._summary_thread and self._summary_thread.is_alive():
                 logger.info("Cancelling in-flight summary job in favor of new request (%s)", reason)
@@ -1388,6 +1516,7 @@ class DataService:
                 "total": total,
                 "timestamp": self._summary_now_iso(),
                 "message": f"Starting summarizer job ({reason})",
+                "job_id": job_id,
             },
         )
 
@@ -1433,6 +1562,9 @@ class DataService:
                 event_payload = dict(details)
                 event_payload.setdefault("event_id", f"auto-{uuid4().hex}")
                 event_payload["timestamp"] = self._summary_now_iso()
+                event_payload["job_id"] = job_id
+                event_payload.setdefault("completed", current)
+                event_payload.setdefault("total", total_count)
                 message = _format_message(event_payload, outcome)
                 if message is not None:
                     event_payload["message"] = message
@@ -1472,19 +1604,36 @@ class DataService:
         force_resummarize: bool,
         progress_cb: Callable[[int, int, str, str, Optional[Dict[str, Any]]], None],
     ) -> None:
-        logger = logging.getLogger(__name__)
+        logger = LOGGER
         logger.info(
             "Summary job %s started for %d chats (%s)",
             job_id,
             len(chats_snapshot),
             reason,
         )
+
+        def batch_persist_callback(batch_summaries: Dict[str, str]) -> None:
+            """Immediately persist batch summaries to database and update in-memory records."""
+            if not batch_summaries:
+                return
+
+            # Update in-memory chat records
+            with self._lock:
+                for chat in self._chats:
+                    chat_id = str(chat.get("chat_id") or "")
+                    if chat_id in batch_summaries:
+                        chat["summary_128"] = batch_summaries[chat_id]
+
+            # Persist to database immediately
+            self._storage.update_chat_summaries(batch_summaries)
+
         try:
             summary_map, stats = summarize_chats(
                 chats_snapshot,
                 messages_snapshot,
                 on_progress=progress_cb,
                 replace_existing=force_resummarize,
+                on_batch_complete=batch_persist_callback,
             )
 
             with self._summary_state_lock:
@@ -1517,21 +1666,39 @@ class DataService:
             self._storage.update_chat_summaries(summary_map)
 
             logger.info("Summary job %s finished successfully.", job_id)
+            completed_at = self._summary_now_iso()
             self._update_summary_state(
                 state="completed",
                 message="Summary job complete.",
                 total=stats["total"],
                 completed=stats["total"],
-                finished_at=self._summary_now_iso(),
+                finished_at=completed_at,
+                event={
+                    "type": "complete",
+                    "event_id": f"complete-{job_id}-{uuid4().hex[:8]}",
+                    "timestamp": completed_at,
+                    "message": "Summary job complete.",
+                    "job_id": job_id,
+                    "total": stats["total"],
+                    "completed": stats["total"],
+                },
             )
         except SummaryJobCancelled:
             logger.info("Summary job %s cancelled before completion.", job_id)
         except Exception as exc:
             logger.exception("Summary job failed: %s", exc)
+            failed_at = self._summary_now_iso()
             self._update_summary_state(
                 state="failed",
                 message=str(exc),
-                finished_at=self._summary_now_iso(),
+                finished_at=failed_at,
+                event={
+                    "type": "error",
+                    "event_id": f"error-{job_id}-{uuid4().hex[:8]}",
+                    "timestamp": failed_at,
+                    "message": str(exc),
+                    "job_id": job_id,
+                },
             )
         finally:
             with self._summary_state_lock:
@@ -1545,8 +1712,10 @@ class DataService:
     # ------------------------------------------------------------------
     def load_initial_data(self) -> None:
         """Hydrate the in-memory caches from the database."""
+        LOGGER.info("Refreshing DataService state during startup")
         self._hydrate_from_storage()
         self._last_updated = datetime.utcnow().replace(tzinfo=timezone.utc)
+        self._log_dataset_summary("Initial data load")
 
     # ------------------------------------------------------------------
     # Dataset mutations
@@ -1706,7 +1875,7 @@ class DataService:
         run_summarizer: bool = True,
     ) -> None:
         """Replace the current chat/messages dataset."""
-        logging.getLogger(__name__).info(
+        LOGGER.info(
             "update_chat_export invoked (run_summarizer=%s, source=%s)", run_summarizer, source_label
         )
         chats, messages = _parse_chat_export(raw_bytes)
@@ -1718,7 +1887,7 @@ class DataService:
             summary_text = str(chat.get("summary_128") or "").strip()
             if summary_text:
                 summary_map[chat_id] = summary_text
-        logging.getLogger(__name__).info(
+        LOGGER.info(
             "Summaries prepared for %d chats (total=%d)", len(summary_map), len(chats)
         )
         self._storage.replace_dataset(chats, messages)
@@ -1915,7 +2084,7 @@ class DataService:
                     try:
                         models_payload = _fetch_openwebui_json(session, models_endpoint)
                     except RuntimeError as models_exc:
-                        logging.getLogger(__name__).warning(
+                        LOGGER.warning(
                             "Model inventory request failed for %s: %s", candidate, models_exc
                         )
                         models_payload = []

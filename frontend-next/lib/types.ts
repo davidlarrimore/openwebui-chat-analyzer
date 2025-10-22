@@ -97,6 +97,27 @@ export interface SummaryStatus {
   last_event?: Record<string, unknown> | null;
 }
 
+export interface SummaryEvent {
+  event_id: string;
+  type?: string | null;
+  message?: string | null;
+  timestamp?: string | null;
+  job_id?: number | string | null;
+  outcome?: string | null;
+  chat_id?: string | null;
+  chunk_index?: number | null;
+  chunk_count?: number | null;
+  completed?: number | null;
+  total?: number | null;
+  reason?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SummaryEventsResponse {
+  events: SummaryEvent[];
+  reset?: boolean;
+}
+
 export interface AuthStatus {
   has_users: boolean;
 }

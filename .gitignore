@@ -142,6 +142,7 @@ out/
 frontend-next/.next/
 frontend-next/.turbo/
 frontend-next/.pnpm-store/
+frontend-next/.pnpm-home/
 
 # Next.js workspace overrides
 !frontend-next/lib/

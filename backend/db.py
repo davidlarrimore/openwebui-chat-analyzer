@@ -5,9 +5,8 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from typing import Generator
-from urllib.parse import quote_plus
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from dotenv import load_dotenv
@@ -20,31 +19,44 @@ class Base(DeclarativeBase):
     """Base declarative class used by all ORM models."""
 
 
+def _build_sqlite_url() -> str:
+    """Construct the default SQLite connection string."""
+    sqlite_path_env = os.getenv("OWUI_SQLITE_PATH", "data/openwebui_chat_analyzer.db")
+    if sqlite_path_env == ":memory:":
+        return "sqlite:///:memory:"
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    sqlite_path = os.path.expanduser(sqlite_path_env)
+    if not os.path.isabs(sqlite_path):
+        sqlite_path = os.path.normpath(os.path.join(project_root, sqlite_path))
+
+    directory = os.path.dirname(sqlite_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    return f"sqlite:///{sqlite_path}"
+
+
 def _build_database_url() -> str:
-    """Construct a SQLAlchemy connection string from environment variables."""
-    url = os.getenv("OWUI_DB_URL")
-    if url:
+    """Construct a SQLite connection string from environment variables."""
+    url = os.getenv("OWUI_DB_URL", "").strip()
+    if url.startswith("sqlite://"):
         return url
-
-    host = os.getenv("OWUI_DB_HOST", "localhost")
-    port = os.getenv("OWUI_DB_PORT", "5432")
-    name = os.getenv("OWUI_DB_NAME", "openwebui_chat_analyzer")
-    user = os.getenv("OWUI_DB_USER", "owui")
-    password = os.getenv("OWUI_DB_PASSWORD", "owui_password")
-
-    # Allow passwordless connections by omitting the colon segment entirely.
-    if password:
-        credentials = f"{quote_plus(user)}:{quote_plus(password)}"
-    else:
-        credentials = quote_plus(user)
-    return f"postgresql+psycopg2://{credentials}@{host}:{port}/{name}"
+    return _build_sqlite_url()
 
 
 DATABASE_URL = _build_database_url()
+engine_kwargs = {
+    "future": True,
+    "pool_pre_ping": True,
+}
+
+if DATABASE_URL.startswith("sqlite"):
+    # SQLite requires disabling same-thread checks for multi-threaded FastAPI workers.
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+
 engine = create_engine(
     DATABASE_URL,
-    future=True,
-    pool_pre_ping=True,
+    **engine_kwargs,
 )
 SessionLocal = sessionmaker(
     bind=engine,
@@ -69,9 +81,24 @@ def session_scope() -> Generator[Session, None, None]:
         session.close()
 
 
+def _run_migrations() -> None:
+    """Run schema migrations for existing databases."""
+    inspector = inspect(engine)
+
+    # Migration 1: Add missing columns to owui_users table
+    if inspector.has_table("owui_users"):
+        columns = [col["name"] for col in inspector.get_columns("owui_users")]
+        with engine.begin() as conn:
+            if "email" not in columns:
+                conn.execute(text("ALTER TABLE owui_users ADD COLUMN email VARCHAR(320)"))
+            if "role" not in columns:
+                conn.execute(text("ALTER TABLE owui_users ADD COLUMN role VARCHAR(64)"))
+
+
 def init_database() -> None:
     """Ensure all ORM tables are created in the configured database."""
     # Import models within the function to avoid circular imports.
     from . import db_models  # noqa: F401  # pylint: disable=unused-import
 
     Base.metadata.create_all(bind=engine)
+    _run_migrations()

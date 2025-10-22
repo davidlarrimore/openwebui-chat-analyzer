@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 
 from .models import (
     AuthLoginRequest,
@@ -31,7 +31,7 @@ from .models import (
     GenAISummarizeResponse,
     GenAIMessage,
 )
-from .services import DataService, get_data_service
+from .services import SUMMARY_EVENT_HISTORY_LIMIT, DataService, get_data_service
 from .clients import OllamaClientError, OllamaOutOfMemoryError, get_ollama_client
 from .config import (
     OLLAMA_DEFAULT_TEMPERATURE,
@@ -508,6 +508,16 @@ def summary_status(service: DataService = Depends(get_data_service)) -> dict:
         dict: Progress metrics emitted by the summarizer worker.
     """
     return service.get_summary_status()
+
+
+@router.get("/summaries/events")
+def summary_events(
+    after: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=SUMMARY_EVENT_HISTORY_LIMIT),
+    service: DataService = Depends(get_data_service),
+) -> dict:
+    """Return queued summarizer events emitted by the worker."""
+    return service.get_summary_events(after=after, limit=limit)
 
 
 @router.post("/summaries/rebuild")

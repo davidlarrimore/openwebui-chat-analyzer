@@ -1,13 +1,23 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
+import { useSummarizerProgress } from "@/components/summarizer-progress-provider";
 import type { DirectConnectDefaultResult } from "@/lib/direct-connect-defaults";
-import type { AppMetadata, DatasetMeta, SummaryStatus, UploadResult, UploadStats } from "@/lib/types";
+import type {
+  AppMetadata,
+  DatasetMeta,
+  DirectConnectSettings,
+  SummaryEvent,
+  SummaryEventsResponse,
+  SummaryStatus,
+  UploadResult,
+  UploadStats
+} from "@/lib/types";
 
 interface LoadDataClientProps {
   initialMeta: DatasetMeta | null;
@@ -74,10 +84,11 @@ interface SummaryProgressTracker {
   lastCompleted: number;
   lastTotal: number;
   lastPercent: number;
+  lastSummary: string | null;
 }
 
 function createProgressTracker(): SummaryProgressTracker {
-  return { lastCompleted: -1, lastTotal: -1, lastPercent: -1 };
+  return { lastCompleted: -1, lastTotal: -1, lastPercent: -1, lastSummary: null };
 }
 
 function safeUuid(): string {
@@ -377,44 +388,86 @@ function formatSummaryEvent(event: Record<string, unknown>): string {
   return message || "Processing error encountered.";
 }
 
+function determineSummaryEventIcon(event: SummaryEvent): string {
+  const type = typeof event.type === "string" ? event.type : "";
+  const outcome = typeof event.outcome === "string" ? event.outcome : "";
+  if (type === "chunk") {
+    return "🧩";
+  }
+  if (type === "chat") {
+    if (outcome === "failed") {
+      return "⚠️";
+    }
+    if (outcome === "generated") {
+      return "✅";
+    }
+    if (outcome === "skipped") {
+      return "ℹ️";
+    }
+  }
+  if (type === "error") {
+    return "❌";
+  }
+  if (type === "start") {
+    return "🚀";
+  }
+  if (type === "complete") {
+    return "✅";
+  }
+  if (type === "cancelled") {
+    return "⚠️";
+  }
+  if (SUMMARY_WARNING_EVENT_TYPES.has(type)) {
+    return "⚠️";
+  }
+  return "ℹ️";
+}
+
+function inferLogSourceFromReason(reason: string | null | undefined): LogSource {
+  if (!reason) {
+    return "direct";
+  }
+  const normalized = reason.trim().toLowerCase();
+  if (!normalized) {
+    return "direct";
+  }
+  if (normalized.includes("manual") || normalized.includes("rebuild") || normalized.includes("admin")) {
+    return "admin";
+  }
+  return "direct";
+}
+
+function processSummaryEvents(
+  events: SummaryEvent[],
+  appendLog: (icon: string, message: string) => void,
+  seenEvents: Set<string>
+): string | null {
+  let latestMessage: string | null = null;
+  for (const event of events) {
+    const eventId = typeof event.event_id === "string" ? event.event_id : "";
+    if (!eventId || seenEvents.has(eventId)) {
+      continue;
+    }
+    seenEvents.add(eventId);
+    const messageRaw = typeof event.message === "string" ? event.message.trim() : "";
+    const message = messageRaw || formatSummaryEvent(event as Record<string, unknown>);
+    if (!message) {
+      continue;
+    }
+    appendLog(determineSummaryEventIcon(event), message);
+    latestMessage = message;
+  }
+  return latestMessage;
+}
+
 function updateSummaryStatus(
   status: SummaryStatus,
   appendLog: (icon: string, message: string) => void,
   setProgress: (progress: ProgressState) => void,
-  seenEvents: Set<string>,
-  tracker?: SummaryProgressTracker
+  tracker?: SummaryProgressTracker,
+  latestMessage?: string | null,
+  syncGlobalProgress?: (snapshot: SummaryStatus, message?: string | null) => void
 ): void {
-  const event = status.last_event;
-  if (event && typeof event === "object") {
-    const record = event as Record<string, unknown>;
-    const eventId = typeof record.event_id === "string" ? record.event_id : undefined;
-    const type = typeof record.type === "string" ? record.type : "";
-    const outcome = typeof record.outcome === "string" ? record.outcome : "";
-    const isWarning = SUMMARY_WARNING_EVENT_TYPES.has(type);
-    const isError = (type === "chat" && outcome === "failed") || type === "error";
-    const isChunk = type === "chunk";
-    const shouldLog = isError || isWarning || isChunk;
-    if (shouldLog && (!eventId || !seenEvents.has(eventId))) {
-      if (eventId) {
-        seenEvents.add(eventId);
-      }
-      if (isChunk) {
-        const chunkIndex = Number(record.chunk_index) || 0;
-        const chunkCount = Number(record.chunk_count) || 0;
-        const chatId = typeof record.chat_id === "string" ? record.chat_id : "unknown";
-        const message =
-          typeof record.message === "string" && record.message.trim().length
-            ? record.message
-            : chunkCount > 0 && chunkIndex > 0
-              ? `Summarizing chunk ${chunkIndex}/${chunkCount} for chat ${chatId}`
-              : `Summarizing chat ${chatId}`;
-        appendLog("🧩", message);
-      } else {
-        appendLog("⚠️", formatSummaryEvent(record));
-      }
-    }
-  }
-
   const total = Math.max(0, Math.trunc(status.total ?? 0));
   const completed = Math.max(0, Math.trunc(status.completed ?? 0));
 
@@ -428,13 +481,19 @@ function updateSummaryStatus(
       const percent = Math.floor((completed / total) * 100);
       const isInitial = tracker.lastCompleted < 0 || tracker.lastTotal !== total;
       const advancedFivePercent = percent >= tracker.lastPercent + 5;
-      const reachedMilestone = completed === 0 || completed === total;
+      const reachedMilestone = total > 0 && completed === total;
+      const completedDelta = completed - tracker.lastCompleted;
+      const minStep = Math.max(1, Math.floor(total / 20));
+      const advancedByCount = completedDelta >= minStep;
+      const earlyProgress = completed > tracker.lastCompleted && completed <= Math.min(total, 10);
+      const progressSummary = `${completed.toLocaleString()} / ${total.toLocaleString()} (${percent}%)`;
+      const summaryChanged = tracker.lastSummary !== progressSummary;
 
-      if (isInitial || advancedFivePercent || reachedMilestone) {
+      if ((isInitial || advancedFivePercent || advancedByCount || earlyProgress || reachedMilestone) && summaryChanged) {
         tracker.lastCompleted = completed;
         tracker.lastTotal = total;
         tracker.lastPercent = percent;
-        const progressSummary = `${completed.toLocaleString()} / ${total.toLocaleString()} (${percent}%)`;
+        tracker.lastSummary = progressSummary;
         appendLog("📊", `Summary progress: ${progressSummary}`);
       }
     }
@@ -447,6 +506,10 @@ function updateSummaryStatus(
     } else {
       setProgress(null);
     }
+  }
+
+  if (syncGlobalProgress) {
+    syncGlobalProgress(status, latestMessage ?? null);
   }
 }
 
@@ -514,11 +577,35 @@ function ProgressBar({ progress }: { progress: ProgressState }) {
 export default function LoadDataClient({ defaults, initialError, initialMeta }: LoadDataClientProps) {
   const { toast } = useToast();
   const abortRef = useRef(false);
+  const {
+    updateStatus: setGlobalSummarizerStatus,
+    subscribe: subscribeToSummarizer
+  } = useSummarizerProgress();
+  const directEventIdsRef = useRef<Set<string>>(new Set<string>());
+  const adminEventIdsRef = useRef<Set<string>>(new Set<string>());
+  const directTrackerRef = useRef<SummaryProgressTracker>(createProgressTracker());
+  const adminTrackerRef = useRef<SummaryProgressTracker>(createProgressTracker());
+  const activeJobRef = useRef<LogSource | null>(null);
+  const lastReasonRef = useRef<string | null>(null);
+  const trimmedDefaultsHost = defaults.host.trim();
+  const trimmedDatabaseHost = defaults.databaseHost.trim();
+  const resolvedInitialHost =
+    defaults.hostSource === "database" ? trimmedDatabaseHost : trimmedDatabaseHost || trimmedDefaultsHost;
+  const databaseApiKey = defaults.databaseApiKey;
+  const trimmedDefaultsApiKey = defaults.apiKey.trim();
+  const resolvedInitialApiKey =
+    defaults.apiKeySource === "database" ? databaseApiKey : databaseApiKey || trimmedDefaultsApiKey;
+  const databaseDefaultsRef = useRef<{ host: string; apiKey: string }>({
+    host: trimmedDatabaseHost,
+    apiKey: databaseApiKey
+  });
+  const hasEditedHostRef = useRef(false);
+  const hasEditedApiKeyRef = useRef(false);
 
   const [datasetMeta, setDatasetMeta] = useState<DatasetMeta | null>(initialMeta);
   const [metaError, setMetaError] = useState<string | null>(initialError);
-  const [hostname, setHostname] = useState(() => defaults.host.trim());
-  const [apiKey, setApiKey] = useState(() => defaults.apiKey.trim());
+  const [hostname, setHostname] = useState(() => resolvedInitialHost);
+  const [apiKey, setApiKey] = useState(() => resolvedInitialApiKey);
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [directLogs, setDirectLogs] = useState<LogEntry[]>([]);
@@ -578,6 +665,57 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
   }, []);
 
   useEffect(() => {
+    // Hydrate Direct Connect inputs with database defaults after client mount.
+    if (!isHydrated) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const hydrateFromDatabase = async () => {
+      try {
+        const payload = await apiGet<DirectConnectSettings>("api/v1/admin/settings/direct-connect");
+        if (cancelled || abortRef.current || !payload) {
+          return;
+        }
+
+        const hostSource = payload.host_source ?? defaults.hostSource;
+        const apiKeySource = payload.api_key_source ?? defaults.apiKeySource;
+
+        const hostValue =
+          hostSource === "database" && typeof payload.host === "string" ? payload.host.trim() : "";
+        const apiKeyValue =
+          apiKeySource === "database" && typeof payload.api_key === "string" ? payload.api_key : "";
+
+        databaseDefaultsRef.current = {
+          host: hostValue,
+          apiKey: apiKeyValue
+        };
+
+        if (!hasEditedHostRef.current) {
+          const resolvedHost =
+            hostSource === "database" ? hostValue : hostValue || trimmedDefaultsHost;
+          setHostname((current) => (current === resolvedHost ? current : resolvedHost));
+        }
+
+        if (!hasEditedApiKeyRef.current) {
+          const resolvedApiKey =
+            apiKeySource === "database" ? apiKeyValue : apiKeyValue || trimmedDefaultsApiKey;
+          setApiKey((current) => (current === resolvedApiKey ? current : resolvedApiKey));
+        }
+      } catch {
+        // ignore failures; fallback defaults remain applied.
+      }
+    };
+
+    hydrateFromDatabase();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [defaults.apiKey, defaults.apiKeySource, defaults.host, defaults.hostSource, isHydrated, trimmedDefaultsApiKey, trimmedDefaultsHost]);
+
+  useEffect(() => {
     abortRef.current = false;
     return () => {
       abortRef.current = true;
@@ -598,6 +736,177 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
     setAdminLogs((previous) => [...previous, { id: safeUuid(), icon, message, timestamp: new Date() }]);
   }, []);
 
+  const handleHostnameChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    hasEditedHostRef.current = true;
+    setHostname(event.target.value);
+  }, []);
+
+  const handleApiKeyChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    hasEditedApiKeyRef.current = true;
+    setApiKey(event.target.value);
+  }, []);
+
+  const handleResetToDefaults = useCallback(() => {
+    hasEditedHostRef.current = true;
+    hasEditedApiKeyRef.current = true;
+    const dbDefaults = databaseDefaultsRef.current;
+    setHostname(dbDefaults.host);
+    setApiKey(dbDefaults.apiKey);
+  }, []);
+
+  const updateDirectProgress = useCallback(
+    (progress: ProgressState) => {
+      if (abortRef.current) {
+        return;
+      }
+      setDirectProgress(progress);
+    },
+    []
+  );
+
+  const updateAdminProgress = useCallback(
+    (progress: ProgressState) => {
+      if (abortRef.current) {
+        return;
+      }
+      setAdminProgress(progress);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+    let cancelled = false;
+
+    const replayEvents = async () => {
+      try {
+        const response = await apiGet<SummaryEventsResponse>("api/v1/summaries/events?limit=200");
+        if (cancelled || abortRef.current) {
+          return;
+        }
+        const events = Array.isArray(response.events) ? response.events : [];
+        if (!events.length) {
+          return;
+        }
+
+        let activeLog: LogSource | null = activeJobRef.current;
+
+        for (const event of events) {
+          const eventId = typeof event.event_id === "string" ? event.event_id : "";
+          if (!eventId) {
+            continue;
+          }
+
+          if (typeof event.reason === "string" && event.type === "start") {
+            const inferred = inferLogSourceFromReason(event.reason);
+            if (activeJobRef.current !== inferred) {
+              if (inferred === "direct") {
+                directEventIdsRef.current = new Set<string>();
+                directTrackerRef.current = createProgressTracker();
+              } else {
+                adminEventIdsRef.current = new Set<string>();
+                adminTrackerRef.current = createProgressTracker();
+              }
+            }
+            activeLog = inferred;
+            lastReasonRef.current = event.reason;
+            activeJobRef.current = inferred;
+          } else if (!activeLog) {
+            activeLog = inferLogSourceFromReason(typeof event.reason === "string" ? event.reason : lastReasonRef.current);
+          }
+
+          const target = activeLog ?? "direct";
+          const seen = target === "admin" ? adminEventIdsRef.current : directEventIdsRef.current;
+          const append = target === "admin" ? appendAdminLog : appendDirectLog;
+          processSummaryEvents([event], append, seen);
+        }
+      } catch {
+        // ignore hydration failures
+      }
+    };
+
+    replayEvents();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appendAdminLog, appendDirectLog, isHydrated]);
+
+  useEffect(() => {
+    return subscribeToSummarizer(({ status: nextStatus, events }) => {
+      if (abortRef.current) {
+        return;
+      }
+
+      let target: LogSource | null = activeJobRef.current;
+
+      if (events.length) {
+        for (const event of events) {
+          if (typeof event.reason === "string" && event.type === "start") {
+            const inferred = inferLogSourceFromReason(event.reason);
+            if (activeJobRef.current !== inferred) {
+              if (inferred === "direct") {
+                directEventIdsRef.current = new Set<string>();
+                directTrackerRef.current = createProgressTracker();
+              } else {
+                adminEventIdsRef.current = new Set<string>();
+                adminTrackerRef.current = createProgressTracker();
+              }
+            }
+            target = inferred;
+            activeJobRef.current = inferred;
+            lastReasonRef.current = event.reason;
+            break;
+          }
+        }
+      }
+
+      if (!target && events.length) {
+        target = inferLogSourceFromReason(
+          typeof events[events.length - 1]?.reason === "string" ? events[events.length - 1].reason : lastReasonRef.current
+        );
+        activeJobRef.current = target;
+      }
+
+      if (events.length) {
+        const chosenTarget = target ?? "direct";
+        const seen = chosenTarget === "admin" ? adminEventIdsRef.current : directEventIdsRef.current;
+        const append = chosenTarget === "admin" ? appendAdminLog : appendDirectLog;
+        processSummaryEvents(events, append, seen);
+      }
+
+      if (nextStatus) {
+        const chosenTarget = target ?? "direct";
+        const tracker = chosenTarget === "admin" ? adminTrackerRef.current : directTrackerRef.current;
+        const updateProgressFn = chosenTarget === "admin" ? updateAdminProgress : updateDirectProgress;
+        const append = chosenTarget === "admin" ? appendAdminLog : appendDirectLog;
+        updateSummaryStatus(nextStatus, append, updateProgressFn, tracker, null, setGlobalSummarizerStatus);
+
+        if (isTerminalSummaryState(nextStatus.state)) {
+          if (chosenTarget === "direct") {
+            directTrackerRef.current = createProgressTracker();
+            directEventIdsRef.current = new Set<string>();
+          } else {
+            adminTrackerRef.current = createProgressTracker();
+            adminEventIdsRef.current = new Set<string>();
+          }
+          activeJobRef.current = null;
+          lastReasonRef.current = null;
+        }
+      }
+    });
+  }, [
+    appendAdminLog,
+    appendDirectLog,
+    setGlobalSummarizerStatus,
+    subscribeToSummarizer,
+    updateAdminProgress,
+    updateDirectProgress
+  ]);
+
+
   const refreshDatasetMeta = useCallback(async () => {
     try {
       const meta = await apiGet<DatasetMeta>("api/v1/datasets/meta");
@@ -613,6 +922,43 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
       throw error;
     }
   }, []);
+
+  const syncGlobalProgress = useCallback(
+    (status: SummaryStatus, latestMessage?: string | null) => {
+      const total = Math.max(0, Math.trunc(status.total ?? 0));
+      const completed = Math.max(0, Math.trunc(status.completed ?? 0));
+      const rawMessage =
+        typeof latestMessage === "string" && latestMessage.trim().length
+          ? latestMessage.trim()
+          : typeof status.message === "string"
+            ? status.message.trim()
+            : "";
+      const message = rawMessage || null;
+
+      if (status.state === "running") {
+        setGlobalSummarizerStatus({
+          state: status.state,
+          total,
+          completed,
+          message
+        });
+        return;
+      }
+
+      if (status.state === "completed" || status.state === "failed" || status.state === "cancelled") {
+        setGlobalSummarizerStatus({
+          state: status.state,
+          total,
+          completed,
+          message
+        });
+        return;
+      }
+
+      setGlobalSummarizerStatus(null);
+    },
+    [setGlobalSummarizerStatus]
+  );
 
   const pollSummaries = useCallback(
     async ({
@@ -631,7 +977,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
         }
       }
 
-      while (!abortRef.current) {
+      while (true) {
         let nextStatus: SummaryStatus;
         try {
           nextStatus = await apiGet<SummaryStatus>("api/v1/summaries/status");
@@ -655,16 +1001,6 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
 
         await sleep(SUMMARY_POLL_INTERVAL_MS);
       }
-
-      return (
-        current ?? {
-          state: "cancelled",
-          total: 0,
-          completed: 0,
-          message: "Cancelled",
-          last_event: null
-        }
-      );
     },
     []
   );
@@ -796,18 +1132,24 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
           appendDirectLog("🤖", `Retrieved ${formatCount(modelCount, "model")}`);
         }
 
+        // Refresh dataset metadata immediately after sync completes
+        await refreshDatasetMeta();
+
         if (summarizerEnqueued) {
           const targetCount = queuedChatIds.length ? queuedChatIds.length : newChats || chatCount;
           appendDirectLog("🤖", `Creating new summaries for ${formatCount(targetCount, "chat")}.`);
           appendDirectLog("🧠", "Building chat summaries...");
-          const seenEvents = new Set<string>();
-          const progressTracker = createProgressTracker();
+          directEventIdsRef.current = new Set<string>();
+          directTrackerRef.current = createProgressTracker();
+          activeJobRef.current = "direct";
+          lastReasonRef.current = "openwebui_sync";
+          const progressTracker = directTrackerRef.current;
 
           let finalStatus: SummaryStatus | null = null;
           try {
             finalStatus = await pollSummaries({
               onStatus: (status) =>
-                updateSummaryStatus(status, appendDirectLog, setDirectProgress, seenEvents, progressTracker)
+                updateSummaryStatus(status, appendDirectLog, updateDirectProgress, progressTracker, null, syncGlobalProgress)
             });
           } catch (error) {
             const message = error instanceof Error ? error.message : "Unknown error";
@@ -840,7 +1182,6 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
         }
 
         appendDirectLog("✅", "Done");
-        await refreshDatasetMeta();
         toast({
           title: "Open WebUI data synced",
           description: "Chats and metadata imported successfully."
@@ -848,19 +1189,33 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
         appendDirectLog("❌", `Failed to connect: ${message}`);
-        toast({
-          title: "Sync failed",
-          description: `Failed to sync data: ${message}`,
-          variant: "destructive"
-        });
-      } finally {
-        if (!abortRef.current) {
-          setIsSyncing(false);
-          setDirectProgress(null);
-        }
+      toast({
+        title: "Sync failed",
+        description: `Failed to sync data: ${message}`,
+        variant: "destructive"
+      });
+    } finally {
+      activeJobRef.current = null;
+      lastReasonRef.current = null;
+      directTrackerRef.current = createProgressTracker();
+      directEventIdsRef.current = new Set<string>();
+      if (!abortRef.current) {
+        setIsSyncing(false);
+        setDirectProgress(null);
       }
+    }
     },
-    [apiKey, appendDirectLog, hostname, isSyncing, pollSummaries, refreshDatasetMeta, toast]
+    [
+      apiKey,
+      appendDirectLog,
+      hostname,
+      isSyncing,
+      pollSummaries,
+      refreshDatasetMeta,
+      syncGlobalProgress,
+      toast,
+      updateDirectProgress
+    ]
   );
 
   const handleReset = useCallback(async () => {
@@ -917,8 +1272,11 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
     setAdminProgress(null);
     appendAdminLog("🔁", "Queuing manual summary rebuild...");
 
-    const seenEvents = new Set<string>();
-    const progressTracker = createProgressTracker();
+    adminEventIdsRef.current = new Set<string>();
+    adminTrackerRef.current = createProgressTracker();
+    activeJobRef.current = "admin";
+    lastReasonRef.current = "manual_rebuild";
+    const progressTracker = adminTrackerRef.current;
     try {
       let initialStatus: SummaryStatus;
       try {
@@ -934,7 +1292,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
         return;
       }
 
-      updateSummaryStatus(initialStatus, appendAdminLog, setAdminProgress, seenEvents, progressTracker);
+      updateSummaryStatus(initialStatus, appendAdminLog, updateAdminProgress, progressTracker, null, syncGlobalProgress);
 
       const state = initialStatus.state;
       if (state === "failed") {
@@ -960,7 +1318,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
       try {
         finalStatus = await pollSummaries({
           onStatus: (status) =>
-            updateSummaryStatus(status, appendAdminLog, setAdminProgress, seenEvents, progressTracker),
+            updateSummaryStatus(status, appendAdminLog, updateAdminProgress, progressTracker, null, syncGlobalProgress),
           initialStatus
         });
       } catch (error) {
@@ -1006,12 +1364,25 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
         appendAdminLog("ℹ️", "Summaries still running in the background.");
       }
     } finally {
+      activeJobRef.current = null;
+      lastReasonRef.current = null;
+      adminTrackerRef.current = createProgressTracker();
+      adminEventIdsRef.current = new Set<string>();
       if (!abortRef.current) {
         setIsRebuilding(false);
         setAdminProgress(null);
       }
     }
-  }, [appendAdminLog, datasetHasChats, isRebuilding, pollSummaries, refreshDatasetMeta, toast]);
+  }, [
+    appendAdminLog,
+    datasetHasChats,
+    isRebuilding,
+    pollSummaries,
+    refreshDatasetMeta,
+    syncGlobalProgress,
+    toast,
+    updateAdminProgress
+  ]);
 
   const handleBackendRetry = useCallback(async () => {
     setMetaError(null);
@@ -1092,10 +1463,10 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
                 ) : (
                   datasetSummary.sourceDetail && <p className="text-sm text-muted-foreground">{datasetSummary.sourceDetail}</p>
                 )}
-                <p className="text-sm text-muted-foreground">
+                <p className="text-sm text-muted-foreground" suppressHydrationWarning>
                   Last pulled: {datasetSummary.lastLoadedDisplay}
                   {datasetSummary.lastLoadedRelative && datasetSummary.lastLoadedRelative !== "0 days" ? (
-                    <span className="ml-1 text-xs text-muted-foreground/80">
+                    <span className="ml-1 text-xs text-muted-foreground/80" suppressHydrationWarning>
                       ({datasetSummary.lastLoadedRelative})
                     </span>
                   ) : null}
@@ -1108,22 +1479,22 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
             <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Chats</p>
               <div className="mt-2 space-y-1 text-sm text-muted-foreground">
-                <p>Uploaded: {datasetSummary.chatUploaded}</p>
+                <p suppressHydrationWarning>Uploaded: {datasetSummary.chatUploaded}</p>
                 <p>Count: {datasetSummary.chatCountDisplay}</p>
-                <p>Range: {datasetSummary.dateRange}</p>
+                <p suppressHydrationWarning>Range: {datasetSummary.dateRange}</p>
               </div>
             </div>
             <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Users</p>
               <div className="mt-2 space-y-1 text-sm text-muted-foreground">
-                <p>Uploaded: {datasetSummary.userUploaded}</p>
+                <p suppressHydrationWarning>Uploaded: {datasetSummary.userUploaded}</p>
                 <p>Count: {datasetSummary.userCountDisplay}</p>
               </div>
             </div>
             <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Models</p>
               <div className="mt-2 space-y-1 text-sm text-muted-foreground">
-                <p>Uploaded: {datasetSummary.modelUploaded}</p>
+                <p suppressHydrationWarning>Uploaded: {datasetSummary.modelUploaded}</p>
                 <p>Count: {datasetSummary.modelCountDisplay}</p>
               </div>
             </div>
@@ -1153,7 +1524,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
                   id="hostname"
                   placeholder="http://localhost:3000"
                   value={hostname}
-                  onChange={(event) => setHostname(event.target.value)}
+                  onChange={handleHostnameChange}
                 />
               </div>
               <div className="space-y-2">
@@ -1167,7 +1538,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
                   placeholder="sk-..."
                   type="password"
                   value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
+                  onChange={handleApiKeyChange}
                 />
               </div>
               <div className="flex items-center gap-3">
@@ -1176,10 +1547,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
                 </Button>
                 <Button
                   disabled={isSyncing}
-                  onClick={() => {
-                    setHostname(defaults.host.trim());
-                    setApiKey(defaults.apiKey.trim());
-                  }}
+                  onClick={handleResetToDefaults}
                   type="button"
                   variant="outline"
                 >

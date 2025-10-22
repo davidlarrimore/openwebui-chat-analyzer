@@ -9,14 +9,13 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
     func,
     Index,
-    text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 
 from .db import Base
 
@@ -52,12 +51,12 @@ class ChatRecord(TimestampMixin, Base):
     timestamp = Column(DateTime(timezone=True), nullable=True)
     archived = Column(Boolean, nullable=False, server_default="false")
     pinned = Column(Boolean, nullable=False, server_default="false")
-    tags = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    tags = Column(JSON, nullable=False, default=list)
     files_uploaded = Column(Integer, nullable=False, server_default="0")
-    files = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    meta = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
-    models = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    params = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    files = Column(JSON, nullable=False, default=list)
+    meta = Column(JSON, nullable=False, default=dict)
+    models = Column(JSON, nullable=False, default=list)
+    params = Column(JSON, nullable=False, default=dict)
     share_id = Column(String(255), nullable=True)
     folder_id = Column(String(255), nullable=True)
     history_current_id = Column(String(255), nullable=True)
@@ -81,20 +80,20 @@ class MessageRecord(TimestampMixin, Base):
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime(timezone=True), nullable=True)
     model = Column(String(255), nullable=True)
-    models = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    children_ids = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    follow_ups = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    status_history = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    sources = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    files = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    annotation = Column(JSONB, nullable=True)
+    models = Column(JSON, nullable=False, default=list)
+    children_ids = Column(JSON, nullable=False, default=list)
+    follow_ups = Column(JSON, nullable=False, default=list)
+    status_history = Column(JSON, nullable=False, default=list)
+    sources = Column(JSON, nullable=False, default=list)
+    files = Column(JSON, nullable=False, default=list)
+    annotation = Column(JSON, nullable=True)
     model_name = Column(String(255), nullable=True)
     model_index = Column(Integer, nullable=True)
     last_sentence = Column(Text, nullable=True)
     done = Column(Boolean, nullable=True)
     favorite = Column(Boolean, nullable=True)
     feedback_id = Column(String(255), nullable=True)
-    error = Column(JSONB, nullable=True)
+    error = Column(JSON, nullable=True)
 
 
 Index("ix_messages_chat_parent", MessageRecord.chat_id, MessageRecord.parent_id)
@@ -108,6 +107,8 @@ class OpenWebUIUser(TimestampMixin, Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(String(255), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=False)
+    email = Column(String(320), nullable=True)
+    role = Column(String(64), nullable=True)
 
 
 class ModelRecord(TimestampMixin, Base):
@@ -121,7 +122,7 @@ class ModelRecord(TimestampMixin, Base):
     owned_by = Column(String(255), nullable=True)
     connection_type = Column(String(255), nullable=True)
     object_type = Column(String(255), nullable=True)
-    raw = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    raw = Column(JSON, nullable=False, default=dict)
 
 
 class Account(TimestampMixin, Base):
@@ -143,7 +144,7 @@ class Setting(TimestampMixin, Base):
 
     id = Column(Integer, primary_key=True)
     key = Column(String(128), nullable=False)
-    value = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    value = Column(JSON, nullable=False, default=dict)
 
     __table_args__ = (
         UniqueConstraint("key", name="uq_settings_key"),
@@ -159,7 +160,7 @@ class IngestLog(TimestampMixin, Base):
     operation = Column(String(128), nullable=False, index=True)
     source = Column(String(512), nullable=True)
     record_count = Column(Integer, nullable=False, server_default="0")
-    details = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    details = Column(JSON, nullable=False, default=dict)
     started_at = Column(DateTime(timezone=True), nullable=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)
     notes = Column(Text, nullable=True)

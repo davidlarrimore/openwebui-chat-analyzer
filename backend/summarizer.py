@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -23,8 +24,8 @@ from .config import (
 MAX_CHARS = int(os.getenv("SUMMARY_MAX_CHARS", "256"))
 SALIENT_K = int(os.getenv("SALIENT_K", "10"))
 EMB_MODEL_NAME = os.getenv("EMB_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-CHUNK_CHAR_LIMIT = max(256, int(os.getenv("SUMMARY_CHUNK_CHAR_LIMIT", "1800")))
-CHUNK_OVERLAP_LINES = max(0, int(os.getenv("SUMMARY_CHUNK_OVERLAP_LINES", "2")))
+SUMMARY_BATCH_TOKEN_LIMIT = max(1024, int(os.getenv("SUMMARY_BATCH_TOKEN_LIMIT", "16000")))
+SUMMARY_BATCH_MAX_OUTPUT_TOKENS = max(256, int(os.getenv("SUMMARY_BATCH_MAX_OUTPUT_TOKENS", "1024")))
 
 def _normalize_base_url(value: str) -> str:
     """Normalize a host string into a usable HTTP base URL."""
@@ -62,7 +63,16 @@ _logger = logging.getLogger(__name__)
 if not _logger.handlers:
     logging.basicConfig(level=logging.INFO)
 
-_embeddings_model = SentenceTransformer(EMB_MODEL_NAME)
+_embeddings_model: Optional[SentenceTransformer] = None
+
+def _get_embeddings_model() -> SentenceTransformer:
+    """Lazy-load the sentence transformer model to avoid blocking application startup."""
+    global _embeddings_model
+    if _embeddings_model is None:
+        _logger.info("Loading SentenceTransformer model: %s", EMB_MODEL_NAME)
+        _embeddings_model = SentenceTransformer(EMB_MODEL_NAME)
+    return _embeddings_model
+
 _requests_session = requests.Session()
 _requests_session.headers.update({"Accept": "application/json"})
 if OWUI_API_KEY:
@@ -78,6 +88,25 @@ _HEADLINE_USER_TMPL = (
     "Be specific about the topic or subject matter.\n\n"
     "Context:\n{ctx}\n\n"
     "Summary:"
+)
+
+_BATCH_HEADLINE_SYS = (
+    "You write concise, single-line conversation summaries that describe both the topic and "
+    "key points for each chat you receive. You always respond with strictly valid JSON and nothing else."
+)
+_BATCH_HEADLINE_USER_TMPL = (
+    "You will be given multiple chat transcripts as JSON objects with keys `chat_id` and "
+    "`lines`. Each `lines` value is an ordered list of \"role: message\" entries representing "
+    "a conversation between a user and an assistant.\n\n"
+    "For every chat:\n"
+    "1. Write a single sentence summary under 256 characters.\n"
+    "2. Capture the user's main intent, whether it was fulfilled, and the type of response provided.\n"
+    "3. Do not include quotation marks or trailing punctuation at the end of the summary.\n\n"
+    "CRITICAL: You must return ONLY a valid JSON array with NO additional text, commentary, or markdown formatting.\n"
+    "Each object in the array MUST have exactly this structure:\n"
+    "{{\"chat_id\": \"<exact_chat_id_from_input>\", \"summary\": \"<your_summary_here>\"}}\n\n"
+    "Ensure every chat_id from the input appears in your response with its corresponding summary.\n\n"
+    "Chats:\n{payload}"
 )
 
 
@@ -128,45 +157,6 @@ def _build_context_from_lines(lines: Sequence[str]) -> str:
     return " ".join(salient)
 
 
-def _chunk_chat_lines(lines: Sequence[str]) -> List[List[str]]:
-    """Split chat lines into manageable chunks for multi-stage summarization."""
-    if not lines:
-        return []
-
-    if CHUNK_CHAR_LIMIT <= 0:
-        return [list(lines)]
-
-    chunks: List[List[str]] = []
-    current: List[str] = []
-    current_len = 0
-
-    def _push_chunk() -> None:
-        nonlocal current, current_len
-        if current:
-            chunks.append(current)
-            if CHUNK_OVERLAP_LINES > 0:
-                overlap = current[-CHUNK_OVERLAP_LINES :]
-                current = list(overlap)
-                current_len = sum(len(entry) + 1 for entry in current)
-            else:
-                current = []
-                current_len = 0
-
-    for line in lines:
-        line_length = len(line)
-        if current and current_len + line_length + 1 > CHUNK_CHAR_LIMIT:
-            _push_chunk()
-        current.append(line)
-        current_len += line_length + 1
-
-    if current:
-        chunks.append(current)
-
-    if not chunks:
-        return [list(lines)]
-    return chunks
-
-
 def _cosine_sim_matrix(embeddings: np.ndarray) -> np.ndarray:
     """Compute a cosine similarity matrix for ranking diverse snippets."""
     return embeddings @ embeddings.T
@@ -188,7 +178,7 @@ def _select_salient(lines: Sequence[str], k: int) -> List[str]:
     if len(lines) <= limit:
         return list(lines)
 
-    embeddings = _embeddings_model.encode(
+    embeddings = _get_embeddings_model().encode(
         list(lines),
         convert_to_numpy=True,
         normalize_embeddings=True,
@@ -367,6 +357,208 @@ def _headline_with_llm(context: str) -> str:
         return ""
 
 
+def _estimate_token_length(text: str) -> int:
+    """Approximate the token length of a prompt using a simple character heuristic."""
+    if not text:
+        return 0
+    cleaned = text.strip()
+    if not cleaned:
+        return 0
+    return max(1, len(cleaned) // 4)
+
+
+def _build_batch_payload(batch_items: Sequence[Mapping[str, object]]) -> str:
+    """Serialize chat batches into JSON payloads for the batch summarization prompt."""
+    payload: List[Dict[str, object]] = []
+    for item in batch_items:
+        chat_id = str(item.get("chat_id") or "").strip()
+        raw_lines = item.get("lines")
+        if isinstance(raw_lines, list):
+            lines = [str(entry) for entry in raw_lines if str(entry).strip()]
+        else:
+            lines = []
+        payload.append({"chat_id": chat_id, "lines": lines})
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _strip_json_block(text: str) -> str:
+    """Remove Markdown code fences or leading commentary from model responses."""
+    if not text:
+        return ""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        segments = cleaned.split("```")
+        if len(segments) >= 3:
+            cleaned = segments[1]
+        else:
+            cleaned = segments[-1]
+    return cleaned.strip()
+
+
+def _parse_batch_response(text: str) -> Dict[str, str]:
+    """Extract chat summaries from a JSON response payload."""
+    cleaned = _strip_json_block(text)
+    if not cleaned:
+        _logger.debug("Batch response was empty after stripping JSON blocks")
+        return {}
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        _logger.debug("No valid JSON array found in batch response")
+        return {}
+    snippet = cleaned[start : end + 1]
+    try:
+        data = json.loads(snippet)
+    except ValueError as exc:
+        _logger.warning("Failed to parse JSON from batch response: %s", exc)
+        return {}
+
+    results: Dict[str, str] = {}
+    if not isinstance(data, list):
+        _logger.warning("Batch response JSON is not an array, got type: %s", type(data).__name__)
+        return results
+
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        chat_id = str(entry.get("chat_id") or "").strip()
+        summary = str(entry.get("summary") or "").strip()
+        if chat_id and summary:
+            results[chat_id] = summary
+        elif chat_id:
+            _logger.debug("Chat %s has empty summary in batch response", chat_id)
+
+    _logger.debug("Parsed %d summaries from batch response", len(results))
+    return results
+
+
+def _batch_headlines_with_ollama(payload: str, *, model: str = OLLAMA_SUMMARY_MODEL) -> str:
+    """Generate batch summaries using the local Ollama service."""
+    client = get_ollama_client()
+    options = {
+        "temperature": OLLAMA_DEFAULT_TEMPERATURE,
+        "num_predict": SUMMARY_BATCH_MAX_OUTPUT_TOKENS,
+    }
+    prompt = _BATCH_HEADLINE_USER_TMPL.format(payload=payload)
+    result = client.generate(
+        prompt=prompt,
+        model=model,
+        system=_BATCH_HEADLINE_SYS,
+        options=options,
+    )
+    return str(result.response or "").strip()
+
+
+def _batch_headlines_with_openwebui(payload_json: str) -> str:
+    """Call the Open WebUI completion endpoint for batch summarization."""
+    payload = {
+        "model": OWUI_COMPLETIONS_MODEL,
+        "temperature": 0.1,
+        "max_tokens": SUMMARY_BATCH_MAX_OUTPUT_TOKENS,
+        "messages": [
+            {"role": "system", "content": _BATCH_HEADLINE_SYS},
+            {"role": "user", "content": _BATCH_HEADLINE_USER_TMPL.format(payload=payload_json)},
+        ],
+    }
+
+    try:
+        response = _requests_session.post(
+            _OWUI_COMPLETIONS_URL,
+            json=payload,
+            timeout=90,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f"Open WebUI batch completion request failed: {exc}") from exc
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Open WebUI batch completion response was not valid JSON.") from exc
+
+    text = ""
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        primary = choices[0] or {}
+        message = primary.get("message")
+        if isinstance(message, dict):
+            text = str(message.get("content") or "").strip()
+        if not text:
+            text_candidate = primary.get("text")
+            if isinstance(text_candidate, str):
+                text = text_candidate.strip()
+    return text
+
+
+def _batch_headlines_with_llm(batch_items: Sequence[Dict[str, object]]) -> Dict[str, str]:
+    """Request batched chat summaries via Ollama, falling back to Open WebUI when needed."""
+    if not batch_items:
+        return {}
+
+    prompt_payload = _build_batch_payload(batch_items)
+    try:
+        response_text = _batch_headlines_with_ollama(prompt_payload)
+        parsed = _parse_batch_response(response_text)
+        if parsed:
+            return parsed
+    except OllamaOutOfMemoryError as exc:
+        fallback_model = (
+            OLLAMA_SUMMARY_FALLBACK_MODEL
+            if OLLAMA_SUMMARY_FALLBACK_MODEL and OLLAMA_SUMMARY_FALLBACK_MODEL != OLLAMA_SUMMARY_MODEL
+            else ""
+        )
+        if fallback_model:
+            _logger.warning(
+                "Ollama batch summarization ran out of memory; retrying with fallback model %s.",
+                fallback_model,
+                exc_info=True,
+            )
+            try:
+                response_text = _batch_headlines_with_ollama(prompt_payload, model=fallback_model)
+                parsed = _parse_batch_response(response_text)
+                if parsed:
+                    return parsed
+            except OllamaClientError as fallback_exc:
+                _logger.warning(
+                    "Ollama fallback batch model %s failed: %s",
+                    fallback_model,
+                    fallback_exc,
+                    exc_info=True,
+                )
+        else:
+            _logger.warning(
+                "Ollama batch summarization failed due to OOM and no fallback model is configured.",
+                exc_info=True,
+            )
+    except OllamaClientError as exc:
+        _logger.warning(
+            "Ollama batch summarization failed: %s",
+            exc,
+            exc_info=True,
+        )
+    except Exception as exc:  # pragma: no cover - logged for observability.
+        _logger.warning(
+            "Unexpected error during Ollama batch summarization: %s",
+            exc,
+            exc_info=True,
+        )
+
+    try:
+        response_text = _batch_headlines_with_openwebui(prompt_payload)
+        parsed = _parse_batch_response(response_text)
+        if parsed:
+            return parsed
+    except Exception as exc:  # pragma: no cover - logged for observability.
+        _logger.warning("Open WebUI batch summarization failed: %s", exc, exc_info=True)
+
+    return {}
+
+
+def _summarize_batch_items(batch_items: Sequence[Dict[str, object]]) -> Dict[str, str]:
+    """Wrapper used by summarize_chats to facilitate monkeypatching in tests."""
+    return _batch_headlines_with_llm(batch_items)
+
+
 def _summarize_context(context: str) -> str:
     """Generate a summary via the LLM with a deterministic fallback.
 
@@ -412,6 +604,7 @@ def summarize_chats(
     on_progress: ProgressCallback = None,
     *,
     replace_existing: bool = False,
+    on_batch_complete: Optional[Callable[[Dict[str, str]], None]] = None,
 ) -> tuple[Dict[str, str], Dict[str, int]]:
     """Summarize chats and return a map of chat_id -> summary plus stats.
 
@@ -420,6 +613,8 @@ def summarize_chats(
         messages (Sequence[Mapping[str, object]]): All messages in the dataset.
         on_progress (ProgressCallback, optional): Callback invoked after each chat.
         replace_existing (bool, optional): When True, regenerate summaries even if one already exists.
+        on_batch_complete (Callable[[Dict[str, str]], None], optional): Callback invoked after each batch
+            is processed with the batch summaries for immediate persistence.
     Returns:
         tuple[Dict[str, str], Dict[str, int]]: Summary map and aggregate statistics.
     """
@@ -444,15 +639,103 @@ def summarize_chats(
     failures = 0
     generated = 0
 
+    pending_batch: List[Dict[str, object]] = []
+    pending_tokens = 0
+
+    def _flush_pending_batch() -> None:
+        nonlocal pending_batch, pending_tokens, generated, failures
+        if not pending_batch:
+            return
+
+        batch_size = len(pending_batch)
+        batch_chat_ids = [item["chat_id"] for item in pending_batch]
+        _logger.info(
+            "Processing batch of %d chats (estimated %d tokens)",
+            batch_size,
+            pending_tokens,
+        )
+
+        try:
+            batch_results = _summarize_batch_items(pending_batch)
+            _logger.info(
+                "Batch summarization returned %d summaries for %d chats",
+                len(batch_results),
+                batch_size,
+            )
+        except Exception as exc:  # pragma: no cover - logged for observability.
+            _logger.warning(
+                "Batch summarization failed; falling back to per-chat summaries: %s",
+                exc,
+                exc_info=True,
+            )
+            batch_results = {}
+
+        # Collect summaries for this batch to persist immediately
+        batch_summaries: Dict[str, str] = {}
+
+        for item in pending_batch:
+            chat = item["chat"]
+            chat_id = item["chat_id"]
+            previous_summary = item["previous_summary"]
+            fallback_context = item["context"]
+
+            summary_text = str(batch_results.get(chat_id) or "").strip()
+            if summary_text:
+                summary_text = _trim_one_line(summary_text, MAX_CHARS)
+            elif batch_results:
+                # Batch returned results but not for this chat_id - log and fall back
+                _logger.debug(
+                    "Chat %s missing from batch results; falling back to individual summarization",
+                    chat_id,
+                )
+            if not summary_text:
+                summary_text = _summarize_context(fallback_context)
+
+            if summary_text:
+                generated += 1
+                summary_map[chat_id] = summary_text
+                chat["summary_128"] = summary_text
+                batch_summaries[chat_id] = summary_text
+                outcome = "generated"
+            else:
+                failures += 1
+                chat["summary_128"] = previous_summary if previous_summary else ""
+                outcome = "failed"
+
+            if on_progress:
+                details = {
+                    "type": "chat",
+                    "chat_id": chat_id,
+                    "completed": item["position"],
+                    "total": total,
+                    "outcome": outcome,
+                    "event_id": f"chat-{chat_id or 'unknown'}-{item['position']}",
+                }
+                try:
+                    on_progress(item["position"], total, chat_id, outcome, details)
+                except Exception:  # pragma: no cover
+                    pass
+
+        # Persist batch summaries immediately to database
+        if on_batch_complete and batch_summaries:
+            try:
+                on_batch_complete(batch_summaries)
+                _logger.info("Persisted %d summaries from batch to database", len(batch_summaries))
+            except Exception as exc:  # pragma: no cover
+                _logger.warning("Failed to persist batch summaries: %s", exc, exc_info=True)
+
+        pending_batch = []
+        pending_tokens = 0
+
     for idx, chat in enumerate(chats_list, start=1):
         chat_id_raw = chat.get("chat_id")
         chat_id = str(chat_id_raw) if chat_id_raw not in (None, "") else ""
         existing_summary = str(chat.get("summary_128") or "").strip()
         has_existing_summary = bool(existing_summary)
+
         if has_existing_summary and not replace_existing:
             chat["summary_128"] = existing_summary
             skipped += 1
-            # Skip work for chats that ship with a pre-computed summary in the export.
             if on_progress:
                 details = {
                     "type": "skip",
@@ -466,13 +749,13 @@ def summarize_chats(
                 except Exception:  # pragma: no cover
                     pass
             continue
+
         previous_summary = existing_summary if has_existing_summary else ""
 
         if not chat_id:
             chat["summary_128"] = previous_summary if previous_summary else ""
             failures += 1
             if on_progress:
-                # Invalid chats are tracked as failures so the UI can surface data issues.
                 details = {
                     "type": "invalid_chat",
                     "chat_id": chat_id,
@@ -492,7 +775,6 @@ def summarize_chats(
             chat["summary_128"] = previous_summary if previous_summary else ""
             failures += 1
             if on_progress:
-                # Chats without user/assistant messages cannot be summarized meaningfully.
                 details = {
                     "type": "empty_context",
                     "chat_id": chat_id,
@@ -506,81 +788,31 @@ def summarize_chats(
                     pass
             continue
 
-        chunk_line_groups = _chunk_chat_lines(lines)
-        chunk_contexts: List[str] = []
-        for group in chunk_line_groups:
-            context = _build_context_from_lines(group)
-            if not context:
-                context = " ".join(group)
-            chunk_contexts.append(context)
+        context = _build_context_from_lines(lines)
+        if not context:
+            context = " ".join(lines)
+        if not context:
+            context = " ".join(lines[: SALIENT_K])
 
-        chunk_summaries: List[str] = []
-        multi_chunk = len(chunk_contexts) > 1
-        for chunk_index, chunk_context in enumerate(chunk_contexts, start=1):
-            if not chunk_context:
-                continue
-            if multi_chunk and on_progress:
-                details = {
-                    "type": "chunk",
-                    "chat_id": chat_id,
-                    "chunk_index": chunk_index,
-                    "chunk_count": len(chunk_contexts),
-                    "completed": idx - 1 if idx > 0 else 0,
-                    "total": total,
-                    "event_id": f"chunk-{chat_id or 'unknown'}-{idx}-{chunk_index}",
-                }
-                try:
-                    on_progress(max(idx - 1, 0), total, chat_id, "chunk", details)
-                except Exception:  # pragma: no cover
-                    pass
-            chunk_summary = _summarize_context(chunk_context)
-            if chunk_summary:
-                chunk_summaries.append(chunk_summary)
-            else:
-                chunk_summaries.append(_trim_one_line(chunk_context))
+        prompt_lines = "\n".join(lines)
+        token_estimate = _estimate_token_length(prompt_lines) + 64
+        if pending_batch and pending_tokens + token_estimate > SUMMARY_BATCH_TOKEN_LIMIT:
+            _flush_pending_batch()
 
-        summary_text = ""
-        if chunk_summaries:
-            if len(chunk_summaries) == 1:
-                summary_text = chunk_summaries[0]
-            else:
-                combined_context = " ".join(chunk_summaries)
-                summary_text = _summarize_context(combined_context)
-                if not summary_text:
-                    summary_text = _trim_one_line(combined_context)
-        else:
-            fallback_context = _build_context_from_lines(lines)
-            if fallback_context:
-                summary_text = _summarize_context(fallback_context)
-                if not summary_text:
-                    summary_text = _trim_one_line(fallback_context)
-            else:
-                summary_text = ""
-        chat["summary_128"] = summary_text
-
-        if summary_text:
-            generated += 1
-            summary_map[chat_id] = summary_text
-            outcome = "generated"
-        else:
-            # Treat empty strings from the model as failures so totals still reconcile.
-            failures += 1
-            chat["summary_128"] = previous_summary if previous_summary else ""
-            outcome = "failed"
-
-        if on_progress:
-            details = {
-                "type": "chat",
+        pending_batch.append(
+            {
+                "chat": chat,
                 "chat_id": chat_id,
-                "completed": idx,
-                "total": total,
-                "outcome": outcome,
-                "event_id": f"chat-{chat_id or 'unknown'}-{idx}",
+                "context": context,
+                "lines": lines,
+                "position": idx,
+                "previous_summary": previous_summary,
             }
-            try:
-                on_progress(idx, total, chat_id, outcome, details)
-            except Exception:  # pragma: no cover
-                pass
+        )
+        pending_tokens += min(token_estimate, SUMMARY_BATCH_TOKEN_LIMIT)
+
+    _flush_pending_batch()
+
     stats = {
         "total": total,
         "skipped": skipped,

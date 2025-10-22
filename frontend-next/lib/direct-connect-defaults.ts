@@ -15,6 +15,8 @@ export type DirectConnectDefaultResult = {
   apiKey: string;
   hostSource: "database" | "environment" | "default";
   apiKeySource: "database" | "environment" | "empty";
+  databaseHost: string;
+  databaseApiKey: string;
 };
 
 function collectSearchDirectories(): string[] {
@@ -134,7 +136,14 @@ function loadEnvDefaults(): DirectConnectDefaultResult {
   const apiKey = envApiKey || "";
   const apiKeySource: DirectConnectDefaultResult["apiKeySource"] = envApiKey ? "environment" : "empty";
 
-  return { host, apiKey, hostSource, apiKeySource };
+  return {
+    host,
+    apiKey,
+    hostSource,
+    apiKeySource,
+    databaseHost: "",
+    databaseApiKey: ""
+  };
 }
 
 export async function getDirectConnectDefaults(): Promise<DirectConnectDefaultResult> {
@@ -146,16 +155,27 @@ export async function getDirectConnectDefaults(): Promise<DirectConnectDefaultRe
       return fallback;
     }
 
+    const hostSource = payload.host_source ?? fallback.hostSource;
+    const apiKeySource = payload.api_key_source ?? fallback.apiKeySource;
+
+    const rawHost = typeof payload.host === "string" ? payload.host.trim() : "";
+    const rawApiKey = typeof payload.api_key === "string" ? payload.api_key : "";
+
+    const databaseHost = hostSource === "database" ? rawHost : "";
+    const databaseApiKey = apiKeySource === "database" ? rawApiKey : "";
+
     const host =
-      typeof payload.host === "string" && payload.host.trim() ? payload.host.trim() : fallback.host;
+      hostSource === "database" ? rawHost : rawHost || fallback.host;
     const apiKey =
-      typeof payload.api_key === "string" ? payload.api_key : fallback.apiKey;
+      apiKeySource === "database" ? rawApiKey : rawApiKey || fallback.apiKey;
 
     return {
       host,
       apiKey,
-      hostSource: payload.host_source ?? (host !== fallback.host ? "database" : fallback.hostSource),
-      apiKeySource: payload.api_key_source ?? (apiKey !== fallback.apiKey ? "database" : fallback.apiKeySource)
+      hostSource,
+      apiKeySource,
+      databaseHost,
+      databaseApiKey
     };
   } catch (error) {
     return fallback;

@@ -4,27 +4,6 @@ services:
     volumes:
       - ./backend:/app/backend:rw
 
-  frontend:
-    command:
-      [
-        "streamlit",
-        "run",
-        "frontend/home.py",
-        "--server.address=0.0.0.0",
-        "--server.port=8501",
-        "--server.headless=true",
-        "--server.fileWatcherType=auto",
-        "--server.runOnSave=true",
-      ]
-    volumes:
-      - ./frontend:/app/frontend:rw
-      - ./data:/app/data:rw
-      - ./uploads:/app/uploads:rw
-      - ./.streamlit:/app/.streamlit:ro
-    environment:
-      STREAMLIT_SERVER_FILE_WATCHER_TYPE: auto
-      STREAMLIT_SERVER_RUN_ON_SAVE: "true"
-
   frontend-next:
     command: >
       sh -c "corepack enable &&

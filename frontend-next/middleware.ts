@@ -39,5 +39,6 @@ export default withAuth(
 );
 
 export const config = {
+  // Only protect dashboard routes - explicitly exclude auth pages
   matcher: ["/dashboard/:path*"]
 };

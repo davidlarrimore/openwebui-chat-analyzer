@@ -1,7 +1,8 @@
-"""PostgreSQL persistence helpers for the Open WebUI Chat Analyzer."""
+"""SQLite-backed persistence helpers for the Open WebUI Chat Analyzer."""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
@@ -9,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
-from .db import init_database, session_scope
+from .db import DATABASE_URL, init_database, session_scope
 from .db_models import (
     Account,
     ChatRecord,
@@ -20,6 +21,8 @@ from .db_models import (
     OpenWebUIUser,
     Setting,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -35,11 +38,18 @@ class DatabaseState:
     settings: Dict[str, Any]
 
 
-class PostgresStorage:
+class DatabaseStorage:
     """Utility class encapsulating all database reads and writes."""
 
     def __init__(self) -> None:
-        init_database()
+        safe_url = DATABASE_URL if DATABASE_URL.startswith("sqlite") else "redacted"
+        LOGGER.info("Initializing database storage (database_url=%s)", safe_url)
+        try:
+            init_database()
+        except Exception:  # pylint: disable=broad-except
+            LOGGER.exception("Database initialisation failed")
+            raise
+        LOGGER.info("Database initialisation complete")
 
     # ------------------------------------------------------------------
     # Hydration helpers
@@ -95,7 +105,12 @@ class PostgresStorage:
 
     @staticmethod
     def _user_to_dict(record: OpenWebUIUser) -> Dict[str, Any]:
-        return {"user_id": record.user_id, "name": record.name}
+        return {
+            "user_id": record.user_id,
+            "name": record.name,
+            "email": record.email,
+            "role": record.role,
+        }
 
     @staticmethod
     def _model_to_dict(record: ModelRecord) -> Dict[str, Any]:
@@ -124,6 +139,7 @@ class PostgresStorage:
     # ------------------------------------------------------------------
     def load_state(self) -> DatabaseState:
         """Load the current dataset and metadata from the database."""
+        LOGGER.debug("Loading database state from persistent storage")
         with session_scope() as session:
             chats = [self._chat_to_dict(row) for row in session.execute(select(ChatRecord)).scalars()]
             messages = [
@@ -159,7 +175,7 @@ class PostgresStorage:
                 row.key: row.value for row in session.execute(select(Setting)).scalars()
             }
 
-        return DatabaseState(
+        state = DatabaseState(
             chats=chats,
             messages=messages,
             users=users,
@@ -168,6 +184,15 @@ class PostgresStorage:
             snapshot=snapshot,
             settings=settings,
         )
+        LOGGER.info(
+            "Loaded database state (%d chats, %d messages, %d users, %d models, %d accounts)",
+            len(state.chats),
+            len(state.messages),
+            len(state.users),
+            len(state.models),
+            len(state.accounts),
+        )
+        return state
 
     # ------------------------------------------------------------------
     # Persistence helpers
@@ -226,6 +251,8 @@ class PostgresStorage:
         return OpenWebUIUser(
             user_id=str(payload.get("user_id")),
             name=str(payload.get("name") or ""),
+            email=payload.get("email"),
+            role=payload.get("role"),
         )
 
     @staticmethod
@@ -267,6 +294,11 @@ class PostgresStorage:
             message_records = [
                 self._message_from_dict(item) for item in messages if item.get("message_id")
             ]
+            LOGGER.info(
+                "Persisting dataset (%d chats, %d messages)",
+                len(chat_records),
+                len(message_records),
+            )
             if chat_records:
                 session.bulk_save_objects(chat_records)
             if message_records:
@@ -276,6 +308,7 @@ class PostgresStorage:
         with session_scope() as session:
             session.execute(delete(OpenWebUIUser))
             user_records = [self._user_from_dict(item) for item in users if item.get("user_id")]
+            LOGGER.info("Persisting %d user records", len(user_records))
             if user_records:
                 session.bulk_save_objects(user_records)
 
@@ -283,6 +316,7 @@ class PostgresStorage:
         with session_scope() as session:
             session.execute(delete(ModelRecord))
             model_records = [self._model_from_dict(item) for item in models if item.get("model_id")]
+            LOGGER.info("Persisting %d model records", len(model_records))
             if model_records:
                 session.bulk_save_objects(model_records)
 
@@ -290,6 +324,7 @@ class PostgresStorage:
         with session_scope() as session:
             session.execute(delete(Account))
             account_records = [self._account_from_dict(item) for item in accounts if item.get("username")]
+            LOGGER.info("Persisting %d account records", len(account_records))
             if account_records:
                 session.bulk_save_objects(account_records)
 
@@ -309,6 +344,12 @@ class PostgresStorage:
         )
         with session_scope() as session:
             session.add(snapshot)
+        LOGGER.info(
+            "Recorded dataset snapshot (source=%s, chats=%s, messages=%s)",
+            payload.get("dataset_source"),
+            payload.get("chat_count"),
+            payload.get("message_count"),
+        )
 
     def write_settings(self, values: Dict[str, Any]) -> None:
         with session_scope() as session:
@@ -319,6 +360,7 @@ class PostgresStorage:
                     session.add(Setting(key=key, value=value))
                 else:
                     current.value = value
+        LOGGER.info("Persisted %d application settings keys", len(values))
 
     def record_ingest(
         self,
@@ -337,9 +379,15 @@ class PostgresStorage:
         try:
             with session_scope() as session:
                 session.add(log)
+            LOGGER.info(
+                "Recorded ingest log (operation=%s, source=%s, count=%d)",
+                operation,
+                source,
+                record_count,
+            )
         except SQLAlchemyError:
             # Logging ingestion failures should never block the primary flow.
-            pass
+            LOGGER.exception("Failed to persist ingest log for operation %s", operation)
 
     def update_chat_summaries(self, summaries: Dict[str, str]) -> None:
         if not summaries:
@@ -351,6 +399,7 @@ class PostgresStorage:
                     .where(ChatRecord.chat_id == chat_id)
                     .values(summary_128=summary)
                 )
+        LOGGER.info("Updated summaries for %d chats", len(summaries))
 
     def fetch_ingest_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
         with session_scope() as session:
@@ -363,6 +412,7 @@ class PostgresStorage:
                 .scalars()
                 .all()
             )
+        LOGGER.info("Fetched %d ingest log entries (limit=%d)", len(logs), limit)
         return [
             {
                 "id": log.id,
