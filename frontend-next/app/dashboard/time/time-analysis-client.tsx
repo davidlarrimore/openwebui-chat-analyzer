@@ -89,7 +89,7 @@ export function TimeAnalysisClient({ chats, messages, userDisplayMap }: TimeAnal
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">Time Analysis</h1>
         <p className="text-sm text-muted-foreground">
           Examine message cadence, conversation length distribution, and daily engagement heatmaps with the same filters
-          available in the Streamlit dashboard.
+          available in the legacy dashboard.
         </p>
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <SummaryPill>{summaryCounts.messages.toLocaleString()} messages</SummaryPill>

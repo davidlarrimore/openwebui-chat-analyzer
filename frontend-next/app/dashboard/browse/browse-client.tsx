@@ -13,6 +13,7 @@ import {
   buildUserOptions,
   filterMessagesByUserAndModel
 } from "@/lib/browse";
+import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 
 interface BrowseClientProps {
   chats: BrowseChat[];
@@ -29,7 +30,8 @@ const THREADS_PER_PAGE_OPTIONS = [5, 10, 20, 50] as const;
 
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
-  timeStyle: "short"
+  timeStyle: "short",
+  timeZone: DISPLAY_TIMEZONE
 });
 
 function formatTimestamp(value: string | null | undefined | number): string {

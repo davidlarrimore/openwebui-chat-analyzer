@@ -11,6 +11,12 @@ function normalise(path: string) {
 async function handleJsonResponse<T>(response: Response): Promise<T> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!response.ok) {
+    // Handle 401 Unauthorized - redirect to login on client side
+    if (response.status === 401 && typeof window !== "undefined") {
+      // Clear any stale session and redirect to login
+      window.location.href = "/login?error=SessionExpired";
+      throw new Error("Session expired, redirecting to login...");
+    }
     const message = response.statusText || `Request failed with status ${response.status}`;
     throw new Error(message);
   }

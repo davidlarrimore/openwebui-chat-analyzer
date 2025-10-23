@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ALL_MODELS_OPTION, ALL_USERS_OPTION, BrowseChat, BrowseMessage, buildModelOptions, buildThreadExportPayload, buildUserOptions, filterMessagesByUserAndModel } from "@/lib/browse";
+import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 
 interface SearchClientProps {
   chats: BrowseChat[];
@@ -23,7 +24,8 @@ const MAX_CONVERSATIONS_OPTIONS = [5, 10, 15, 20] as const;
 
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
-  timeStyle: "short"
+  timeStyle: "short",
+  timeZone: DISPLAY_TIMEZONE
 });
 
 function formatTimestamp(value: string | number | null | undefined): string {

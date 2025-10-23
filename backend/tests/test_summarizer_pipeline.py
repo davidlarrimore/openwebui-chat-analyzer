@@ -23,7 +23,7 @@ def test_summarize_chats_emits_chunk_events(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(summarizer, "_summarize_context", fake_summarize_context)
 
-    chats = [{"chat_id": "chat-1", "summary_128": ""}]
+    chats = [{"chat_id": "chat-1", "gen_chat_summary": ""}]
     messages = [
         {"chat_id": "chat-1", "role": "user", "content": "A" * 40},
         {"chat_id": "chat-1", "role": "assistant", "content": "B" * 40},

@@ -135,6 +135,7 @@ class OllamaClient:
         model: Optional[str] = None,
         system: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
+        keep_alive: str | int | None = None,
     ) -> OllamaGenerateResult:
         payload: Dict[str, Any] = {
             "model": model or "",
@@ -145,6 +146,8 @@ class OllamaClient:
             payload["system"] = system
         if options:
             payload["options"] = options
+        if keep_alive is not None:
+            payload["keep_alive"] = str(keep_alive)
 
         response = self._request("POST", "/api/generate", json=payload)
         data = response.json()

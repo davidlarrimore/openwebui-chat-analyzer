@@ -8,8 +8,6 @@ type EnvCache = Record<string, string>;
 
 let cachedEnv: EnvCache | null = null;
 
-const FALLBACK_DIRECT_HOST = "http://localhost:4000";
-
 export type DirectConnectDefaultResult = {
   host: string;
   apiKey: string;
@@ -124,6 +122,11 @@ function resolveEnv(key: string): string | undefined {
   return value?.trim() ? value.trim() : undefined;
 }
 
+const FALLBACK_DIRECT_HOST =
+  resolveEnv("NEXT_PUBLIC_OWUI_DIRECT_HOST") ??
+  resolveEnv("OWUI_DIRECT_HOST") ??
+  "http://localhost:4000";
+
 function loadEnvDefaults(): DirectConnectDefaultResult {
   const envHost =
     resolveEnv("NEXT_PUBLIC_OWUI_DIRECT_HOST") ?? resolveEnv("OWUI_DIRECT_HOST") ?? "";
@@ -160,14 +163,18 @@ export async function getDirectConnectDefaults(): Promise<DirectConnectDefaultRe
 
     const rawHost = typeof payload.host === "string" ? payload.host.trim() : "";
     const rawApiKey = typeof payload.api_key === "string" ? payload.api_key : "";
+    const rawDatabaseHost =
+      typeof payload.database_host === "string" ? payload.database_host.trim() : "";
+    const rawDatabaseApiKey =
+      typeof payload.database_api_key === "string" ? payload.database_api_key : "";
 
-    const databaseHost = hostSource === "database" ? rawHost : "";
-    const databaseApiKey = apiKeySource === "database" ? rawApiKey : "";
+    const databaseHost = rawDatabaseHost || (hostSource === "database" ? rawHost : "");
+    const databaseApiKey = rawDatabaseApiKey || (apiKeySource === "database" ? rawApiKey : "");
 
     const host =
-      hostSource === "database" ? rawHost : rawHost || fallback.host;
+      rawHost || fallback.host;
     const apiKey =
-      apiKeySource === "database" ? rawApiKey : rawApiKey || fallback.apiKey;
+      rawApiKey || fallback.apiKey;
 
     return {
       host,

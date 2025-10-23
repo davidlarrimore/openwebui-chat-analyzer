@@ -53,7 +53,7 @@ export default async function ContentAnalysisPage() {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Once messages are ingested you&apos;ll be able to explore word clouds and message length distributions similar to the Streamlit experience.
+            Once messages are ingested you&apos;ll be able to explore word clouds and message length distributions similar to the legacy experience.
           </p>
         </CardContent>
       </Card>
@@ -89,4 +89,3 @@ export default async function ContentAnalysisPage() {
 
   return <ContentAnalysisClient chats={chatsPayload} messages={messagesPayload} userDisplayMap={userDisplayMap} />;
 }
-

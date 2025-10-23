@@ -1,6 +1,6 @@
 # Frontend Next App
 
-This directory contains a Next.js 14 + App Router rewrite of the chat analyzer UI. It lives beside the existing Streamlit experience (`frontend/`) and **must not** modify or depend on that code. Both interfaces can run in parallel during migration.
+This directory contains the Next.js 14 + App Router implementation of the chat analyzer UI.
 
 ## Tech Stack
 
@@ -85,13 +85,10 @@ Route handlers under `app/api/` proxy requests to the FastAPI backend, injecting
 
 Add additional Jest or Playwright suites beside this smoke test as the migration progresses.
 
-## Decommission Checklist (to run later)
+## Launch Checklist
 
-- [ ] Feature parity validated against `frontend/` dashboards
-- [ ] Automated tests cover ingestion, summarisation, and charting flows
-- [ ] QA sign-off on auth paths (credentials + optional GitHub)
-- [ ] Analytics/telemetry duplicated as needed
-- [ ] Update docs, links, and infra configs to point to Next.js app
-- [ ] Archive or remove Streamlit UI (`frontend/`) once parity is locked
-
-> Keep the Streamlit UI untouched until every item above is complete.
+- [ ] Validate feature parity against the legacy dashboard
+- [ ] Extend automated tests to cover ingestion, summarisation, and charting flows
+- [ ] Obtain QA sign-off on auth paths (credentials + optional GitHub)
+- [ ] Ensure analytics/telemetry are configured as required
+- [ ] Update docs, links, and infra configs to point to the Next.js app

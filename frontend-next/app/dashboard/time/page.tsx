@@ -59,7 +59,7 @@ export default async function TimeAnalysisPage() {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Once messages are ingested you&apos;ll see the same conversation cadence charts that are available in the Streamlit
+            Once messages are ingested you&apos;ll see the same conversation cadence charts that were available in the legacy
             application.
           </p>
         </CardContent>

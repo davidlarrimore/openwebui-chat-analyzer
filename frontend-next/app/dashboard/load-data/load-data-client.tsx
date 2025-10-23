@@ -679,28 +679,25 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
           return;
         }
 
-        const hostSource = payload.host_source ?? defaults.hostSource;
-        const apiKeySource = payload.api_key_source ?? defaults.apiKeySource;
-
-        const hostValue =
-          hostSource === "database" && typeof payload.host === "string" ? payload.host.trim() : "";
-        const apiKeyValue =
-          apiKeySource === "database" && typeof payload.api_key === "string" ? payload.api_key : "";
+        const hostValue = typeof payload.host === "string" ? payload.host.trim() : "";
+        const apiKeyValue = typeof payload.api_key === "string" ? payload.api_key : "";
+        const databaseHostValue =
+          typeof payload.database_host === "string" ? payload.database_host.trim() : "";
+        const databaseApiKeyValue =
+          typeof payload.database_api_key === "string" ? payload.database_api_key : "";
 
         databaseDefaultsRef.current = {
-          host: hostValue,
-          apiKey: apiKeyValue
+          host: databaseHostValue || hostValue,
+          apiKey: databaseApiKeyValue || apiKeyValue
         };
 
         if (!hasEditedHostRef.current) {
-          const resolvedHost =
-            hostSource === "database" ? hostValue : hostValue || trimmedDefaultsHost;
+          const resolvedHost = hostValue || trimmedDefaultsHost;
           setHostname((current) => (current === resolvedHost ? current : resolvedHost));
         }
 
         if (!hasEditedApiKeyRef.current) {
-          const resolvedApiKey =
-            apiKeySource === "database" ? apiKeyValue : apiKeyValue || trimmedDefaultsApiKey;
+          const resolvedApiKey = apiKeyValue || trimmedDefaultsApiKey;
           setApiKey((current) => (current === resolvedApiKey ? current : resolvedApiKey));
         }
       } catch {
@@ -713,7 +710,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
     return () => {
       cancelled = true;
     };
-  }, [defaults.apiKey, defaults.apiKeySource, defaults.host, defaults.hostSource, isHydrated, trimmedDefaultsApiKey, trimmedDefaultsHost]);
+  }, [defaults.apiKey, defaults.host, isHydrated, trimmedDefaultsApiKey, trimmedDefaultsHost]);
 
   useEffect(() => {
     abortRef.current = false;
@@ -1087,6 +1084,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
         const queuedChatIds = Array.isArray(stats.queued_chat_ids) ? stats.queued_chat_ids : [];
         const summarizerEnqueued =
           typeof stats.summarizer_enqueued === "boolean" ? stats.summarizer_enqueued : chatCount > 0;
+        let summarizerHadIssues = false;
 
         if (Object.keys(stats).length) {
           if (sourceMatched) {
@@ -1138,7 +1136,7 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
         if (summarizerEnqueued) {
           const targetCount = queuedChatIds.length ? queuedChatIds.length : newChats || chatCount;
           appendDirectLog("🤖", `Creating new summaries for ${formatCount(targetCount, "chat")}.`);
-          appendDirectLog("🧠", "Building chat summaries...");
+          appendDirectLog("🧠", "Summarizer is now running in the background.");
           directEventIdsRef.current = new Set<string>();
           directTrackerRef.current = createProgressTracker();
           activeJobRef.current = "direct";
@@ -1154,18 +1152,14 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
           } catch (error) {
             const message = error instanceof Error ? error.message : "Unknown error";
             appendDirectLog("⚠️", `Summary job failed: ${message}`);
+            summarizerHadIssues = true;
           }
 
           if (finalStatus) {
-            if (finalStatus.state === "completed") {
-              appendDirectLog("✅", "Chat summaries rebuilt");
-              toast({
-                title: "Chat summaries rebuilt",
-                description: "New headlines will appear across the dashboard once processing finishes."
-              });
-            } else if (finalStatus.state === "failed") {
+            if (finalStatus.state === "failed") {
               const message = finalStatus.message ?? "Summary job failed.";
               appendDirectLog("⚠️", `Summary job failed: ${message}`);
+              summarizerHadIssues = true;
               toast({
                 title: "Summary job failed",
                 description: message,
@@ -1173,7 +1167,8 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
               });
             } else if (finalStatus.state === "cancelled") {
               appendDirectLog("⚠️", "Summary job cancelled (dataset changed).");
-            } else {
+              summarizerHadIssues = true;
+            } else if (!isTerminalSummaryState(finalStatus.state)) {
               appendDirectLog("ℹ️", "Summaries still running in the background.");
             }
           }
@@ -1181,10 +1176,22 @@ export default function LoadDataClient({ defaults, initialError, initialMeta }: 
           appendDirectLog("ℹ️", "Summarizer skipped (no new chats to process).");
         }
 
-        appendDirectLog("✅", "Done");
+        const summaryIcon = summarizerHadIssues ? "⚠️" : "✅";
+        const summaryMessage = summarizerEnqueued
+          ? summarizerHadIssues
+            ? "Import job complete with summarizer warnings; summarizer is still running in the background."
+            : "Import job complete; summarizer is running in the background."
+          : summarizerHadIssues
+            ? "Import job complete with warnings."
+            : "Import job complete.";
+        appendDirectLog(summaryIcon, summaryMessage);
         toast({
           title: "Open WebUI data synced",
-          description: "Chats and metadata imported successfully."
+          description: summarizerEnqueued
+            ? summarizerHadIssues
+              ? "Chats imported, but the summarizer reported warnings. Review the Summaries sidebar for details."
+              : "Chats imported; summarizer is running in the background."
+            : "Chats and metadata imported successfully."
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";

@@ -23,7 +23,7 @@ def _split_origins(value: str) -> List[str]:
     return [origin.strip() for origin in value.split(",") if origin.strip()]
 
 
-DEFAULT_ALLOWED_ORIGINS = "http://localhost:8501,http://127.0.0.1:8501"
+DEFAULT_ALLOWED_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8503"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 API_HOST = os.getenv("OWUI_API_HOST", "0.0.0.0")

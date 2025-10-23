@@ -63,7 +63,7 @@ export default async function DashboardOverviewPage() {
         <CardContent>
           <p className="text-sm text-muted-foreground">
             Once chats and messages are ingested, you&apos;ll see high level metrics and charts here that mirror the
-            Streamlit overview experience.
+            legacy overview experience.
           </p>
         </CardContent>
       </Card>

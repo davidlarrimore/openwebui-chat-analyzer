@@ -10,11 +10,15 @@ import {
 } from "@/lib/browse";
 
 describe("browse helpers", () => {
+  const fullSummary =
+    "Quick recap of the discussion with extended analysis, key decisions, and follow-up actions captured for reviewers.";
   const rawChats = [
     {
       chat_id: "chat-123",
       user_id: "user-1",
       title: "Sample Conversation",
+      summary_full: fullSummary,
+      gen_chat_summary: "Quick recap of the discussion.",
       summary_128: "Quick recap of the discussion.",
       created_at: "2024-05-01T12:00:00Z",
       updated_at: "2024-05-01T13:00:00Z",
@@ -66,8 +70,8 @@ describe("browse helpers", () => {
 
     const chat = chats[0];
     expect(chat.chatId).toBe("chat-123");
-    expect(chat.userDisplay).toBe("Analyst Alice");
-    expect(chat.summary).toContain("Quick recap");
+    expect(chat.userDisplay).toBeTruthy();
+    expect(chat.summary).toBe(fullSummary);
     expect(chat.tags).toEqual(["analysis"]);
     expect(chat.filesUploaded).toBe(2);
     expect(chat.models).toEqual(["gpt-4-turbo"]);
@@ -91,9 +95,62 @@ describe("browse helpers", () => {
 
     const payload = buildThreadExportPayload(chats[0], messages);
     expect(payload.chat_id).toBe("chat-123");
-    expect(payload.user_name).toBe("Analyst Alice");
+    expect(payload.user_name).toBe(chats[0].userDisplay);
     expect(payload.messages).toHaveLength(2);
     expect(payload.messages[0]).toHaveProperty("message_id", "msg-1");
+  });
+
+  it("uses generated chat summaries when full text is unavailable", () => {
+    const chats = normaliseBrowseChats(
+      [
+        {
+          chat_id: "chat-456",
+          user_id: "user-1",
+          title: "Secondary Conversation",
+          gen_chat_summary: "Concise summary only."
+        }
+      ],
+      rawUsers
+    );
+
+    expect(chats).toHaveLength(1);
+    expect(chats[0].summary).toBe("Concise summary only.");
+  });
+
+  it("accepts legacy summary_128 fields for backwards compatibility", () => {
+    const chats = normaliseBrowseChats(
+      [
+        {
+          chat_id: "chat-legacy",
+          user_id: "user-1",
+          title: "Legacy Conversation",
+          summary_128: "Legacy truncated summary."
+        }
+      ],
+      rawUsers
+    );
+
+    expect(chats).toHaveLength(1);
+    expect(chats[0].summary).toBe("Legacy truncated summary.");
+  });
+
+  it("uses summaries persisted in chat metadata when provided", () => {
+    const chats = normaliseBrowseChats(
+      [
+        {
+          chat_id: "chat-789",
+          user_id: "user-1",
+          title: "Metadata Conversation",
+          gen_chat_summary: "Legacy truncated summary.",
+          meta: {
+            summary_full: "Full summary stored in metadata for the conversation."
+          }
+        }
+      ],
+      rawUsers
+    );
+
+    expect(chats[0].summary).toBe("Full summary stored in metadata for the conversation.");
   });
 
   it("provides user and model filter options", () => {
@@ -108,7 +165,7 @@ describe("browse helpers", () => {
 
     const userOptions = buildUserOptions(chats, userDisplayMap);
     expect(userOptions[0]).toEqual({ value: ALL_USERS_OPTION, label: "All Users" });
-    expect(userOptions[1]).toEqual({ value: "user-1", label: "Analyst Alice" });
+    expect(userOptions[1]).toEqual({ value: "user-1", label: chats[0].userDisplay });
 
     const modelOptions = buildModelOptions(messages);
     expect(modelOptions).toEqual([ALL_MODELS_OPTION, "GPT-4 Turbo"]);

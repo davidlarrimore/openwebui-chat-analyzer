@@ -85,6 +85,23 @@ def _run_migrations() -> None:
     """Run schema migrations for existing databases."""
     inspector = inspect(engine)
 
+    # Migration: Rename summary column and widen capacity.
+    if inspector.has_table("chats"):
+        chat_columns = {col["name"]: col for col in inspector.get_columns("chats")}
+        with engine.begin() as conn:
+            if "gen_chat_summary" not in chat_columns and "summary_128" in chat_columns:
+                conn.execute(text("ALTER TABLE chats RENAME COLUMN summary_128 TO gen_chat_summary"))
+            elif "gen_chat_summary" not in chat_columns:
+                conn.execute(text("ALTER TABLE chats ADD COLUMN gen_chat_summary VARCHAR(2500)"))
+
+        if engine.dialect.name != "sqlite":
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE chats ALTER COLUMN gen_chat_summary TYPE VARCHAR(2500)"))
+            except Exception:
+                # Some engines may not support altering the type; ignore failures to keep initialization resilient.
+                pass
+
     # Migration 1: Add missing columns to owui_users table
     if inspector.has_table("owui_users"):
         columns = [col["name"] for col in inspector.get_columns("owui_users")]

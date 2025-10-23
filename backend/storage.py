@@ -60,7 +60,7 @@ class DatabaseStorage:
             "chat_id": record.chat_id,
             "user_id": record.user_id,
             "title": record.title,
-            "summary_128": record.summary_128,
+            "gen_chat_summary": record.gen_chat_summary,
             "created_at": record.created_ts,
             "updated_at": record.updated_ts,
             "timestamp": record.timestamp,
@@ -198,12 +198,18 @@ class DatabaseStorage:
     # Persistence helpers
     # ------------------------------------------------------------------
     @staticmethod
+    def _extract_summary(payload: Dict[str, Any]) -> Optional[str]:
+        if "gen_chat_summary" in payload and payload.get("gen_chat_summary") is not None:
+            return payload.get("gen_chat_summary")
+        return payload.get("summary_128")
+
+    @staticmethod
     def _chat_from_dict(payload: Dict[str, Any]) -> ChatRecord:
         return ChatRecord(
             chat_id=str(payload.get("chat_id")),
             user_id=payload.get("user_id"),
             title=payload.get("title"),
-            summary_128=payload.get("summary_128"),
+            gen_chat_summary=DatabaseStorage._extract_summary(payload),
             created_ts=payload.get("created_at"),
             updated_ts=payload.get("updated_at"),
             timestamp=payload.get("timestamp"),
@@ -397,7 +403,7 @@ class DatabaseStorage:
                 session.execute(
                     update(ChatRecord)
                     .where(ChatRecord.chat_id == chat_id)
-                    .values(summary_128=summary)
+                    .values(gen_chat_summary=summary)
                 )
         LOGGER.info("Updated summaries for %d chats", len(summaries))
 

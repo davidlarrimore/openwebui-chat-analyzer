@@ -89,7 +89,10 @@ def health_backend() -> Dict[str, Any]:
 
 
 @router.get("/chats", response_model=List[Chat])
-def list_chats(service: DataService = Depends(get_data_service)) -> List[Chat]:
+def list_chats(
+    _: AuthUserPublic = Depends(require_authenticated_user),
+    service: DataService = Depends(get_data_service),
+) -> List[Chat]:
     """Return all chat metadata.
 
     Args:
@@ -102,7 +105,10 @@ def list_chats(service: DataService = Depends(get_data_service)) -> List[Chat]:
 
 
 @router.get("/messages", response_model=List[Message])
-def list_messages(service: DataService = Depends(get_data_service)) -> List[Message]:
+def list_messages(
+    _: AuthUserPublic = Depends(require_authenticated_user),
+    service: DataService = Depends(get_data_service),
+) -> List[Message]:
     """Return the flattened list of chat messages.
 
     Args:
@@ -115,7 +121,10 @@ def list_messages(service: DataService = Depends(get_data_service)) -> List[Mess
 
 
 @router.get("/users", response_model=List[User])
-def list_users(service: DataService = Depends(get_data_service)) -> List[User]:
+def list_users(
+    _: AuthUserPublic = Depends(require_authenticated_user),
+    service: DataService = Depends(get_data_service),
+) -> List[User]:
     """Return user metadata when available.
 
     Args:
@@ -128,7 +137,10 @@ def list_users(service: DataService = Depends(get_data_service)) -> List[User]:
 
 
 @router.get("/models", response_model=List[ModelInfo])
-def list_models(service: DataService = Depends(get_data_service)) -> List[ModelInfo]:
+def list_models(
+    _: AuthUserPublic = Depends(require_authenticated_user),
+    service: DataService = Depends(get_data_service),
+) -> List[ModelInfo]:
     """Return model metadata when available.
 
     Args:
@@ -141,7 +153,10 @@ def list_models(service: DataService = Depends(get_data_service)) -> List[ModelI
 
 
 @router.get("/datasets/meta", response_model=DatasetMeta)
-def dataset_meta(service: DataService = Depends(get_data_service)) -> DatasetMeta:
+def dataset_meta(
+    _: AuthUserPublic = Depends(require_authenticated_user),
+    service: DataService = Depends(get_data_service),
+) -> DatasetMeta:
     """Return metadata about the currently loaded dataset.
 
     Args:
@@ -154,6 +169,7 @@ def dataset_meta(service: DataService = Depends(get_data_service)) -> DatasetMet
 
 @router.get("/logs/ingest", response_model=List[IngestLogEntry])
 def list_ingest_logs(
+    _: AuthUserPublic = Depends(require_authenticated_user),
     limit: int = 50,
     service: DataService = Depends(get_data_service),
 ) -> List[IngestLogEntry]:
@@ -168,7 +184,10 @@ def list_ingest_logs(
     response_model=UploadResponse,
     status_code=status.HTTP_200_OK,
 )
-def reset_dataset(service: DataService = Depends(get_data_service)) -> UploadResponse:
+def reset_dataset(
+    _: AuthUserPublic = Depends(require_authenticated_user),
+    service: DataService = Depends(get_data_service),
+) -> UploadResponse:
     """Remove all stored dataset artifacts and reset metadata.
 
     Args:
@@ -187,6 +206,7 @@ def reset_dataset(service: DataService = Depends(get_data_service)) -> UploadRes
 )
 async def upload_chat_export(
     file: UploadFile = File(...),
+    _: AuthUserPublic = Depends(require_authenticated_user),
     service: DataService = Depends(get_data_service),
 ) -> UploadResponse:
     """Upload a new chat export JSON file.
@@ -232,6 +252,7 @@ async def upload_chat_export(
 )
 async def upload_users_csv(
     file: UploadFile = File(...),
+    _: AuthUserPublic = Depends(require_authenticated_user),
     service: DataService = Depends(get_data_service),
 ) -> UploadResponse:
     """Upload a users CSV file.
@@ -278,6 +299,7 @@ async def upload_users_csv(
 )
 async def upload_models_json(
     file: UploadFile = File(...),
+    _: AuthUserPublic = Depends(require_authenticated_user),
     service: DataService = Depends(get_data_service),
 ) -> UploadResponse:
     """Upload a models JSON file.
@@ -319,6 +341,7 @@ async def upload_models_json(
 )
 def sync_openwebui(
     payload: OpenWebUISyncRequest,
+    _: AuthUserPublic = Depends(require_authenticated_user),
     service: DataService = Depends(get_data_service),
 ) -> UploadResponse:
     """Fetch chats and users directly from an Open WebUI instance and store them locally.
@@ -350,7 +373,10 @@ def sync_openwebui(
     response_model=GenAISummarizeResponse,
     tags=["genai"],
 )
-def generate_summary(payload: GenAISummarizeRequest) -> GenAISummarizeResponse:
+def generate_summary(
+    payload: GenAISummarizeRequest,
+    _: AuthUserPublic = Depends(require_authenticated_user),
+) -> GenAISummarizeResponse:
     """Generate a concise summary using the Ollama service."""
     context = payload.context.strip()
     primary_model = payload.model or OLLAMA_SUMMARY_MODEL
@@ -365,6 +391,7 @@ def generate_summary(payload: GenAISummarizeRequest) -> GenAISummarizeResponse:
     temperature = (
         payload.temperature if payload.temperature is not None else OLLAMA_DEFAULT_TEMPERATURE
     )
+    num_predict = min(48, max(32, char_limit // 8))
 
     if not context:
         return GenAISummarizeResponse(summary="", model=primary_model)
@@ -373,7 +400,8 @@ def generate_summary(payload: GenAISummarizeRequest) -> GenAISummarizeResponse:
     prompt = _HEADLINE_USER_TMPL.format(ctx=context)
     options = {
         "temperature": temperature,
-        "num_predict": max(128, min(char_limit * 2, 512)),
+        "num_predict": num_predict,
+        "num_ctx": 1024,
     }
 
     active_model = primary_model
@@ -383,6 +411,7 @@ def generate_summary(payload: GenAISummarizeRequest) -> GenAISummarizeResponse:
             model=active_model,
             system=_HEADLINE_SYS,
             options=options,
+            keep_alive="-1",
         )
     except OllamaOutOfMemoryError as exc:
         if not fallback_model:
@@ -400,6 +429,7 @@ def generate_summary(payload: GenAISummarizeRequest) -> GenAISummarizeResponse:
                 model=active_model,
                 system=_HEADLINE_SYS,
                 options=options,
+                keep_alive="-1",
             )
         except OllamaClientError as fallback_exc:
             raise HTTPException(status_code=502, detail=str(fallback_exc)) from fallback_exc
@@ -415,7 +445,10 @@ def generate_summary(payload: GenAISummarizeRequest) -> GenAISummarizeResponse:
     response_model=GenAIGenerateResponse,
     tags=["genai"],
 )
-def generate_text(payload: GenAIGenerateRequest) -> GenAIGenerateResponse:
+def generate_text(
+    payload: GenAIGenerateRequest,
+    _: AuthUserPublic = Depends(require_authenticated_user),
+) -> GenAIGenerateResponse:
     """Run a single-prompt generation request against Ollama."""
     if not payload.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt must not be empty.")
@@ -443,7 +476,10 @@ def generate_text(payload: GenAIGenerateRequest) -> GenAIGenerateResponse:
     response_model=GenAIChatResponse,
     tags=["genai"],
 )
-def chat(payload: GenAIChatRequest) -> GenAIChatResponse:
+def chat(
+    payload: GenAIChatRequest,
+    _: AuthUserPublic = Depends(require_authenticated_user),
+) -> GenAIChatResponse:
     """Run a multi-turn chat completion against Ollama."""
     if not payload.messages:
         raise HTTPException(status_code=400, detail="At least one message is required.")
@@ -471,7 +507,10 @@ def chat(payload: GenAIChatRequest) -> GenAIChatResponse:
     response_model=GenAIEmbedResponse,
     tags=["genai"],
 )
-def embed(payload: GenAIEmbedRequest) -> GenAIEmbedResponse:
+def embed(
+    payload: GenAIEmbedRequest,
+    _: AuthUserPublic = Depends(require_authenticated_user),
+) -> GenAIEmbedResponse:
     """Generate embeddings for a list of strings."""
     if not payload.inputs:
         raise HTTPException(status_code=400, detail="inputs must not be empty.")
@@ -496,7 +535,9 @@ def embed(payload: GenAIEmbedRequest) -> GenAIEmbedResponse:
     response_model=List[Dict[str, Any]],
     tags=["genai"],
 )
-def list_genai_models() -> List[Dict[str, Any]]:
+def list_genai_models(
+    _: AuthUserPublic = Depends(require_authenticated_user),
+) -> List[Dict[str, Any]]:
     """Return the set of models currently available within Ollama."""
     client = get_ollama_client()
     try:
@@ -506,7 +547,10 @@ def list_genai_models() -> List[Dict[str, Any]]:
 
 
 @router.get("/summaries/status")
-def summary_status(service: DataService = Depends(get_data_service)) -> dict:
+def summary_status(
+    _: AuthUserPublic = Depends(require_authenticated_user),
+    service: DataService = Depends(get_data_service),
+) -> dict:
     """Return the current status of the summary job.
 
     Args:
@@ -519,6 +563,7 @@ def summary_status(service: DataService = Depends(get_data_service)) -> dict:
 
 @router.get("/summaries/events")
 def summary_events(
+    _: AuthUserPublic = Depends(require_authenticated_user),
     after: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=SUMMARY_EVENT_HISTORY_LIMIT),
     service: DataService = Depends(get_data_service),
@@ -528,7 +573,10 @@ def summary_events(
 
 
 @router.post("/summaries/rebuild")
-def rebuild_summaries(service: DataService = Depends(get_data_service)) -> dict:
+def rebuild_summaries(
+    _: AuthUserPublic = Depends(require_authenticated_user),
+    service: DataService = Depends(get_data_service),
+) -> dict:
     """Trigger an asynchronous rebuild of chat summaries.
 
     Args:
@@ -592,6 +640,19 @@ def login(
     token = service.issue_access_token(user_record["username"])
     user_public = AuthUserPublic(**user_record)
     return AuthLoginResponse(access_token=token, token_type="bearer", user=user_public)
+
+
+@router.post("/auth/logout", tags=["auth"], status_code=status.HTTP_200_OK)
+def logout(
+    authorization: Optional[str] = Header(default=None, convert_underscores=False),
+    service: DataService = Depends(get_data_service),
+) -> Dict[str, Any]:
+    """Revoke the current access token, logging out the user."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return {"ok": True, "detail": "No token provided."}
+    token = authorization.split(" ", 1)[1].strip()
+    revoked = service.revoke_token(token)
+    return {"ok": True, "revoked": revoked}
 
 
 @router.get("/users/me", response_model=AuthUserPublic, tags=["auth"])

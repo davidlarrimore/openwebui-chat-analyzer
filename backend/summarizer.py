@@ -21,11 +21,13 @@ from .config import (
     OLLAMA_SUMMARY_FALLBACK_MODEL,
 )
 
-MAX_CHARS = int(os.getenv("SUMMARY_MAX_CHARS", "256"))
+MAX_CHARS = 256
 SALIENT_K = int(os.getenv("SALIENT_K", "10"))
 EMB_MODEL_NAME = os.getenv("EMB_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 SUMMARY_BATCH_TOKEN_LIMIT = max(1024, int(os.getenv("SUMMARY_BATCH_TOKEN_LIMIT", "16000")))
 SUMMARY_BATCH_MAX_OUTPUT_TOKENS = max(256, int(os.getenv("SUMMARY_BATCH_MAX_OUTPUT_TOKENS", "1024")))
+SUMMARY_FIELD = "gen_chat_summary"
+LEGACY_SUMMARY_FIELD = "summary_128"
 
 def _normalize_base_url(value: str) -> str:
     """Normalize a host string into a usable HTTP base URL."""
@@ -72,6 +74,24 @@ def _get_embeddings_model() -> SentenceTransformer:
         _logger.info("Loading SentenceTransformer model: %s", EMB_MODEL_NAME)
         _embeddings_model = SentenceTransformer(EMB_MODEL_NAME)
     return _embeddings_model
+
+
+def _get_chat_summary(chat: Mapping[str, object]) -> str:
+    """Return the current summary value from a chat payload."""
+    primary = chat.get(SUMMARY_FIELD)
+    if primary is None or (isinstance(primary, str) and not primary.strip()):
+        primary = chat.get(LEGACY_SUMMARY_FIELD)
+    return str(primary or "").strip()
+
+
+def _set_chat_summary(chat: Dict[str, object], value: str) -> None:
+    """Persist a summary value to the chat payload, removing legacy keys."""
+    chat[SUMMARY_FIELD] = value
+    if LEGACY_SUMMARY_FIELD in chat:
+        try:
+            del chat[LEGACY_SUMMARY_FIELD]  # type: ignore[arg-type]
+        except Exception:  # pragma: no cover
+            pass
 
 _requests_session = requests.Session()
 _requests_session.headers.update({"Accept": "application/json"})
@@ -243,13 +263,15 @@ def _headline_with_ollama(context: str, *, model: str = OLLAMA_SUMMARY_MODEL) ->
     prompt = _HEADLINE_USER_TMPL.format(ctx=context)
     options = {
         "temperature": OLLAMA_DEFAULT_TEMPERATURE,
-        "num_predict": 256,
+        "num_predict": 32,
+        "num_ctx": 1024,
     }
     result = client.generate(
         prompt=prompt,
         model=model,
         system=_HEADLINE_SYS,
         options=options,
+        keep_alive="-1",
     )
     return _trim_one_line(result.response)
 
@@ -438,6 +460,7 @@ def _batch_headlines_with_ollama(payload: str, *, model: str = OLLAMA_SUMMARY_MO
     options = {
         "temperature": OLLAMA_DEFAULT_TEMPERATURE,
         "num_predict": SUMMARY_BATCH_MAX_OUTPUT_TOKENS,
+        "num_ctx": 1024,
     }
     prompt = _BATCH_HEADLINE_USER_TMPL.format(payload=payload)
     result = client.generate(
@@ -445,6 +468,7 @@ def _batch_headlines_with_ollama(payload: str, *, model: str = OLLAMA_SUMMARY_MO
         model=model,
         system=_BATCH_HEADLINE_SYS,
         options=options,
+        keep_alive="-1",
     )
     return str(result.response or "").strip()
 
@@ -694,12 +718,12 @@ def summarize_chats(
             if summary_text:
                 generated += 1
                 summary_map[chat_id] = summary_text
-                chat["summary_128"] = summary_text
+                _set_chat_summary(chat, summary_text)
                 batch_summaries[chat_id] = summary_text
                 outcome = "generated"
             else:
                 failures += 1
-                chat["summary_128"] = previous_summary if previous_summary else ""
+                _set_chat_summary(chat, previous_summary if previous_summary else "")
                 outcome = "failed"
 
             if on_progress:
@@ -730,11 +754,11 @@ def summarize_chats(
     for idx, chat in enumerate(chats_list, start=1):
         chat_id_raw = chat.get("chat_id")
         chat_id = str(chat_id_raw) if chat_id_raw not in (None, "") else ""
-        existing_summary = str(chat.get("summary_128") or "").strip()
+        existing_summary = _get_chat_summary(chat)
         has_existing_summary = bool(existing_summary)
 
         if has_existing_summary and not replace_existing:
-            chat["summary_128"] = existing_summary
+            _set_chat_summary(chat, existing_summary)
             skipped += 1
             if on_progress:
                 details = {
@@ -753,7 +777,7 @@ def summarize_chats(
         previous_summary = existing_summary if has_existing_summary else ""
 
         if not chat_id:
-            chat["summary_128"] = previous_summary if previous_summary else ""
+            _set_chat_summary(chat, previous_summary if previous_summary else "")
             failures += 1
             if on_progress:
                 details = {
@@ -772,7 +796,7 @@ def summarize_chats(
         chat_messages = grouped.get(chat_id, [])
         lines = _chat_lines(chat_messages)
         if not lines:
-            chat["summary_128"] = previous_summary if previous_summary else ""
+            _set_chat_summary(chat, previous_summary if previous_summary else "")
             failures += 1
             if on_progress:
                 details = {

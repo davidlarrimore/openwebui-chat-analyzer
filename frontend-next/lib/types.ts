@@ -138,6 +138,8 @@ export interface AuthResponse {
 export interface DirectConnectSettings {
   host: string;
   api_key: string;
+  database_host: string;
+  database_api_key: string;
   host_source: "database" | "environment" | "default";
   api_key_source: "database" | "environment" | "empty";
 }

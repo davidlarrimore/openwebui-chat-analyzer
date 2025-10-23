@@ -1,93 +1,63 @@
 # 💬 Open WebUI Chat Analyzer
 
-Local analytics stack for exploring Open WebUI chat exports. The Streamlit UI remains the primary experience while a new Next.js frontend (`frontend-next/`) is under active development.
-
-> The project is in a transitional phase: both frontends ship side by side while we migrate functionality from Streamlit to Next.js.
+Local analytics stack for exploring Open WebUI chat exports. The project pairs a FastAPI backend with a Next.js dashboard (`frontend-next/`) so you can explore conversations, summaries, and engagement trends without sending data outside your machine.
 
 ## Highlights
-
-- Local FastAPI backend plus Streamlit UI—your exports never leave your machine
-- Load data either by pulling directly from a running Open WebUI instance or by dropping exports into `data/`
-- Backend auto-loads the latest `all-chats-export-*.json` from `data/` and supports an optional `users.csv` for friendly names
-- Overview metrics for chats, messages, per-role activity, file uploads, and approximate token volume
-- **Instant metrics display**—dataset statistics update immediately after data loads, even while summaries generate in the background
-- Filters every visualization by Open WebUI user and model
-- Built-in summarizer generates one-line chat headlines using local sentence embeddings plus the bundled Ollama service (with Open WebUI completions as a fallback)
-- **Incremental summary persistence**—summaries are written to the database batch-by-batch as they're generated, ensuring progressive updates and resilience to interruptions
-- Time analysis (daily trend, conversation length, hour-by-day heatmap) and content analysis (word cloud, message length)
-- Sentiment breakdown with TextBlob plus full-text search, paginated browsing, and per-thread JSON downloads
-- CSV exports for both chat metadata and individual messages
-- Preview Next.js dashboard with richer charts, modern auth, and dashboard layouts (work in progress)
+- Local FastAPI backend plus Next.js dashboard—your exports never leave your environment
+- Load data by connecting to a live Open WebUI instance or by dropping exports into `data/`
+- Automatic ingestion of the latest `all-chats-export-*.json` plus optional `users.csv` for friendly display names
+- Overview metrics for chats, messages, user activity, model usage, file uploads, and approximate token volume
+- **Instant metrics display**—dataset statistics update immediately after data loads while summaries process in the background
+- Filtering across every visualisation by Open WebUI user and model
+- Built-in summariser generates one-line chat headlines using local sentence embeddings plus a bundled Ollama service (with Open WebUI completions as a fallback)
+- **Incremental summary persistence**—batches are written to SQLite as they complete so partial work is never lost
+- Time analysis (daily trend, conversation length, hour-by-day heatmap) and content analysis (word clouds, message length)
+- Sentiment breakdown with TextBlob, full-text search, paginated browsing, per-thread JSON downloads, and CSV exports
+- Modern dashboard built with Next.js, Tailwind, shadcn/ui primitives, and Auth.js for credential and GitHub sign-in
 
 ## Contributor Guide
-
 Review [AGENTS.md](AGENTS.md) for consolidated contributor workflows, coding standards, and release expectations.
 
 ## Configuration
-
-1. Copy `.env.example` to `.env`.
+1. Copy `.env.example` to `.env` before running anything.
 2. Configure backend connectivity:
-   - `OWUI_API_BASE_URL` – Primary URL the Streamlit UI should hit (`http://localhost:8502` locally, `http://backend:8502` for Docker Compose).
-   - `OWUI_API_FALLBACKS` – Optional comma-separated list of backup URLs the frontend will try before surfacing an error.
-   - `OWUI_API_ALLOWED_ORIGINS` – Comma-separated list of origins permitted to call the FastAPI backend.
+   - `OWUI_API_BASE_URL` – Primary URL the dashboard should target (`http://localhost:8502` locally, `http://backend:8502` for Docker Compose).
+   - `OWUI_API_ALLOWED_ORIGINS` – Comma-separated list of origins permitted to call the FastAPI backend (defaults cover `http://localhost:3000` and `http://localhost:8503`).
    - `OWUI_DATA_DIR` – Directory where default exports live (relative to the project root).
 3. (Optional) Prefill the Direct Connect form:
    - `OWUI_DIRECT_HOST` – Default Open WebUI base URL shown on the Load Data page.
    - `OWUI_DIRECT_API_KEY` – Optional API token that appears in the Direct Connect form (stored only in your local `.env`).
-4. (Optional) Tune the summarizer and GenAI helpers:
+4. (Optional) Tune the summariser and GenAI helpers:
    - `SUMMARY_MAX_CHARS` / `SALIENT_K` – Control headline length and how many salient utterances feed the LLM.
-   - `EMB_MODEL` – Sentence-transformer used to pick salient lines (`sentence-transformers/all-MiniLM-L6-v2` by default).
-   - `OLLAMA_BASE_URL` / `OLLAMA_PORT` – Where the FastAPI backend reaches the Ollama runtime (`http://host.docker.internal:11434` when the backend runs in Docker, `http://localhost:11434` for bare-metal).
-   - `OLLAMA_PRELOAD_MODELS` – Space-separated list of models you should preload locally (defaults to summary, long-form, and embedding models).
-   - `OLLAMA_SUMMARY_MODEL` / `OLLAMA_LONGFORM_MODEL` / `OLLAMA_EMBED_MODEL` – Defaults for summaries (`llama3.1`), long-form generation (`phi3:mini`), and embeddings (`nomic-embed-text`).
-   - `OLLAMA_DEFAULT_TEMPERATURE` / `OLLAMA_TIMEOUT_SECONDS` – Runtime defaults applied to requests.
-   - `OWUI_COMPLETIONS_MODEL` – Chat completion model identifier requested from your Open WebUI deployment (legacy fallback path).
-5. Restart the backend (and Streamlit) after changing environment variables. The first summarizer run will download embeddings locally.
+   - `EMB_MODEL` – Sentence transformer used to pick salient lines (`sentence-transformers/all-MiniLM-L6-v2` by default).
+   - `OLLAMA_*` variables – Configure the Ollama runtime, timeout, preload list, and default models for summaries, long-form responses, and embeddings.
+   - `OWUI_COMPLETIONS_MODEL` – Chat completion model requested from your Open WebUI deployment (legacy fallback path).
+5. Frontend defaults:
+   - `FRONTEND_NEXT_PORT` – Published Docker port for the Next.js dashboard (defaults to `8503`).
+   - `FRONTEND_NEXT_PUBLIC_URL` – External URL used for Auth.js redirects.
+   - `FRONTEND_NEXT_BACKEND_BASE_URL` – Internal URL the Next.js proxy should use for FastAPI.
+   - `NEXTAUTH_SECRET` / `NEXTAUTH_URL` – Secrets and base URLs for Auth.js session management.
+   - Optional GitHub OAuth: `GITHUB_OAUTH_ENABLED`, `NEXT_PUBLIC_GITHUB_OAUTH_ENABLED`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`.
+6. Restart the backend after changing environment variables. The first summariser run downloads embeddings locally and may take a moment.
 
 ## Input Data
-
 Load data through either workflow:
 
-- **Direct Connect** – Use the **Load Data → Direct Connect** panel to point the analyzer at a live Open WebUI deployment. Provide the base URL (for example `http://localhost:3000`) and an API key; the backend will pull chats and users via `/api/v1/openwebui/sync`, persist them locally, display updated metrics immediately, and kick off the summarizer in the background. You can start exploring your data right away while summaries generate progressively.
-- **File Uploads / Local Directory** – Export `all-chats-export-*.json` from Open WebUI (Admin Panel → **Settings → Data & Privacy → Export All Chats**) and optionally `users.csv` (Admin Panel → **Settings → Database → Export Users** with `user_id` plus a display column) plus `models.json` captured from the `/api/v1/models` endpoint for friendly model names. Drop the files in `data/` for automatic loading on startup or upload them on the Load Data page. Uploaded artifacts live under `uploads/`.
+- **Direct Connect** – Use **Load Data → Direct Connect** to point the analyzer at a live Open WebUI deployment. Provide the base URL (for example `http://localhost:3000`) and an API key; the backend will pull chats and users, persist them locally, display updated metrics instantly, and queue the summariser in the background.
+- **File Uploads / Local Directory** – Export `all-chats-export-*.json` from Open WebUI (Admin Panel → **Settings → Data & Privacy → Export All Chats**) and optionally `users.csv` (Admin Panel → **Settings → Database → Export Users**) plus `models.json` captured from `/api/v1/models` for friendly model names. Drop the files in `data/` for automatic loading on startup or upload them on the Load Data page. Uploaded artifacts live under `uploads/`.
 
 ## Quick Start
 
 ### Option A – Docker (recommended)
-
 ```bash
 git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
 cd openwebui-chat-analyzer
-cp .env.example .env          # optional: set OWUI_API_BASE_URL to http://backend:8502 for docker compose
-make up            # or: docker compose up -d
+cp .env.example .env
+make up
 ```
+The FastAPI backend listens on `http://localhost:8502` and the Next.js dashboard is exposed on `http://localhost:8503` (or the value of `FRONTEND_NEXT_PORT`). Use `make logs` to tail combined logs and `make down` to stop everything.
 
-The Streamlit UI listens on `http://localhost:8501`, the FastAPI backend on `http://localhost:8502`, and the experimental Next.js frontend on `http://localhost:8503`. Use `make down` to stop, `make logs` to tail the container, and `make help` for the complete command catalog.
-The compose stack now bind-mounts the `frontend/` directory, so Streamlit changes land immediately without rebuilding.
-
-### Ollama GenAI Service
-
-- Install Ollama locally (`brew install ollama`, Windows installer, or the Linux tarball) and make sure `ollama serve` is running on `http://localhost:11434`.
-- When the backend runs inside Docker, the compose file points `OLLAMA_BASE_URL` to `http://host.docker.internal:11434` so the container can reach your host runtime. Override the value in `.env` if your platform uses a different host bridge (for example `http://172.17.0.1:11434` on some Linux setups).
-- For local (non-Docker) development, keep `OLLAMA_BASE_URL=http://localhost:11434`.
-- Preload models on the host with `ollama pull <model>`; the `.env.example` recommends `llama3.1` (summaries), `phi3:mini` (long-form), and `nomic-embed-text` (embeddings) via `OLLAMA_PRELOAD_MODELS`.
-- Tune runtime behaviour with the `OLLAMA_*` environment variables (`OLLAMA_DEFAULT_TEMPERATURE`, `OLLAMA_TIMEOUT_SECONDS`, etc.) and restart the backend after changes.
-
-### Handy Make Commands
-
-- `make help` – List every available helper target with a short description.
-- `make up` / `make down` – Start or stop all services (backend, Streamlit frontend, and the Next.js preview).
-- `make up-frontend` / `make up-backend` – Launch a single service.
-- `make build` / `make rebuild` – Build images (all) or rebuild and restart.
-- `make destroy` – Remove all services, volumes, and orphan containers.
-- `make logs` / `make logs-frontend` / `make logs-backend` – Tail logs.
-- `make restart` / `make restart-frontend` / `make restart-backend` – Restart running services.
-- `make dev` – Start the backend plus the hot-reload frontend profile.
-
-Run `make help` for the full list (build, deploy, debug, tooling helpers, etc.).
-
-### Option B – Local Python environment
-
+### Option B – Local Python + Next.js environment
 ```bash
 git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
 cd openwebui-chat-analyzer
@@ -97,109 +67,81 @@ pip install -r requirements.txt
 cp .env.example .env
 python -m textblob.download_corpora   # first run only
 uvicorn backend.app:app --reload --port 8502  # terminal 1
-streamlit run frontend/home.py
 ```
-
-Run the backend and Streamlit UI in separate terminals (or background the FastAPI process) so the dashboard can reach `http://localhost:8502`.
+In a second terminal:
+```bash
+cd openwebui-chat-analyzer/frontend-next
+pnpm install
+pnpm dev
+```
+The dashboard runs on [http://localhost:3000](http://localhost:3000) during development. Keep the backend process running so the proxy routes can reach `http://localhost:8502`.
 
 ### Option C – Guided setup scripts
-
-Run `scripts/setup.sh` for an interactive wizard that can prepare either Docker or the virtual environment. After setup, use the `make` targets (`make up`, `make down`, `make logs`, etc.) for day-to-day lifecycle commands.
-
-Once Streamlit is running, visit `http://localhost:8501`, open the **Load Data** page, and either Direct Connect to Open WebUI or upload your latest exports to populate the dashboard.
+Run `scripts/setup.sh` for an interactive wizard that prepares Docker or the local development environment. The script can also generate a `run.sh` helper that launches both the backend and Next.js dev server together.
 
 ## Backend API
+The Next.js dashboard communicates with a FastAPI service that normalizes and serves chat exports. Key endpoints:
 
-The Streamlit front-end now talks to a FastAPI service that normalizes and serves the chat exports. Key endpoints:
-
-- `GET /api/v1/datasets/meta` – current dataset identifier, row counts, source label, and last updated timestamp.
-- `GET /api/v1/chats` / `GET /api/v1/messages` / `GET /api/v1/users` – hydrated chat metadata, messages, and optional user directory.
-- `POST /api/v1/openwebui/sync` – pull chats and users directly from Open WebUI using a hostname plus API token.
-- `POST /api/v1/uploads/chat-export` – upload a new `all-chats-export*.json`; replaces the in-memory dataset and bumps the dataset id.
-- `POST /api/v1/uploads/users` – upload a companion `users.csv` for friendly display names.
-- `POST /api/v1/datasets/reset` – delete all stored chat, message, and user records plus metadata.
-- `GET /api/v1/summaries/status` / `POST /api/v1/summaries/rebuild` – monitor or requeue the background summarizer job.
+- `GET /api/v1/datasets/meta` – Current dataset identifier, row counts, source label, and last updated timestamp.
+- `GET /api/v1/chats` / `GET /api/v1/messages` / `GET /api/v1/users` – Hydrated chat metadata, messages, and optional user directory.
+- `POST /api/v1/openwebui/sync` – Pull chats and users directly from Open WebUI using a hostname plus API token.
+- `POST /api/v1/uploads/chat-export` – Upload a new `all-chats-export*.json`; replaces the in-memory dataset and bumps the dataset id.
+- `POST /api/v1/uploads/users` – Upload a companion `users.csv` for friendly display names.
+- `POST /api/v1/datasets/reset` – Delete all stored chat, message, and user records plus metadata.
+- `GET /api/v1/summaries/status` / `POST /api/v1/summaries/rebuild` – Monitor or requeue the background summariser job.
 
 Run `uvicorn backend.app:app --reload` during development to keep the API available to the dashboard.
 
 ## Automated Chat Summaries
-
-- Summaries are persisted in the `summary_128` field for each chat and surface throughout the Browse and Overview experiences.
-- Every dataset update (direct sync or file upload) queues the summarizer; progress is shown in the Load Data processing log with toast notifications.
-- **Incremental persistence**: Summaries are written to the database immediately after each batch is processed by Ollama, rather than waiting for all chats to complete. This means:
-  - Dataset metrics update instantly after data loads, before summaries begin generating
-  - Summaries become available progressively as each batch completes
-  - If the summarizer is interrupted, all previously completed batches are already saved
-  - The dashboard remains responsive during long summarization jobs
-- The summarizer picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the bundled Ollama service (`OLLAMA_SUMMARY_MODEL`) with an automatic fallback to the Open WebUI completions endpoint at `OWUI_DIRECT_HOST`.
+- Summaries are persisted in the `gen_chat_summary` field for each chat and surface throughout the Browse and Overview experiences.
+- Every dataset update (direct sync or file upload) queues the summariser; progress is shown in the Load Data processing log with toast notifications.
+- **Incremental persistence**: summaries are written to the database immediately after each batch is processed by Ollama, rather than waiting for all chats to complete. This means:
+  - Dataset metrics update instantly after data loads, before summaries begin generating.
+  - Summaries become available progressively as each batch completes.
+  - If the summariser is interrupted, all previously completed batches are already saved.
+  - The dashboard remains responsive during long summarisation jobs.
+- The summariser picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the bundled Ollama service (`OLLAMA_SUMMARY_MODEL`) with an automatic fallback to the Open WebUI completions endpoint at `OWUI_DIRECT_HOST`.
 - Rebuild summaries anytime from **Load Data → Admin Tools → Rerun summaries** or through the API (`POST /api/v1/summaries/rebuild` + `/summaries/status`).
 
 ## Dashboard Tour
-
 - **Load Data page**: View dataset stats that update instantly after data loads, stream processing logs in real-time, Direct Connect to Open WebUI, upload exports (with optional `users.csv`), and access admin tools to reset or rerun summaries. Metrics display immediately even while summaries generate in the background.
 - **Overview metrics**: Totals and averages for chats, messages, per-role counts, file uploads, and approximate input/output token volumes (derived from character length).
-- **Model usage**: Horizontal bar chart plus quick stats for each model encountered across the filtered dataset.
-- **Filters**: Slice all visuals by Open WebUI user and model; filter changes reset pagination so the browse experience stays predictable.
-- **Tabs**:
-  - `🧾 Overview`: Metrics recomputed for the active filters.
-  - `📈 Time Analysis`: Daily activity timeline, conversation-length histogram, and hour-by-day heatmap.
-  - `💭 Content Analysis`: Word cloud for user messages, average message length by role, and length distribution.
-  - `😊 Sentiment`: TextBlob polarity grouped into positive/neutral/negative segments with a time series and supporting metrics.
-  - `🔍 Search`: Full-text search with role filter, highlighted matches, attachment badges, and per-thread JSON downloads.
-  - `🗂 Browse Data`: Paginated conversation browser with expanders, attachment indicators, and download buttons.
-- **Export section**: Download enriched chat metadata and message tables as CSV for external analysis.
+- **Time analysis**: Daily trends, conversation length distributions, and hour-by-day heatmaps with filters for model and user.
+- **Content analysis**: Word clouds for salient terms plus message length histograms broken down by role/model.
+- **Sentiment**: TextBlob polarity triages conversations into positive, neutral, or negative bins with per-user breakdowns.
+- **Browse and Search**: Dive into individual conversations, filter by user/model, run full-text search, and download enriched JSON/CSV exports.
 
 ## Working With the Data
-
 - CSV downloads contain the same columns the dashboard uses, making follow-on analysis in pandas, spreadsheets, or BI tools straightforward.
 - Per-thread JSON downloads include metadata, ISO timestamps, attachments, and every message shown in the interface.
 - Sentiment scores and token estimates are heuristic: tokens are inferred from character counts, and sentiment uses TextBlob’s polarity scale (−1 to 1).
 
 ## Sample Data
-
 `sample_data/sample_data_extract.json` and `sample_data/sample_users.csv` let you explore the dashboard without waiting for a fresh export. Copy them to `data/` or upload them through the UI to see the charts populate immediately.
 
 ## Development Notes
+- `docker-compose.yml` defines the backend, Next.js frontend, and optional Nginx reverse proxy. Use `make dev` (or `docker compose -f docker-compose.yml -f docker-compose.dev.yml up`) for hot reload.
+- The `Makefile` centralises build and lifecycle commands — start with `make help`.
+- Python dependencies live under `backend/requirements.txt` (aggregated through the root `requirements.txt`).
+- The Next.js app lives under `frontend-next/`; use `pnpm dev`, `pnpm build`, and `pnpm test` for local workflows.
+- The root Dockerfile includes a dedicated Next.js stage so you can build `frontend-next` alongside the Python services (`docker build --target frontend-next .`).
 
-- `docker-compose.yml` defines production, development (live reload), and optional Nginx proxy profiles. Use `docker compose --profile development up frontend-dev` or `make dev` for auto-reload.
-- The `Makefile` centralizes build and lifecycle commands — start with `make help`.
-- Python dependencies are split between `backend/requirements.txt` and `frontend/requirements.txt` (aggregate via root `requirements.txt`). The multi-stage Dockerfile builds dedicated images for each service and downloads the TextBlob corpora for the Streamlit frontend.
-- The root Dockerfile now includes a dedicated Next.js stage so you can build `frontend-next` alongside the Python services (`docker build --target frontend-next .`). The preview app also has its own `frontend-next/Dockerfile` optimized for the standalone project.
-
-## Next.js Preview Frontend
-
-- The preview lives under `frontend-next/` and mirrors the backend API endpoints used by Streamlit.
-- Run `docker compose up frontend-next` (or `pnpm dev` inside `frontend-next/`) to explore the new dashboard at `http://localhost:8503`.
-- Environment variables such as `FRONTEND_NEXT_BACKEND_BASE_URL` and `NEXTAUTH_SECRET` control API routing and auth. See `.env.example` for defaults.
-- Expect ongoing changes while we migrate Streamlit pages — gaps or regressions are tracked in [AGENTS.md](AGENTS.md) and upcoming milestones.
 ## Frontend Architecture
-
-### Adding a New Page or Chart
-1. Copy an existing module under `frontend/pages/` (for example `01_Overview.py`) or create a new `NN_Title.py` file so it appears in Streamlit's sidebar.
-2. Call `ensure_data_ready()` from `frontend.ui.page_state` to load dataset metadata, render the shared controls (direct connect, uploads), and fetch cached dataframes.
-3. Use `components.render_filters(...)` to reuse the global user/model filters; pass a unique `filter_prefix` so widget keys stay distinct.
-4. Build figures with helpers in `frontend/ui/charts.py` or add new chart builders there if you need fresh visuals, then render them with `st.plotly_chart`.
-5. Keep Streamlit calls inside the page or `frontend/ui/components.py`; push data munging into `frontend/core/processing.py` or `frontend/core/api.py` so it remains testable.
-
-### Data Fetching & Processing
-- HTTP access to the FastAPI backend lives in `frontend/core/api.py`, which exposes typed helpers like `get_dataset_meta()` and `build_processed_data()`.
-- Dataset transformations, metrics, and filtering logic are implemented in `frontend/core/processing.py`.
-- Streamlit caching for expensive calls is centralized in `frontend/ui/data_access.py`, while session helpers (reruns, widget state) live in `frontend/utils/state.py`.
-- UI widgets and charts are separated: `frontend/ui/components.py` handles layout, and `frontend/ui/charts.py` returns ready-to-render Plotly figures or word clouds.
+- `frontend-next/app/` – App Router routes, layouts, and API proxy handlers.
+- `frontend-next/components/` – Shared UI primitives, charts, tables, and providers.
+- `frontend-next/lib/` – Auth helpers, type definitions, and backend proxy utilities.
+- `frontend-next/tests/` – Jest smoke tests that exercise the server-side proxy handlers.
+- Authentication flows are powered by Auth.js (NextAuth) with credentials and optional GitHub OAuth providers.
 
 ## Privacy & Storage
-
-All requests stay on your machine—the Streamlit UI only talks to the bundled FastAPI service. Uploaded files remain under the repository (`data/` and `uploads/`) until you remove them.
+All requests stay on your machine—the Next.js dashboard only talks to the bundled FastAPI service. Uploaded files remain under the repository (`data/` and `uploads/`) until you remove them.
 
 ## Troubleshooting
-
-- If Streamlit crashes during sentiment analysis, install the TextBlob corpora with `python -m textblob.download_corpora`.
+- If the Next.js dev server fails to start, confirm Node 20+ and pnpm 8 are installed.
 - Summaries failing or timing out? Confirm your Open WebUI deployment at `OWUI_DIRECT_HOST` is reachable, the API key is valid, and that the sentence-transformers model has been downloaded (first run may take a minute).
 - Seeing 5xx errors from `/api/v1/genai/*`? Make sure your local Ollama runtime is up (`ollama list`) and that the required models are available.
 - Some environments need a font package for `wordcloud`; installing system fonts (for example `sudo apt-get install fonts-dejavu`) fixes blank visuals.
-- Adjust `STREAMLIT_SERVER_PORT` or the Docker port mapping if 8501 is already in use.
 - Seeing “Unable to connect to the backend API”? Make sure `uvicorn backend.app:app --port 8502` (or the Docker `backend` service) is running and reachable.
 
 ## License
-
 MIT — see `LICENSE` for the full text.

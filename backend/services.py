@@ -34,9 +34,30 @@ class SummaryJobCancelled(Exception):
     """Raised when a summary job is cancelled due to a newer dataset."""
 
 
-SUMMARY_EXPORT_FIELD = "owca_summary_128"
+SUMMARY_EXPORT_FIELD = "owca_gen_chat_summary"
+LEGACY_SUMMARY_EXPORT_FIELD = "owca_summary_128"
+SUMMARY_EXPORT_FIELDS = (SUMMARY_EXPORT_FIELD, LEGACY_SUMMARY_EXPORT_FIELD)
+SUMMARY_FIELD = "gen_chat_summary"
+LEGACY_SUMMARY_FIELD = "summary_128"
 DEFAULT_DIRECT_CONNECT_HOST = "http://localhost:4000"
 SUMMARY_EVENT_HISTORY_LIMIT = 500
+
+
+def _get_chat_summary(payload: Dict[str, Any]) -> str:
+    """Retrieve the normalized chat summary from a payload."""
+    value = payload.get(SUMMARY_FIELD)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        value = payload.get(LEGACY_SUMMARY_FIELD)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _set_chat_summary(payload: Dict[str, Any], summary: str) -> None:
+    """Persist a chat summary to a payload while cleaning legacy fields."""
+    payload[SUMMARY_FIELD] = summary
+    if LEGACY_SUMMARY_FIELD in payload:
+        payload.pop(LEGACY_SUMMARY_FIELD, None)
 
 
 def _coerce_timestamp(value: Any) -> Optional[datetime]:
@@ -325,16 +346,20 @@ def _parse_chat_export(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[Dic
             "folder_id": folder_id,
             "history_current_id": history_current_id,
         }
-        summary_value = item.get(SUMMARY_EXPORT_FIELD)
         chat_summary_value = None
-        if isinstance(summary_value, str):
-            chat_summary_value = summary_value
-        else:
-            nested_summary = chat_meta.get(SUMMARY_EXPORT_FIELD)
-            if isinstance(nested_summary, str):
-                chat_summary_value = nested_summary
+        for export_field in SUMMARY_EXPORT_FIELDS:
+            summary_value = item.get(export_field)
+            if isinstance(summary_value, str):
+                chat_summary_value = summary_value
+                break
+        if chat_summary_value is None:
+            for export_field in SUMMARY_EXPORT_FIELDS:
+                nested_summary = chat_meta.get(export_field)
+                if isinstance(nested_summary, str):
+                    chat_summary_value = nested_summary
+                    break
         if chat_summary_value is not None:
-            chat_info["summary_128"] = str(chat_summary_value)
+            _set_chat_summary(chat_info, str(chat_summary_value))
 
         chats.append(chat_info)
 
@@ -791,11 +816,14 @@ def _apply_summaries_to_export_payload(
         summary = summary_map.get(chat_id_str)
         if summary is None:
             continue
-        entry.pop(SUMMARY_EXPORT_FIELD, None)
+        for export_field in SUMMARY_EXPORT_FIELDS:
+            entry.pop(export_field, None)
         entry[SUMMARY_EXPORT_FIELD] = summary
         chat_section = entry.get("chat")
         if isinstance(chat_section, dict):
-            chat_section.pop(SUMMARY_EXPORT_FIELD, None)
+            for export_field in SUMMARY_EXPORT_FIELDS:
+                chat_section.pop(export_field, None)
+            chat_section[SUMMARY_EXPORT_FIELD] = summary
     return payload
 
 
@@ -902,6 +930,9 @@ class DataService:
         legacy_updates: Dict[str, Any] = {}
         with self._lock:
             self._chats = [chat.copy() for chat in state.chats]
+            for chat in self._chats:
+                summary_value = _get_chat_summary(chat)
+                _set_chat_summary(chat, summary_value)
             self._messages = [message.copy() for message in state.messages]
             self._users = [user.copy() for user in state.users]
             self._models = [model.copy() for model in state.models]
@@ -1622,7 +1653,7 @@ class DataService:
                 for chat in self._chats:
                     chat_id = str(chat.get("chat_id") or "")
                     if chat_id in batch_summaries:
-                        chat["summary_128"] = batch_summaries[chat_id]
+                        _set_chat_summary(chat, batch_summaries[chat_id])
 
             # Persist to database immediately
             self._storage.update_chat_summaries(batch_summaries)
@@ -1659,7 +1690,7 @@ class DataService:
                 for chat in self._chats:
                     chat_id = str(chat.get("chat_id") or "")
                     if chat_id in summary_map:
-                        chat["summary_128"] = summary_map[chat_id]
+                        _set_chat_summary(chat, summary_map[chat_id])
                 self._bump_version()
                 self._refresh_app_metadata(persist=False)
 
@@ -1757,14 +1788,15 @@ class DataService:
                 chat_id = str(chat_id_raw) if chat_id_raw not in (None, "", []) else ""
                 if not chat_id:
                     continue
-                summary_text = str(chat.get("summary_128") or "").strip()
+                summary_text = _get_chat_summary(chat)
+                _set_chat_summary(chat, summary_text)
                 if chat_id in existing_chat_ids:
                     existing_chat = self._chats[existing_chats_index[chat_id]]
-                    previous_summary = str(existing_chat.get("summary_128") or "").strip()
+                    previous_summary = _get_chat_summary(existing_chat)
                     existing_chat.update(chat)
-                    current_summary = str(existing_chat.get("summary_128") or "").strip()
+                    current_summary = _get_chat_summary(existing_chat)
                     if previous_summary and not current_summary:
-                        existing_chat["summary_128"] = previous_summary
+                        _set_chat_summary(existing_chat, previous_summary)
                         current_summary = previous_summary
                     if not summary_text and not current_summary:
                         chats_missing_summary.add(chat_id)
@@ -1789,7 +1821,7 @@ class DataService:
                     target_idx = existing_chats_index.get(chat_id_value)
                     if target_idx is not None:
                         target_chat = self._chats[target_idx]
-                        target_summary = str(target_chat.get("summary_128") or "").strip()
+                        target_summary = _get_chat_summary(target_chat)
                         if not target_summary:
                             chats_missing_summary.add(chat_id_value)
 
@@ -1884,7 +1916,8 @@ class DataService:
             chat_id = str(chat.get("chat_id") or "")
             if not chat_id:
                 continue
-            summary_text = str(chat.get("summary_128") or "").strip()
+            summary_text = _get_chat_summary(chat)
+            _set_chat_summary(chat, summary_text)
             if summary_text:
                 summary_map[chat_id] = summary_text
         LOGGER.info(
@@ -1907,7 +1940,7 @@ class DataService:
                 str(chat.get("chat_id") or "").strip()
                 for chat in self._chats
                 if str(chat.get("chat_id") or "").strip()
-                and not str(chat.get("summary_128") or "").strip()
+                and not _get_chat_summary(chat)
             ]
         self._storage.record_ingest(
             operation="chat_export_replace",
@@ -2234,7 +2267,7 @@ class DataService:
                 str(chat.get("chat_id") or "").strip()
                 for chat in self._chats
                 if str(chat.get("chat_id") or "").strip()
-                and not str(chat.get("summary_128") or "").strip()
+                and not _get_chat_summary(chat)
             ]
             self._source = f"openwebui:{base_url}"
             self._source_origin = requested_origin
@@ -2315,9 +2348,14 @@ class DataService:
             api_key = ""
             api_key_source = "empty"
 
+        database_host = host_value if host_value else ""
+        database_api_key = api_key_value if api_key_value else ""
+
         return {
             "host": host,
             "api_key": api_key,
+            "database_host": database_host,
+            "database_api_key": database_api_key,
             "host_source": host_source,
             "api_key_source": api_key_source,
         }
@@ -2387,6 +2425,17 @@ class DataService:
             if record is None:
                 return None
             return self._build_public_user(record)
+
+    def revoke_token(self, token: str) -> bool:
+        """Revoke an access token, effectively logging out the user.
+
+        Returns:
+            bool: True if token was revoked, False if it didn't exist.
+        """
+        if not token:
+            return False
+        with self._lock:
+            return self._auth_tokens.pop(token, None) is not None
 
     def has_auth_users(self) -> bool:
         with self._lock:

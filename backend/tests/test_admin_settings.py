@@ -20,6 +20,8 @@ def test_get_direct_connect_settings(monkeypatch):
             return {
                 "host": "http://example.com",
                 "api_key": "secret",
+                "database_host": "http://example.com",
+                "database_api_key": "secret",
                 "host_source": "database",
                 "api_key_source": "environment",
             }
@@ -37,6 +39,8 @@ def test_get_direct_connect_settings(monkeypatch):
     assert response.json() == {
         "host": "http://example.com",
         "api_key": "secret",
+        "database_host": "http://example.com",
+        "database_api_key": "secret",
         "host_source": "database",
         "api_key_source": "environment",
     }
@@ -53,6 +57,8 @@ def test_update_direct_connect_settings(monkeypatch):
             return {
                 "host": "http://fallback",
                 "api_key": "",
+                "database_host": "",
+                "database_api_key": "",
                 "host_source": "default",
                 "api_key_source": "empty",
             }
@@ -62,6 +68,8 @@ def test_update_direct_connect_settings(monkeypatch):
             return {
                 "host": host or "",
                 "api_key": api_key or "",
+                "database_host": host or "",
+                "database_api_key": api_key or "",
                 "host_source": "database",
                 "api_key_source": "database" if api_key else "empty",
             }
@@ -82,6 +90,8 @@ def test_update_direct_connect_settings(monkeypatch):
     assert response.json() == {
         "host": "http://new-host",
         "api_key": "new-key",
+        "database_host": "http://new-host",
+        "database_api_key": "new-key",
         "host_source": "database",
         "api_key_source": "database",
     }

@@ -2,7 +2,7 @@ import { ReactNode } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import SidebarHealthStatus from "@/components/sidebar-health-status";
-import { Button } from "@/components/ui/button";
+import { LogoutButton } from "@/components/logout-button";
 import { getServerAuthSession } from "@/lib/auth";
 
 const NAV_LINKS = [
@@ -48,21 +48,13 @@ export default async function DashboardLayout({ children }: { children: ReactNod
           <SidebarHealthStatus />
         </div>
         <div className="border-t px-4 py-6">
-          <form action="/api/auth/signout" method="post">
-            <Button className="w-full" type="submit" variant="ghost">
-              Sign out
-            </Button>
-          </form>
+          <LogoutButton className="w-full" variant="ghost" />
         </div>
       </aside>
       <main className="flex-1 overflow-y-auto bg-muted/20">
         <header className="flex items-center justify-between border-b bg-background px-6 py-4 lg:hidden">
           <p className="text-sm font-medium">Chat Analyzer</p>
-          <form action="/api/auth/signout" method="post">
-            <Button size="sm" type="submit" variant="outline">
-              Sign out
-            </Button>
-          </form>
+          <LogoutButton size="sm" variant="outline" />
         </header>
         <div className="w-full px-4 py-6 sm:px-6 lg:px-8">{children}</div>
       </main>

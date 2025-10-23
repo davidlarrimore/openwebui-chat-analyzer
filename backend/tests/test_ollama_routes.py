@@ -38,6 +38,7 @@ class DummyOllamaClient:
         model: str | None = None,
         system: str | None = None,
         options: Dict[str, Any] | None = None,
+        keep_alive: str | int | None = None,
     ) -> OllamaGenerateResult:
         attempted_model = model or ""
         self.generate_models.append(attempted_model)
@@ -46,6 +47,7 @@ class DummyOllamaClient:
             "model": model,
             "system": system,
             "options": options or {},
+            "keep_alive": keep_alive,
         }
         if self.raise_oom_once:
             self.raise_oom_once = False
@@ -124,6 +126,9 @@ def test_generate_summary_returns_trimmed_text(api_client: TestClient, dummy_oll
     assert payload["model"] == "llama3.1"
     assert dummy_ollama.last_generate is not None
     assert "system" in dummy_ollama.last_generate
+    assert dummy_ollama.last_generate["keep_alive"] == "-1"
+    assert dummy_ollama.last_generate["options"]["num_predict"] == 32
+    assert dummy_ollama.last_generate["options"]["num_ctx"] == 1024
 
 
 def test_generate_summary_falls_back_when_model_runs_out_of_memory(
@@ -141,6 +146,8 @@ def test_generate_summary_falls_back_when_model_runs_out_of_memory(
     assert payload["summary"] == "Summarized headline."
     assert payload["model"] == "phi3:mini"
     assert dummy_ollama.generate_models == ["llama3.1", "phi3:mini"]
+    assert dummy_ollama.last_generate is not None
+    assert dummy_ollama.last_generate["keep_alive"] == "-1"
 
 
 def test_generate_text_uses_default_temperature(api_client: TestClient, dummy_ollama: DummyOllamaClient) -> None:

@@ -22,7 +22,7 @@ app = FastAPI(
     description="Backend service powering the Open WebUI Chat Analyzer dashboard.",
 )
 
-# Configure CORS so that the Streamlit frontend (and other approved origins) can call the API.
+# Configure CORS so that the Next.js dashboard (and other approved origins) can call the API.
 # We deliberately keep the allow list driven by configuration so deployments can constrain access.
 app.add_middleware(
     CORSMiddleware,

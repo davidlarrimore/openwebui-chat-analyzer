@@ -381,6 +381,14 @@ class AdminDirectConnectSettings(BaseModel):
         ...,
         description="Effective API key used for Direct Connect operations.",
     )
+    database_host: str = Field(
+        default="",
+        description="Base URL stored in the database (if available).",
+    )
+    database_api_key: str = Field(
+        default="",
+        description="API key stored in the database (if available).",
+    )
     host_source: Literal["database", "environment", "default"] = Field(
         ...,
         description="Origin for the host value (database, environment, or built-in default).",

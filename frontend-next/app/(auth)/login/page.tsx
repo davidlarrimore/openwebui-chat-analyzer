@@ -24,6 +24,9 @@ function LoginPageInner() {
 
   const callbackUrl = searchParams.get("callbackUrl") ?? "/dashboard";
   const errorFromQuery = searchParams.get("error");
+  const errorMessage = errorFromQuery === "SessionExpired"
+    ? "Your session has expired. Please sign in again."
+    : errorFromQuery;
 
   useEffect(() => {
     let isMounted = true;
@@ -133,8 +136,8 @@ function LoginPageInner() {
               </Button>
             </form>
           )}
-          {errorFromQuery && !checkingStatus && (
-            <p className="mt-4 text-sm text-destructive">Error: {errorFromQuery}</p>
+          {errorMessage && !checkingStatus && (
+            <p className="mt-4 text-sm text-destructive">{errorMessage}</p>
           )}
           {!checkingStatus && ENABLE_GITHUB_OAUTH && (
             <Button className="mt-4 w-full" onClick={handleGitHubSignIn} variant="secondary" type="button">

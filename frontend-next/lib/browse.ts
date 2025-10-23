@@ -51,6 +51,53 @@ function toStringArray(value: unknown): string[] {
   return candidate ? [candidate] : [];
 }
 
+function pickSummary(record: UnknownRecord, meta: UnknownRecord): string {
+  const metaSummary =
+    meta && typeof meta === "object"
+      ? [
+          meta.owca_gen_chat_summary as unknown,
+          (meta.summary_full ?? meta.summary) as unknown,
+          meta.owca_summary_full as unknown,
+          meta.owca_summary as unknown
+        ]
+      : [];
+
+  const chatValue = record.chat;
+  const chatObject =
+    chatValue && typeof chatValue === "object" && !Array.isArray(chatValue) ? (chatValue as UnknownRecord) : null;
+  const chatSummaryCandidates = chatObject
+    ? [
+        chatObject.summary_full as unknown,
+        chatObject.summary as unknown,
+        chatObject.summaryText as unknown,
+        chatObject.summary_text as unknown
+      ]
+    : [];
+
+  const candidates: unknown[] = [
+    record.gen_chat_summary,
+    record.summary_full,
+    record.summary,
+    record.summaryText,
+    record.summary_text,
+    record.full_summary,
+    record.summary_512,
+    record.summary_256,
+    ...metaSummary,
+    ...chatSummaryCandidates,
+    record.summary128,
+    record.summary_128
+  ];
+
+  for (const candidate of candidates) {
+    const value = toStringOrNull(candidate);
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
 function coerceTimestamp(value: unknown): string | null {
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? null : value.toISOString();
@@ -169,7 +216,6 @@ export function normaliseBrowseChats(rawChats: unknown, rawUsers: unknown): Brow
 
       const userId = toStringOrNull(record.user_id);
       const title = toStringOrNull(record.title) ?? chatId;
-      const summary = toStringOrNull(record.summary_128) ?? "";
       const createdAt = coerceTimestamp(record.created_at ?? record.timestamp);
       const updatedAt = coerceTimestamp(record.updated_at ?? record.timestamp);
       const filesUploaded = Number(record.files_uploaded ?? 0) || 0;
@@ -185,6 +231,7 @@ export function normaliseBrowseChats(rawChats: unknown, rawUsers: unknown): Brow
         paramsValue && typeof paramsValue === "object" && !Array.isArray(paramsValue)
           ? (paramsValue as UnknownRecord)
           : {};
+      const summary = pickSummary(record, meta);
 
       const tagsSet = new Set<string>();
       for (const candidate of toStringArray(meta.tags)) {
