@@ -21,6 +21,7 @@
     "@visx/shape": "^3.3.1",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
+    "dotenv": "^17.2.3",
     "lucide-react": "^0.364.0",
     "next": "14.2.4",
     "next-auth": "4.24.8",

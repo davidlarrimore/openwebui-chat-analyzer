@@ -110,6 +110,194 @@ Run `uvicorn backend.app:app --reload` during development to keep the API availa
 - **Content analysis**: Word clouds for salient terms plus message length histograms broken down by role/model.
 - **Sentiment**: TextBlob polarity triages conversations into positive, neutral, or negative bins with per-user breakdowns.
 - **Browse and Search**: Dive into individual conversations, filter by user/model, run full-text search, and download enriched JSON/CSV exports.
+- **Connection Info page**: Manage your OpenWebUI Direct Connect settings, monitor data freshness, view real-time sync logs, and configure automatic sync scheduling. See detailed documentation below.
+
+## Connection Info Page
+
+The Connection Info page (accessible at `/dashboard/admin/connection`) provides comprehensive management of your OpenWebUI Direct Connect integration with real-time monitoring and automated sync capabilities.
+
+### Test Connection Flow
+
+The **Test Connection** button verifies your OpenWebUI instance is reachable without importing data:
+
+1. Click **Test Connection** to validate credentials and connectivity
+2. The system tests both anonymous and authenticated endpoints
+3. Success displays a toast with:
+   - OpenWebUI version detected
+   - Number of chats found
+   - Connection attempts (if retries occurred)
+4. Failure shows an error toast with detailed diagnostics
+5. All tests complete without modifying your local dataset
+
+**Security**: API keys are never logged or displayed. Connection logs only show "Using authenticated connection" without exposing credentials.
+
+### Full vs Incremental Sync
+
+Choose between two sync modes using the **Mode** toggle:
+
+**Full Sync** (replaces all data):
+- Wipes existing chats, messages, users, and models
+- Fetches complete dataset from OpenWebUI
+- Use when: switching data sources, recovering from corruption, or resetting the analyzer
+- Triggered automatically when changing the hostname setting
+
+**Incremental Sync** (appends new data):
+- Compares source hostnames to detect same-source syncs
+- Uses watermark tracking (max `updated_at` timestamp) to identify new chats
+- Merges new chats, messages, users, and models into existing dataset
+- Recommended mode when `has_data: true` and source matches
+- Faster and preserves locally-generated summaries
+
+**Last Sync Display**:
+- Shows timestamp of most recent successful sync
+- Displays "Never" if no sync has occurred
+- Updates immediately after **Load Data** completes
+- Persists across application restarts
+
+### Quote-Free Settings Storage
+
+The settings system automatically normalizes input to prevent serialization issues:
+
+- **Quote Stripping**: Values like `"http://example.com"` are stored as `http://example.com`
+- **Defensive Parsing**: Legacy quoted values are stripped on read
+- **Migration**: Database migration (Migration 2) retroactively strips quotes from existing settings
+- **API Response**: Settings endpoints always return clean, unquoted values
+- **Source Tracking**: Each setting shows its origin (database, environment, or default)
+
+**Note**: The legacy `dataset_source_display` setting has been removed. The dataset source is now derived directly from `OWUI_DIRECT_HOST`.
+
+### Hostname Change: Wipe & Reload
+
+Changing the hostname triggers a safe, transactional data refresh:
+
+1. **Detection**: System compares normalized current vs new hostname
+2. **Wipe Phase** (if hostname differs):
+   - Transactional deletion in FK-safe order: messages → chats → users → models
+   - SQLite PRAGMA `foreign_keys=ON` enforced
+   - All-or-nothing: rollback on any failure
+   - Emits structured log: `"Starting transactional wipe of OpenWebUI data"`
+3. **Reload Phase**:
+   - Triggers full sync from new hostname
+   - Uses updated API key (or existing if unchanged)
+   - Inherits all sync logging from standard pipeline
+   - Emits log: `"Starting full reload from {new_hostname}"`
+4. **Completion**:
+   - In-memory state cleared and version bumped
+   - Dataset metadata refreshed
+   - Final log: `"Hostname change complete: wipe and reload finished"`
+
+**Error Handling**: Exceptions during wipe/reload emit error logs and re-raise to caller for proper HTTP error response.
+
+### Processing Log Viewer
+
+The right panel displays real-time structured logs from all sync operations:
+
+**Log Structure**:
+- **Timestamp**: ISO 8601 with millisecond precision
+- **Level**: debug, info, warning, error (color-coded)
+- **Phase**: connect, fetch, persist, summarize, done, error (with icons)
+- **Job ID**: Optional identifier for filtering multi-operation workflows
+- **Message**: Human-readable description
+- **Details**: Optional JSON metadata (e.g., `{"count": 150}`)
+
+**Features**:
+- **Auto-scroll**: Follows new entries (disable by scrolling up)
+- **Auto-refresh**: Polls `/api/v1/logs` every 2 seconds
+- **Filtering**: Query by `job_id` to isolate specific operations
+- **Circular Buffer**: Retains last 200 events in memory
+- **Secret Redaction**: API keys never appear in logs (only `"Using authenticated connection"`)
+
+**Example Log Sequence** (hostname change):
+```
+[12:00:00.123] 🔌 INFO     Hostname changed to http://new.com, triggering wipe and reload
+[12:00:00.456] 💾 INFO     Starting transactional wipe of OpenWebUI data
+[12:00:01.789] 💾 INFO     Wipe complete
+[12:00:01.890] 📥 INFO     Starting full reload from http://new.com
+[12:00:02.123] 🔌 INFO     Starting sync from http://new.com
+[12:00:03.456] 📥 INFO     Fetched 150 chats
+[12:00:04.789] 💾 INFO     Performing full sync (different source or first sync)
+[12:00:05.012] ✅ INFO     Full sync complete: 150 chats, 1250 messages
+```
+
+### Data Freshness & Staleness
+
+Visual indicators help you monitor data currency:
+
+**Staleness Pill** (next to Last Sync):
+- **Green "Up to date"**: Last sync within threshold (default 6 hours)
+- **Amber "Stale"**: Last sync exceeds threshold
+- Hidden when no sync has occurred
+- Threshold configurable via `SYNC_STALENESS_THRESHOLD_HOURS` setting
+
+**Staleness Calculation**:
+- Compares `last_sync_at` to current time
+- Uses `timedelta(hours=staleness_threshold_hours)`
+- Data with no timestamp but existing chats marked stale
+- Fresh data marked `is_stale: false`
+
+**Local Counts** (in sync status API):
+- Chats, messages, users, models
+- Returned in `/api/v1/sync/status` response
+- Useful for comparing local vs upstream counts
+
+### Automatic Sync Scheduler
+
+Configure periodic incremental syncs via the **Scheduler** button:
+
+**Scheduler Drawer**:
+- **Enable/Disable Toggle**: Turn automatic syncs on/off
+- **Interval Selector**: 5-1440 minutes (5 min to 24 hours)
+- **Save Interval**: Persists configuration to database
+- **State Display**: Shows enabled status, interval, last run, next run
+
+**How It Works**:
+- Scheduler state stored in database (`SYNC_SCHEDULER_ENABLED`, `SYNC_SCHEDULER_INTERVAL_MINUTES`)
+- Interval validated: 5 ≤ interval ≤ 1440
+- Next run calculated as `last_run_at + interval`
+- Manual syncs unaffected (always available via **Load Data** button)
+
+**API Endpoints**:
+- `GET /api/v1/sync/scheduler`: Fetch current config
+- `POST /api/v1/sync/scheduler`: Update config with `{enabled: bool, interval_minutes: int}`
+
+**Note**: The scheduler infrastructure tracks state and configuration. Actual background execution (cron-like functionality) requires additional threading/scheduling implementation (e.g., `APScheduler`, `threading.Timer`).
+
+### Edit Mode & Settings Persistence
+
+Data source settings are protected by edit mode:
+
+1. **Default State**: Hostname and API Key fields are **disabled**
+2. **Edit Mode**: Click **Edit Data Source** to enable fields
+3. **In Edit Mode**:
+   - Fields become editable
+   - **Save Settings** and **Cancel** buttons appear
+   - Changes tracked against original values
+4. **Save**:
+   - Only changed values sent to backend (`PUT /api/v1/admin/settings/direct-connect`)
+   - Settings persisted to database
+   - Hostname change triggers wipe/reload (see above)
+   - Edit mode exits on success
+5. **Cancel**:
+   - Reverts fields to original values
+   - Exits edit mode without API call
+
+**Security**:
+- API keys displayed as password field (`type="password"`)
+- Backend logs show redacted keys: `supe...2345` (first 4 + last 4 chars)
+- Full secrets never logged or displayed
+
+### WAL Mode & Concurrency
+
+The database uses SQLite optimizations for better performance during large syncs:
+
+- **WAL Mode**: Write-Ahead Logging (`PRAGMA journal_mode=WAL`)
+- **Foreign Keys**: Enforced (`PRAGMA foreign_keys=ON`)
+- **Synchronous**: Set to NORMAL (`PRAGMA synchronous=NORMAL`) for speed while maintaining safety
+
+**Benefits**:
+- Prevents long locks during reload operations
+- Allows concurrent reads during writes
+- Maintains transactional integrity
 
 ## Working With the Data
 - CSV downloads contain the same columns the dashboard uses, making follow-on analysis in pandas, spreadsheets, or BI tools straightforward.

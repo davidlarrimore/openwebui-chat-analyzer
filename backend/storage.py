@@ -7,12 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update, func
 from sqlalchemy.exc import SQLAlchemyError
 
-from .db import DATABASE_URL, init_database, session_scope
+from .db import DATABASE_URL, engine, init_database, session_scope
 from .db_models import (
     Account,
+    AccessToken,
     ChatRecord,
     DatasetSnapshot,
     IngestLog,
@@ -36,6 +37,17 @@ class DatabaseState:
     accounts: List[Dict[str, Any]]
     snapshot: Optional[Dict[str, Any]]
     settings: Dict[str, Any]
+
+
+@dataclass(slots=True)
+class AccessTokenState:
+    """Metadata representing a stored access token."""
+
+    token_hash: str
+    username: str
+    issued_at: datetime
+    expires_at: datetime
+    revoked_at: Optional[datetime]
 
 
 class DatabaseStorage:
@@ -326,6 +338,15 @@ class DatabaseStorage:
             if model_records:
                 session.bulk_save_objects(model_records)
 
+    def auth_user_count(self) -> int:
+        """Return the number of stored authentication accounts."""
+        try:
+            with session_scope() as session:
+                return int(session.execute(select(func.count()).select_from(Account)).scalar_one())
+        except SQLAlchemyError:
+            LOGGER.exception("Failed to count authentication accounts from database")
+            return -1
+
     def replace_accounts(self, accounts: Iterable[Dict[str, Any]]) -> None:
         with session_scope() as session:
             session.execute(delete(Account))
@@ -333,6 +354,103 @@ class DatabaseStorage:
             LOGGER.info("Persisting %d account records", len(account_records))
             if account_records:
                 session.bulk_save_objects(account_records)
+
+    # ------------------------------------------------------------------
+    # Access token management
+    # ------------------------------------------------------------------
+    def create_access_token(
+        self,
+        *,
+        token_hash: str,
+        username: str,
+        issued_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        """Persist a freshly issued access token."""
+        try:
+            with session_scope() as session:
+                session.add(
+                    AccessToken(
+                        token_hash=token_hash,
+                        username=username,
+                        issued_at=issued_at,
+                        expires_at=expires_at,
+                        revoked_at=None,
+                    )
+                )
+        except SQLAlchemyError:
+            LOGGER.exception("Failed to persist access token for user %s", username)
+            raise
+
+    def fetch_access_token(self, token_hash: str) -> Optional[AccessTokenState]:
+        """Retrieve a stored access token by its hash."""
+        try:
+            with session_scope() as session:
+                row = (
+                    session.execute(select(AccessToken).where(AccessToken.token_hash == token_hash))
+                    .scalars()
+                    .first()
+                )
+                if row is None:
+                    return None
+                return AccessTokenState(
+                    token_hash=row.token_hash,
+                    username=row.username,
+                    issued_at=row.issued_at,
+                    expires_at=row.expires_at,
+                    revoked_at=row.revoked_at,
+                )
+        except SQLAlchemyError:
+            LOGGER.exception("Failed to fetch access token metadata")
+            return None
+
+    def revoke_access_token(self, token_hash: str, *, revoked_at: datetime) -> bool:
+        """Mark a token as revoked."""
+        try:
+            with session_scope() as session:
+                result = session.execute(
+                    update(AccessToken)
+                    .where(AccessToken.token_hash == token_hash, AccessToken.revoked_at.is_(None))
+                    .values(revoked_at=revoked_at)
+                )
+                return result.rowcount > 0
+        except SQLAlchemyError:
+            LOGGER.exception("Failed to revoke access token")
+            return False
+
+    def delete_access_token(self, token_hash: str) -> bool:
+        """Remove a token record outright."""
+        try:
+            with session_scope() as session:
+                result = session.execute(delete(AccessToken).where(AccessToken.token_hash == token_hash))
+                return result.rowcount > 0
+        except SQLAlchemyError:
+            LOGGER.exception("Failed to delete access token")
+            return False
+
+    def prune_expired_tokens(self, *, reference: datetime) -> int:
+        """Drop persisted tokens past their expiry."""
+        try:
+            with session_scope() as session:
+                result = session.execute(delete(AccessToken).where(AccessToken.expires_at <= reference))
+                return int(result.rowcount or 0)
+        except SQLAlchemyError:
+            LOGGER.exception("Failed to prune expired access tokens")
+            return 0
+
+    def revoke_tokens_for_user(self, username: str, *, revoked_at: datetime) -> int:
+        """Revoke all active tokens associated with a username."""
+        try:
+            with session_scope() as session:
+                result = session.execute(
+                    update(AccessToken)
+                    .where(AccessToken.username == username, AccessToken.revoked_at.is_(None))
+                    .values(revoked_at=revoked_at)
+                )
+                return int(result.rowcount or 0)
+        except SQLAlchemyError:
+            LOGGER.exception("Failed to revoke access tokens for user %s", username)
+            return 0
 
     def record_snapshot(self, payload: Dict[str, Any]) -> None:
         snapshot = DatasetSnapshot(
@@ -406,6 +524,34 @@ class DatabaseStorage:
                     .values(gen_chat_summary=summary)
                 )
         LOGGER.info("Updated summaries for %d chats", len(summaries))
+
+    def wipe_openwebui_data(self) -> None:
+        """Transactionally wipe all OpenWebUI-sourced data (chats, messages, users, models).
+
+        This performs a clean wipe in a single transaction, respecting FK constraints.
+        Messages are deleted first (or cascade from chats), then chats, users, and models.
+        """
+        LOGGER.info("Starting transactional wipe of OpenWebUI-sourced data")
+        with session_scope() as session:
+            # Enable FK enforcement for SQLite (no-op for other DBs)
+            if engine.dialect.name == "sqlite":
+                session.execute(text("PRAGMA foreign_keys = ON"))
+
+            # Delete in FK-safe order: messages, chats, users, models
+            # Messages have FK to chats with CASCADE, so they'll be auto-deleted,
+            # but we delete explicitly for clarity and to support non-CASCADE scenarios
+            msg_count = session.execute(delete(MessageRecord)).rowcount
+            chat_count = session.execute(delete(ChatRecord)).rowcount
+            user_count = session.execute(delete(OpenWebUIUser)).rowcount
+            model_count = session.execute(delete(ModelRecord)).rowcount
+
+            LOGGER.info(
+                "Wipe complete: deleted %d messages, %d chats, %d users, %d models",
+                msg_count,
+                chat_count,
+                user_count,
+                model_count,
+            )
 
     def fetch_ingest_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
         with session_scope() as session:

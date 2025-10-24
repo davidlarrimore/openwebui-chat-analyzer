@@ -19,10 +19,14 @@ async function handler(request: NextRequest, context: { params: { path?: string[
   const session = await getServerAuthSession();
 
   const headers = new Headers(request.headers);
+  const skipAuth = headers.get("x-next-auth-skip") === "true";
+  if (skipAuth) {
+    headers.delete("x-next-auth-skip");
+  }
   headers.delete("host");
   headers.delete("content-length");
 
-  if (session?.accessToken && !headers.has("authorization")) {
+  if (!skipAuth && session?.accessToken && !headers.has("authorization")) {
     headers.set("authorization", `Bearer ${session.accessToken}`);
   }
 

@@ -22,6 +22,11 @@ app = FastAPI(
     description="Backend service powering the Open WebUI Chat Analyzer dashboard.",
 )
 
+# Expose the shared data service on the FastAPI instance so tests can monkeypatch it via
+# backend.app.data_service.*
+setattr(app, "data_service", data_service)
+app.state.data_service = data_service
+
 # Configure CORS so that the Next.js dashboard (and other approved origins) can call the API.
 # We deliberately keep the allow list driven by configuration so deployments can constrain access.
 app.add_middleware(

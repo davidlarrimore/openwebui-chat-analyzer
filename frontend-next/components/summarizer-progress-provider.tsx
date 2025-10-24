@@ -1,8 +1,9 @@
 "use client";
 
+import { useSession } from "next-auth/react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { apiGet } from "@/lib/api";
+import { apiGet, ApiError } from "@/lib/api";
 import type { SummaryEvent, SummaryEventsResponse, SummaryStatus } from "@/lib/types";
 
 type SummarizerSnapshot = {
@@ -48,6 +49,7 @@ function toSnapshot(status: SummaryStatus | null, fallback: SummarizerSnapshot |
 }
 
 export function SummarizerProgressProvider({ children }: { children: React.ReactNode }) {
+  const { data: session, status: authStatus } = useSession();
   const [status, setStatus] = useState<SummarizerSnapshot | null>(null);
   const [visible, setVisible] = useState(false);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -56,6 +58,7 @@ export function SummarizerProgressProvider({ children }: { children: React.React
   const listenersRef = useRef<Set<SummarizerListener>>(new Set());
   const abortRef = useRef(false);
   const statusRef = useRef<SummarizerSnapshot | null>(null);
+  const unauthorizedRef = useRef(false);
 
   const applyStatus = useCallback((next: SummarizerSnapshot | null) => {
     setStatus((previous) => {
@@ -136,6 +139,25 @@ export function SummarizerProgressProvider({ children }: { children: React.React
   }, [status]);
 
   useEffect(() => {
+    const hasValidSession = authStatus === "authenticated" && Boolean(session?.accessToken);
+
+    if (!hasValidSession) {
+      unauthorizedRef.current = false;
+      abortRef.current = true;
+      if (pollTimeoutRef.current) {
+        clearTimeout(pollTimeoutRef.current);
+        pollTimeoutRef.current = null;
+      }
+      lastEventIdRef.current = null;
+      statusRef.current = null;
+      applyStatus(null);
+      return;
+    }
+
+    if (unauthorizedRef.current) {
+      return;
+    }
+
     abortRef.current = false;
 
     const schedulePoll = (delay: number) => {
@@ -155,26 +177,35 @@ export function SummarizerProgressProvider({ children }: { children: React.React
       let snapshot: SummarizerSnapshot | null = statusRef.current;
 
       try {
-        const [statusPayload, eventsPayload] = await Promise.all([
-          apiGet<SummaryStatus>("api/v1/summaries/status"),
-          (async () => {
-            const path = lastEventIdRef.current
-              ? `api/v1/summaries/events?after=${encodeURIComponent(lastEventIdRef.current)}`
-              : "api/v1/summaries/events";
-            return apiGet<SummaryEventsResponse>(path);
-          })()
-        ]);
+        const statusPayload = await apiGet<SummaryStatus>(
+          "api/v1/summaries/status",
+          undefined,
+          { skipAuthRedirect: true }
+        );
 
-        const queue = eventsPayload ?? { events: [] };
-        const fetchedEvents = Array.isArray(queue.events) ? queue.events : [];
+        const isRunning = statusPayload?.state === "running";
+        if (isRunning) {
+          const path = lastEventIdRef.current
+            ? `api/v1/summaries/events?after=${encodeURIComponent(lastEventIdRef.current)}`
+            : "api/v1/summaries/events";
+          const queue = await apiGet<SummaryEventsResponse>(
+            path,
+            undefined,
+            { skipAuthRedirect: true }
+          );
 
-        if (queue.reset) {
+          const fetchedEvents = Array.isArray(queue?.events) ? queue.events : [];
+
+          if (queue?.reset) {
+            lastEventIdRef.current = null;
+          }
+
+          if (fetchedEvents.length) {
+            lastEventIdRef.current = fetchedEvents[fetchedEvents.length - 1]?.event_id ?? lastEventIdRef.current;
+            events = fetchedEvents;
+          }
+        } else {
           lastEventIdRef.current = null;
-        }
-
-        if (fetchedEvents.length) {
-          lastEventIdRef.current = fetchedEvents[fetchedEvents.length - 1]?.event_id ?? lastEventIdRef.current;
-          events = fetchedEvents;
         }
 
         const latestMessageFromEvents =
@@ -186,6 +217,14 @@ export function SummarizerProgressProvider({ children }: { children: React.React
         applyStatus(snapshot);
         nextDelay = snapshot?.state === "running" ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
       } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+          abortRef.current = true;
+          unauthorizedRef.current = true;
+          lastEventIdRef.current = null;
+          statusRef.current = null;
+          applyStatus(null);
+          return;
+        }
         console.error("Failed to poll summarizer status", error);
         nextDelay = POLL_INTERVAL_IDLE_MS;
       }
@@ -222,7 +261,7 @@ export function SummarizerProgressProvider({ children }: { children: React.React
         pollTimeoutRef.current = null;
       }
     };
-  }, [applyStatus]);
+  }, [authStatus, session?.accessToken, applyStatus]);
 
   const contextValue = useMemo(
     () => ({

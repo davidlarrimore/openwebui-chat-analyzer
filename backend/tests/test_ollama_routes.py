@@ -126,7 +126,7 @@ def test_generate_summary_returns_trimmed_text(api_client: TestClient, dummy_oll
     assert payload["model"] == "llama3.1"
     assert dummy_ollama.last_generate is not None
     assert "system" in dummy_ollama.last_generate
-    assert dummy_ollama.last_generate["keep_alive"] == "-1"
+    assert dummy_ollama.last_generate["keep_alive"] is None
     assert dummy_ollama.last_generate["options"]["num_predict"] == 32
     assert dummy_ollama.last_generate["options"]["num_ctx"] == 1024
 
@@ -147,7 +147,7 @@ def test_generate_summary_falls_back_when_model_runs_out_of_memory(
     assert payload["model"] == "phi3:mini"
     assert dummy_ollama.generate_models == ["llama3.1", "phi3:mini"]
     assert dummy_ollama.last_generate is not None
-    assert dummy_ollama.last_generate["keep_alive"] == "-1"
+    assert dummy_ollama.last_generate["keep_alive"] is None
 
 
 def test_generate_text_uses_default_temperature(api_client: TestClient, dummy_ollama: DummyOllamaClient) -> None:

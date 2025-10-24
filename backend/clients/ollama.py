@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -17,6 +18,21 @@ from ..config import OLLAMA_BASE_URL, OLLAMA_TIMEOUT_SECONDS
 LOGGER = logging.getLogger(__name__)
 if not LOGGER.handlers:
     logging.basicConfig(level=logging.INFO)
+
+_JSON_DEBUG_MAX_LENGTH = 2048
+
+
+def _format_debug_json(payload: Any) -> str:
+    """Return a truncated JSON string suitable for debug logging."""
+    if payload is None:
+        return "<none>"
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        encoded = str(payload)
+    if len(encoded) > _JSON_DEBUG_MAX_LENGTH:
+        return f"{encoded[:_JSON_DEBUG_MAX_LENGTH]}…(truncated)"
+    return encoded
 
 
 class OllamaClientError(RuntimeError):
@@ -97,6 +113,14 @@ class OllamaClient:
         json: Optional[Dict[str, Any]] = None,
     ) -> Response:
         url = f"{self.base_url}{_normalize_path(path)}"
+        LOGGER.debug(
+            "Ollama request -> %s %s (payload_keys=%s)",
+            method,
+            url,
+            tuple(sorted(json.keys())) if isinstance(json, dict) else (),
+        )
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            LOGGER.debug("Ollama request payload: %s", _format_debug_json(json))
         try:
             response = self._session.request(
                 method=method,
@@ -107,6 +131,17 @@ class OllamaClient:
         except requests.RequestException as exc:
             raise OllamaClientError(f"Ollama request failed: {exc}") from exc
 
+        LOGGER.debug(
+            "Ollama response <- %s %s status=%s",
+            method,
+            url,
+            response.status_code,
+        )
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            body_preview = response.text
+            if len(body_preview) > _JSON_DEBUG_MAX_LENGTH:
+                body_preview = f"{body_preview[:_JSON_DEBUG_MAX_LENGTH]}…(truncated)"
+            LOGGER.debug("Ollama raw response body: %s", body_preview)
         if response.status_code >= 400:
             text = response.text
             error_detail = ""
@@ -147,10 +182,33 @@ class OllamaClient:
         if options:
             payload["options"] = options
         if keep_alive is not None:
-            payload["keep_alive"] = str(keep_alive)
+            normalized_keep_alive: Any
+            if isinstance(keep_alive, str):
+                normalized_candidate = keep_alive.strip()
+                try:
+                    normalized_keep_alive = int(normalized_candidate)
+                except ValueError:
+                    normalized_keep_alive = normalized_candidate
+            else:
+                normalized_keep_alive = keep_alive
+            payload["keep_alive"] = normalized_keep_alive
+        LOGGER.debug(
+            "Calling Ollama generate model=%s prompt_chars=%d options_keys=%s keep_alive=%s",
+            payload.get("model") or "",
+            len(prompt),
+            tuple(sorted((options or {}).keys())),
+            payload.get("keep_alive"),
+        )
 
         response = self._request("POST", "/api/generate", json=payload)
         data = response.json()
+        LOGGER.debug(
+            "Ollama generate returned model=%s response_chars=%d",
+            data.get("model") or payload["model"],
+            len(str(data.get("response", "") or "")),
+        )
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            LOGGER.debug("Ollama generate JSON response: %s", _format_debug_json(data))
         return OllamaGenerateResult(
             model=data.get("model") or payload["model"],
             response=str(data.get("response", "")).strip(),
@@ -172,11 +230,24 @@ class OllamaClient:
         if options:
             payload["options"] = options
 
+        LOGGER.debug(
+            "Calling Ollama chat model=%s message_count=%d options_keys=%s",
+            payload.get("model") or "",
+            len(payload["messages"]),
+            tuple(sorted((options or {}).keys())),
+        )
         response = self._request("POST", "/api/chat", json=payload)
         data = response.json()
         message = data.get("message") or {}
         if not isinstance(message, dict):
             message = {"role": "assistant", "content": str(message)}
+        LOGGER.debug(
+            "Ollama chat returned model=%s message_chars=%d",
+            data.get("model") or payload["model"],
+            len(str(message.get("content") or "")),
+        )
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            LOGGER.debug("Ollama chat JSON response: %s", _format_debug_json(data))
         return OllamaChatResult(
             model=data.get("model") or payload["model"],
             message=message,
@@ -193,11 +264,23 @@ class OllamaClient:
             "model": model or "",
             "input": list(inputs),
         }
+        LOGGER.debug(
+            "Calling Ollama embed model=%s input_count=%d",
+            payload.get("model"),
+            len(payload["input"]),
+        )
         response = self._request("POST", "/api/embed", json=payload)
         data = response.json()
         embeddings = data.get("embeddings") or []
         if not isinstance(embeddings, list):
             raise OllamaClientError("Invalid embeddings payload returned by Ollama.")
+        LOGGER.debug(
+            "Ollama embed returned model=%s embedding_count=%d",
+            data.get("model") or payload["model"],
+            len(embeddings) if isinstance(embeddings, list) else 0,
+        )
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            LOGGER.debug("Ollama embed JSON response: %s", _format_debug_json(data))
         return OllamaEmbedResult(
             model=data.get("model") or payload["model"],
             embeddings=embeddings,

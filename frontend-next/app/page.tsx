@@ -13,6 +13,6 @@ export default async function HomePage() {
     const status = await apiGet<AuthStatus>("api/v1/auth/status");
     redirect(status.has_users ? "/login" : "/register");
   } catch {
-    redirect("/login");
+    redirect("/register");
   }
 }

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from contextlib import contextmanager
 from typing import Generator
@@ -13,6 +15,8 @@ from dotenv import load_dotenv
 
 # Load environment from .env if available so database configuration is discoverable.
 load_dotenv()
+
+LOGGER = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -111,11 +115,89 @@ def _run_migrations() -> None:
             if "role" not in columns:
                 conn.execute(text("ALTER TABLE owui_users ADD COLUMN role VARCHAR(64)"))
 
+    # Migration 2: Strip encapsulating quotes from OpenWebUI Direct Connect settings
+    if inspector.has_table("settings"):
+        from sqlalchemy.orm import Session
+        with Session(engine) as session:
+            result = session.execute(
+                text(
+                    "SELECT id, value FROM settings WHERE key IN "
+                    "('OWUI_DIRECT_HOST', 'OWUI_DIRECT_API_KEY', 'owui_direct_host', 'owui_direct_api_key')"
+                )
+            ).mappings().all()
+            updates = []
+            for row in result:
+                raw_value = row.get("value")
+                if raw_value is None:
+                    continue
+                if isinstance(raw_value, (bytes, bytearray)):
+                    candidate = raw_value.decode("utf-8", errors="replace")
+                else:
+                    candidate = str(raw_value)
+                try:
+                    decoded = json.loads(candidate)
+                except json.JSONDecodeError:
+                    # Invalid JSON will be handled by Migration 3.
+                    continue
+                if not isinstance(decoded, str):
+                    continue
+                stripped = decoded.strip()
+                if len(stripped) >= 2 and stripped[0] == '"' and stripped[-1] == '"':
+                    normalized = stripped[1:-1]
+                    updates.append((row["id"], json.dumps(normalized)))
+
+            if updates:
+                for setting_id, sanitized_value in updates:
+                    session.execute(
+                        text("UPDATE settings SET value = :value WHERE id = :id"),
+                        {"value": sanitized_value, "id": setting_id},
+                    )
+                session.commit()
+                LOGGER.info("Normalized %d Direct Connect settings values", len(updates))
+
+        # Migration 3: Repair invalid JSON payloads persisted in the settings table
+        with engine.begin() as conn:
+            rows = conn.execute(text("SELECT id, value FROM settings")).mappings().all()
+            fixes = []
+            for row in rows:
+                raw_value = row.get("value")
+                if raw_value is None:
+                    continue
+                if isinstance(raw_value, (bytes, bytearray)):
+                    raw_value_str = raw_value.decode("utf-8", errors="replace")
+                else:
+                    raw_value_str = str(raw_value)
+                candidate = raw_value_str.strip()
+                if candidate == "":
+                    fixes.append((row["id"], json.dumps("")))
+                    continue
+                try:
+                    json.loads(raw_value_str)
+                except json.JSONDecodeError:
+                    fixes.append((row["id"], json.dumps(candidate)))
+            for setting_id, sanitized in fixes:
+                conn.execute(
+                    text("UPDATE settings SET value = :value WHERE id = :id"),
+                    {"value": sanitized, "id": setting_id},
+                )
+            if fixes:
+                LOGGER.info("Sanitized %d invalid settings JSON entries", len(fixes))
+
 
 def init_database() -> None:
     """Ensure all ORM tables are created in the configured database."""
     # Import models within the function to avoid circular imports.
     from . import db_models  # noqa: F401  # pylint: disable=unused-import
+
+    # Enable WAL mode for SQLite for better concurrency during large operations
+    if DATABASE_URL.startswith("sqlite"):
+        with engine.begin() as conn:
+            # Enable WAL (Write-Ahead Logging) mode
+            conn.execute(text("PRAGMA journal_mode=WAL"))
+            # Enable foreign key constraints
+            conn.execute(text("PRAGMA foreign_keys=ON"))
+            # Set synchronous mode to NORMAL for better performance (still safe with WAL)
+            conn.execute(text("PRAGMA synchronous=NORMAL"))
 
     Base.metadata.create_all(bind=engine)
     _run_migrations()

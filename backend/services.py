@@ -22,7 +22,7 @@ import pandas as pd
 import requests
 from urllib.parse import urlparse, urlunparse
 
-from .config import DATA_DIR
+from .config import AUTH_TOKEN_HASH_SECRET, AUTH_TOKEN_TTL_SECONDS, DATA_DIR
 from .models import AppMetadata, DatasetMeta, DatasetSyncStats
 from .summarizer import summarize_chats
 from .storage import DatabaseState, DatabaseStorage
@@ -41,6 +41,33 @@ SUMMARY_FIELD = "gen_chat_summary"
 LEGACY_SUMMARY_FIELD = "summary_128"
 DEFAULT_DIRECT_CONNECT_HOST = "http://localhost:4000"
 SUMMARY_EVENT_HISTORY_LIMIT = 500
+
+
+def _strip_encapsulating_quotes(value: str) -> str:
+    """Remove leading and trailing double quotes from a string value.
+
+    This function defensively strips quotes that may have been accidentally
+    serialized when storing configuration values. It only removes quotes
+    if they appear at both the beginning and end of the string.
+
+    Args:
+        value: The string value to process.
+
+    Returns:
+        The string with encapsulating quotes removed, or the original value.
+
+    Examples:
+        >>> _strip_encapsulating_quotes('"http://localhost:4000"')
+        'http://localhost:4000'
+        >>> _strip_encapsulating_quotes('http://localhost:4000')
+        'http://localhost:4000'
+        >>> _strip_encapsulating_quotes('""')
+        ''
+    """
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == '"' and stripped[-1] == '"':
+        return stripped[1:-1]
+    return stripped
 
 
 def _get_chat_summary(payload: Dict[str, Any]) -> str:
@@ -860,8 +887,10 @@ class DataService:
         self._models: List[Dict[str, Any]] = []
         self._auth_users: Dict[str, Dict[str, Any]] = {}
         self._auth_users_updated_at: Optional[datetime] = None
-        self._auth_tokens: Dict[str, Dict[str, Any]] = {}
-        self._auth_token_ttl = timedelta(hours=24)
+        self._auth_token_ttl = timedelta(seconds=AUTH_TOKEN_TTL_SECONDS)
+        self._auth_token_hash_secret = (
+            AUTH_TOKEN_HASH_SECRET.encode("utf-8") if AUTH_TOKEN_HASH_SECRET else None
+        )
         self._dataset_id = uuid4().hex
         self._source = "no dataset loaded"
         self._source_origin: Optional[Tuple[str, str]] = None
@@ -887,10 +916,15 @@ class DataService:
             "last_event": None,
         }
         self._summary_events: Deque[Dict[str, Any]] = deque(maxlen=SUMMARY_EVENT_HISTORY_LIMIT)
+        self._process_logs: Deque[Dict[str, Any]] = deque(maxlen=200)  # Keep last 200 log events
         self._summary_thread: Optional[Thread] = None
         self._summary_target_dataset_id: Optional[str] = None
         self._summary_job_counter: int = 0
         self._summary_active_job_id: Optional[int] = None
+        # Scheduler state (loaded from settings)
+        self._scheduler_enabled: bool = False
+        self._scheduler_interval_minutes: int = 60  # Default 1 hour
+        self._scheduler_last_run_at: Optional[datetime] = None
         try:
             self._storage = DatabaseStorage()
         except Exception:  # pylint: disable=broad-except
@@ -898,6 +932,7 @@ class DataService:
             raise
         self._hydrate_from_storage()
         self._ensure_direct_connect_defaults_seeded()
+        self._load_scheduler_config()
         with self._lock:
             self._refresh_app_metadata(persist=True)
         self._log_dataset_summary("DataService ready")
@@ -924,6 +959,76 @@ class DataService:
             counts["users"],
             counts["models"],
         )
+
+    def _emit_log(
+        self,
+        level: str,
+        phase: str,
+        message: str,
+        job_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Emit a structured log event to the process log buffer.
+
+        Args:
+            level: Log severity level (debug, info, warning, error)
+            phase: Current operation phase (connect, fetch, persist, summarize, done, error)
+            message: Human-readable log message (secrets must be pre-redacted)
+            job_id: Optional job identifier for filtering
+            details: Optional additional structured details
+        """
+        event = {
+            "timestamp": self._now_utc(),
+            "level": level,
+            "phase": phase,
+            "message": message,
+            "job_id": job_id,
+            "details": details,
+        }
+        with self._lock:
+            self._process_logs.append(event)
+
+        # Also log to standard logger for server-side visibility
+        log_level = {
+            "debug": logging.DEBUG,
+            "info": logging.INFO,
+            "warning": logging.WARNING,
+            "error": logging.ERROR,
+        }.get(level, logging.INFO)
+        LOGGER.log(log_level, "[%s] %s", phase.upper(), message)
+
+    def get_process_logs(
+        self,
+        job_id: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve recent process log events from the buffer.
+
+        Args:
+            job_id: Optional job ID to filter logs
+            limit: Maximum number of logs to return (most recent first)
+
+        Returns:
+            List of log event dictionaries, ordered newest to oldest
+        """
+        with self._lock:
+            # Convert deque to list (newest last in deque)
+            all_logs = list(self._process_logs)
+
+        # Filter by job_id if specified
+        if job_id is not None:
+            filtered = [log for log in all_logs if log.get("job_id") == job_id]
+        else:
+            filtered = all_logs
+
+        # Reverse to get newest first
+        filtered.reverse()
+
+        # Apply limit
+        if limit is not None and limit > 0:
+            filtered = filtered[:limit]
+
+        return filtered
 
     def _apply_database_state(self, state: DatabaseState) -> None:
         """Populate in-memory caches from the hydrated database state."""
@@ -981,10 +1086,8 @@ class DataService:
             elif snapshot.get("dataset_source"):
                 self._source = snapshot["dataset_source"]
 
-            settings_display = state.settings.get("dataset_source_display")
-            if (not self._dataset_source_override) and isinstance(settings_display, str):
-                self._dataset_source_override = settings_display
-                self._source = settings_display
+            # Note: dataset_source_display setting has been deprecated
+            # The dataset source is now derived from OWUI_DIRECT_HOST
 
             self._settings = {key: value for key, value in state.settings.items()}
             legacy_host = self._settings.get("owui_direct_host")
@@ -1235,6 +1338,15 @@ class DataService:
         candidate_key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
         return hmac.compare_digest(candidate_key, expected_key)
 
+    def _hash_access_token(self, token: str) -> str:
+        if not isinstance(token, str) or not token:
+            raise ValueError("Token must be a non-empty string.")
+        token_bytes = token.encode("utf-8")
+        secret = self._auth_token_hash_secret
+        if secret:
+            return hmac.new(secret, token_bytes, hashlib.sha256).hexdigest()
+        return hashlib.sha256(token_bytes).hexdigest()
+
     def _save_app_metadata(self, payload: Dict[str, Any]) -> None:
         """Persist aggregate dataset metadata into the database."""
         chats_section = payload.get("chats") or {}
@@ -1254,10 +1366,8 @@ class DataService:
             "message_count": payload.get("message_count") or len(self._messages),
         }
         self._storage.record_snapshot(snapshot_payload)
-        dataset_source_display = payload.get("dataset_source")
-        self._storage.write_settings({"dataset_source_display": dataset_source_display})
-        with self._lock:
-            self._settings["dataset_source_display"] = dataset_source_display
+        # Note: dataset_source_display setting has been deprecated
+        # The dataset source is now derived from OWUI_DIRECT_HOST
 
     def _determine_dataset_source(self) -> str:
         source = (self._source or "").strip()
@@ -1267,10 +1377,14 @@ class DataService:
             return "not loaded"
         return "local upload"
 
-    def _compute_dataset_source_display(self) -> str:
-        if self._dataset_source_override:
-            return self._dataset_source_override
-        return self._determine_dataset_source()
+    def _get_dataset_source_host(self) -> str:
+        """Get the dataset source from OWUI_DIRECT_HOST setting.
+
+        This replaces the deprecated dataset_source_display setting.
+        Returns the configured OpenWebUI host URL.
+        """
+        settings = self.get_direct_connect_settings()
+        return settings.get("host", "not configured")
 
     def _calculate_chat_day_range(self) -> Tuple[Optional[date], Optional[date]]:
         timestamps: List[datetime] = []
@@ -1358,7 +1472,7 @@ class DataService:
             display_source = self._determine_dataset_source()
             self._dataset_source_override = display_source
         else:
-            display_source = self._compute_dataset_source_display()
+            display_source = self._get_dataset_source_host()
 
         if persist:
             payload = {
@@ -1383,7 +1497,7 @@ class DataService:
 
     def _build_app_metadata(self) -> AppMetadata:
         return AppMetadata(
-            dataset_source=self._compute_dataset_source_display(),
+            dataset_source=self._get_dataset_source_host(),
             dataset_pulled_at=self._dataset_pulled_at,
             chat_uploaded_at=self._chat_uploaded_at,
             users_uploaded_at=self._users_uploaded_at,
@@ -2090,224 +2204,244 @@ class DataService:
 
     def sync_from_openwebui(self, hostname: str, api_key: Optional[str]) -> Tuple[DatasetMeta, DatasetSyncStats]:
         """Pull chats, users, and models directly from an Open WebUI instance."""
-        base_url = _normalize_hostname(hostname)
-        headers = {"Accept": "application/json"}
-        token = (api_key or "").strip()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        # Generate job ID for this sync operation
+        job_id = uuid4().hex[:12]
 
-        base_candidates = _build_openwebui_base_candidates(base_url)
-        if not base_candidates:
-            raise RuntimeError("No valid hostname candidates available for Open WebUI.")
+        try:
+            self._emit_log("info", "connect", f"Starting sync from {hostname}", job_id=job_id)
 
-        attempt_messages: List[str] = []
-        chats_payload: Any = None
-        users_payload: Any = None
-        models_payload: Any = None
+            base_url = _normalize_hostname(hostname)
+            headers = {"Accept": "application/json"}
+            token = (api_key or "").strip()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+                self._emit_log("debug", "connect", "Using authenticated connection", job_id=job_id)
 
-        with requests.Session() as session:
-            session.headers.update(headers)
-            for candidate in base_candidates:
-                chats_endpoint = f"{candidate}/api/v1/chats/all/db"
-                users_endpoint = f"{candidate}/api/v1/users/all"
-                models_endpoint = f"{candidate}/api/v1/models"
-                try:
-                    chats_payload = _fetch_openwebui_json(session, chats_endpoint)
-                    users_payload = _fetch_openwebui_json(session, users_endpoint)
+            base_candidates = _build_openwebui_base_candidates(base_url)
+            if not base_candidates:
+                raise RuntimeError("No valid hostname candidates available for Open WebUI.")
+
+            attempt_messages: List[str] = []
+            chats_payload: Any = None
+            users_payload: Any = None
+            models_payload: Any = None
+
+            with requests.Session() as session:
+                session.headers.update(headers)
+                for candidate in base_candidates:
+                    self._emit_log("debug", "connect", f"Trying endpoint: {candidate}", job_id=job_id)
+                    chats_endpoint = f"{candidate}/api/v1/chats/all/db"
+                    users_endpoint = f"{candidate}/api/v1/users/all"
+                    models_endpoint = f"{candidate}/api/v1/models"
                     try:
-                        models_payload = _fetch_openwebui_json(session, models_endpoint)
-                    except RuntimeError as models_exc:
-                        LOGGER.warning(
-                            "Model inventory request failed for %s: %s", candidate, models_exc
-                        )
-                        models_payload = []
-                except RuntimeError as exc:
-                    attempt_messages.append(f"{candidate}: {exc}")
-                    underlying = exc.__cause__
-                    if isinstance(underlying, requests.exceptions.RequestException):
-                        # Connection-level issue; try next candidate if available.
-                        chats_payload = None
-                        users_payload = None
-                        models_payload = None
-                        continue
-                    raise RuntimeError(
-                        "Open WebUI responded with an unexpected payload."
-                    ) from exc
+                        chats_payload = _fetch_openwebui_json(session, chats_endpoint)
+                        users_payload = _fetch_openwebui_json(session, users_endpoint)
+                        try:
+                            models_payload = _fetch_openwebui_json(session, models_endpoint)
+                        except RuntimeError as models_exc:
+                            LOGGER.warning(
+                                "Model inventory request failed for %s: %s", candidate, models_exc
+                            )
+                            self._emit_log("warning", "fetch", f"Models endpoint failed: {models_exc}", job_id=job_id)
+                            models_payload = []
+                    except RuntimeError as exc:
+                        attempt_messages.append(f"{candidate}: {exc}")
+                        self._emit_log("warning", "connect", f"Connection attempt failed: {exc}", job_id=job_id)
+                        underlying = exc.__cause__
+                        if isinstance(underlying, requests.exceptions.RequestException):
+                            # Connection-level issue; try next candidate if available.
+                            chats_payload = None
+                            users_payload = None
+                            models_payload = None
+                            continue
+                        raise RuntimeError(
+                            "Open WebUI responded with an unexpected payload."
+                        ) from exc
+                    else:
+                        self._emit_log("info", "fetch", f"Successfully connected to {candidate}", job_id=job_id)
+                        break
+
+            if chats_payload is None or users_payload is None:
+                attempts_detail = "; ".join(attempt_messages) or "no attempts recorded"
+                raise RuntimeError(
+                    f"Unable to connect to Open WebUI with the provided hostname. Attempts: {attempts_detail}"
+                )
+
+            self._emit_log("info", "fetch", f"Fetched {len(chats_payload) if isinstance(chats_payload, list) else '?'} chats", job_id=job_id, details={"users": len(users_payload) if isinstance(users_payload, list) else 0})
+
+            export_payload = _build_export_payload_from_openwebui(chats_payload)
+            export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
+            chats, messages = _parse_chat_export(export_bytes)
+
+            normalized_users = _normalize_openwebui_users(users_payload)
+            normalized_models = _normalize_models_payload(models_payload)
+
+            requested_origin = _normalize_source_for_compare(base_url)
+            with self._lock:
+                if self._source_origin is None:
+                    origin_seed = None
+                    if isinstance(self._source, str) and self._source.startswith("openwebui:"):
+                        parts = self._source.split(":", 1)
+                        if len(parts) == 2:
+                            origin_seed = parts[1]
+                    if origin_seed is None:
+                        display_candidate = self._get_dataset_source_host()
+                        origin_seed = display_candidate
+                    self._source_origin = _normalize_source_for_compare(origin_seed)
+                current_origin = self._source_origin
+                current_source_display = self._get_dataset_source_host()
+
+            same_source = False
+            if requested_origin is not None and current_origin is not None:
+                requested_netloc, _ = requested_origin
+                current_netloc, _ = current_origin
+                same_source = requested_netloc == current_netloc
+
+            if same_source:
+                self._emit_log("info", "persist", "Performing incremental sync (same source)", job_id=job_id)
+                (
+                    new_chat_ids,
+                    new_message_count,
+                    new_user_ids,
+                    new_model_ids,
+                    chats_missing_summary,
+                    models_changed,
+                ) = self._merge_openwebui_dataset(
+                    base_url,
+                    chats,
+                    messages,
+                    normalized_users,
+                    normalized_models,
+                )
+                self._storage.replace_dataset(self._chats, self._messages)
+                self._storage.replace_users(self._users)
+                self._storage.replace_models(self._models)
+                self._storage.record_ingest(
+                    operation="openwebui_incremental",
+                    source=f"openwebui:{base_url}",
+                    record_count=len(self._chats),
+                    details={
+                        "new_chats": len(new_chat_ids),
+                        "new_messages": new_message_count,
+                        "new_users": len(new_user_ids),
+                        "new_models": len(new_model_ids),
+                        "models_changed": models_changed,
+                    },
+                )
+                summarizer_enqueued = False
+                if chats_missing_summary:
+                    self._enqueue_summary_job(
+                        f"Open WebUI sync (+{len(new_chat_ids)} new chats)",
+                        chat_ids=chats_missing_summary,
+                    )
+                    summarizer_enqueued = True
+                elif new_user_ids or new_model_ids or models_changed:
+                    self._update_summary_state(
+                        state="idle",
+                        message="No new chats detected; user/model data updated.",
+                        total=0,
+                        completed=0,
+                        started_at=None,
+                        finished_at=self._summary_now_iso(),
+                    )
                 else:
-                    break
+                    self._update_summary_state(
+                        state="idle",
+                        message="No new chats detected; dataset already up to date.",
+                        total=0,
+                        completed=0,
+                        started_at=None,
+                        finished_at=self._summary_now_iso(),
+                    )
+                mode = (
+                    "incremental"
+                    if (new_chat_ids or new_user_ids or new_model_ids or models_changed)
+                    else "noop"
+                )
+                dataset_meta = self.get_meta()
+                stats = DatasetSyncStats(
+                    mode=mode,
+                    source_matched=True,
+                    submitted_hostname=str(hostname),
+                    normalized_hostname=base_url,
+                    source_display=dataset_meta.source,
+                    new_chats=len(new_chat_ids),
+                    new_messages=new_message_count,
+                    new_users=len(new_user_ids),
+                    new_models=len(new_model_ids),
+                    models_changed=models_changed,
+                    summarizer_enqueued=summarizer_enqueued,
+                    total_chats=dataset_meta.chat_count,
+                    total_messages=dataset_meta.message_count,
+                    total_users=dataset_meta.user_count,
+                    total_models=dataset_meta.model_count,
+                    queued_chat_ids=chats_missing_summary if summarizer_enqueued else None,
+                )
+                with self._lock:
+                    self._source_origin = requested_origin
+                self._emit_log("info", "done", f"Incremental sync complete: {len(new_chat_ids)} new chats, {new_message_count} new messages", job_id=job_id)
+                return dataset_meta, stats
 
-        if chats_payload is None or users_payload is None:
-            attempts_detail = "; ".join(attempt_messages) or "no attempts recorded"
-            raise RuntimeError(
-                f"Unable to connect to Open WebUI with the provided hostname. Attempts: {attempts_detail}"
-            )
+            self._emit_log("info", "persist", "Performing full sync (different source or first sync)", job_id=job_id)
+            self._storage.replace_dataset(chats, messages)
+            self._storage.replace_users(normalized_users)
+            self._storage.replace_models(normalized_models)
 
-        export_payload = _build_export_payload_from_openwebui(chats_payload)
-        export_bytes = json.dumps(export_payload, ensure_ascii=False, indent=2).encode("utf-8")
-        chats, messages = _parse_chat_export(export_bytes)
+            with self._lock:
+                self._dataset_source_override = None
+                self._chats = chats
+                self._messages = messages
+                self._users = normalized_users
+                self._models = normalized_models
+                missing_summary_chat_ids = [
+                    str(chat.get("chat_id") or "").strip()
+                    for chat in self._chats
+                    if str(chat.get("chat_id") or "").strip()
+                    and not _get_chat_summary(chat)
+                ]
+                self._source = f"openwebui:{base_url}"
+                self._source_origin = requested_origin
+                self._bump_version()
+                self._refresh_app_metadata(chat_updated=True, users_updated=True, models_updated=bool(self._models))
 
-        normalized_users = _normalize_openwebui_users(users_payload)
-        normalized_models = _normalize_models_payload(models_payload)
-
-        requested_origin = _normalize_source_for_compare(base_url)
-        with self._lock:
-            if self._source_origin is None:
-                origin_seed = None
-                if isinstance(self._source, str) and self._source.startswith("openwebui:"):
-                    parts = self._source.split(":", 1)
-                    if len(parts) == 2:
-                        origin_seed = parts[1]
-                if origin_seed is None:
-                    display_candidate = self._compute_dataset_source_display()
-                    origin_seed = display_candidate
-                self._source_origin = _normalize_source_for_compare(origin_seed)
-            current_origin = self._source_origin
-            current_source_display = self._compute_dataset_source_display()
-
-        same_source = False
-        if requested_origin is not None and current_origin is not None:
-            requested_netloc, _ = requested_origin
-            current_netloc, _ = current_origin
-            same_source = requested_netloc == current_netloc
-
-        if same_source:
-            (
-                new_chat_ids,
-                new_message_count,
-                new_user_ids,
-                new_model_ids,
-                chats_missing_summary,
-                models_changed,
-            ) = self._merge_openwebui_dataset(
-                base_url,
-                chats,
-                messages,
-                normalized_users,
-                normalized_models,
-            )
-            self._storage.replace_dataset(self._chats, self._messages)
-            self._storage.replace_users(self._users)
-            self._storage.replace_models(self._models)
+            dataset_meta = self.get_meta()
+            summarizer_enqueued = False
+            if missing_summary_chat_ids:
+                self._enqueue_summary_job("Open WebUI sync", chat_ids=missing_summary_chat_ids)
+                summarizer_enqueued = True
             self._storage.record_ingest(
-                operation="openwebui_incremental",
+                operation="openwebui_full",
                 source=f"openwebui:{base_url}",
-                record_count=len(self._chats),
+                record_count=len(chats),
                 details={
-                    "new_chats": len(new_chat_ids),
-                    "new_messages": new_message_count,
-                    "new_users": len(new_user_ids),
-                    "new_models": len(new_model_ids),
-                    "models_changed": models_changed,
+                    "messages": len(messages),
+                    "users": len(normalized_users),
+                    "models": len(normalized_models),
                 },
             )
-            summarizer_enqueued = False
-            if chats_missing_summary:
-                self._enqueue_summary_job(
-                    f"Open WebUI sync (+{len(new_chat_ids)} new chats)",
-                    chat_ids=chats_missing_summary,
-                )
-                summarizer_enqueued = True
-            elif new_user_ids or new_model_ids or models_changed:
-                self._update_summary_state(
-                    state="idle",
-                    message="No new chats detected; user/model data updated.",
-                    total=0,
-                    completed=0,
-                    started_at=None,
-                    finished_at=self._summary_now_iso(),
-                )
-            else:
-                self._update_summary_state(
-                    state="idle",
-                    message="No new chats detected; dataset already up to date.",
-                    total=0,
-                    completed=0,
-                    started_at=None,
-                    finished_at=self._summary_now_iso(),
-                )
-            mode = (
-                "incremental"
-                if (new_chat_ids or new_user_ids or new_model_ids or models_changed)
-                else "noop"
-            )
-            dataset_meta = self.get_meta()
             stats = DatasetSyncStats(
-                mode=mode,
-                source_matched=True,
+                mode="full",
+                source_matched=False,
                 submitted_hostname=str(hostname),
                 normalized_hostname=base_url,
                 source_display=dataset_meta.source,
-                new_chats=len(new_chat_ids),
-                new_messages=new_message_count,
-                new_users=len(new_user_ids),
-                new_models=len(new_model_ids),
-                models_changed=models_changed,
+                new_chats=len(chats),
+                new_messages=len(messages),
+                new_users=len(normalized_users),
+                new_models=len(normalized_models),
+                models_changed=bool(normalized_models),
                 summarizer_enqueued=summarizer_enqueued,
                 total_chats=dataset_meta.chat_count,
                 total_messages=dataset_meta.message_count,
                 total_users=dataset_meta.user_count,
                 total_models=dataset_meta.model_count,
-                queued_chat_ids=chats_missing_summary if summarizer_enqueued else None,
+                queued_chat_ids=missing_summary_chat_ids if summarizer_enqueued else None,
             )
-            with self._lock:
-                self._source_origin = requested_origin
+            self._emit_log("info", "done", f"Full sync complete: {len(chats)} chats, {len(messages)} messages", job_id=job_id)
             return dataset_meta, stats
-
-        self._storage.replace_dataset(chats, messages)
-        self._storage.replace_users(normalized_users)
-        self._storage.replace_models(normalized_models)
-
-        with self._lock:
-            self._dataset_source_override = None
-            self._chats = chats
-            self._messages = messages
-            self._users = normalized_users
-            self._models = normalized_models
-            missing_summary_chat_ids = [
-                str(chat.get("chat_id") or "").strip()
-                for chat in self._chats
-                if str(chat.get("chat_id") or "").strip()
-                and not _get_chat_summary(chat)
-            ]
-            self._source = f"openwebui:{base_url}"
-            self._source_origin = requested_origin
-            self._bump_version()
-            self._refresh_app_metadata(chat_updated=True, users_updated=True, models_updated=bool(self._models))
-
-        dataset_meta = self.get_meta()
-        summarizer_enqueued = False
-        if missing_summary_chat_ids:
-            self._enqueue_summary_job("Open WebUI sync", chat_ids=missing_summary_chat_ids)
-            summarizer_enqueued = True
-        self._storage.record_ingest(
-            operation="openwebui_full",
-            source=f"openwebui:{base_url}",
-            record_count=len(chats),
-            details={
-                "messages": len(messages),
-                "users": len(normalized_users),
-                "models": len(normalized_models),
-            },
-        )
-        stats = DatasetSyncStats(
-            mode="full",
-            source_matched=False,
-            submitted_hostname=str(hostname),
-            normalized_hostname=base_url,
-            source_display=dataset_meta.source,
-            new_chats=len(chats),
-            new_messages=len(messages),
-            new_users=len(normalized_users),
-            new_models=len(normalized_models),
-            models_changed=bool(normalized_models),
-            summarizer_enqueued=summarizer_enqueued,
-            total_chats=dataset_meta.chat_count,
-            total_messages=dataset_meta.message_count,
-            total_users=dataset_meta.user_count,
-            total_models=dataset_meta.model_count,
-            queued_chat_ids=missing_summary_chat_ids if summarizer_enqueued else None,
-        )
-        return dataset_meta, stats
+        except Exception as exc:
+            self._emit_log("error", "error", f"Sync failed: {str(exc)}", job_id=job_id)
+            raise
 
     def rebuild_summaries(self) -> Dict[str, Any]:
         """Trigger asynchronous summarization on the current dataset."""
@@ -2318,15 +2452,16 @@ class DataService:
     # ------------------------------------------------------------------
     def get_direct_connect_settings(self) -> Dict[str, Any]:
         """Return Direct Connect defaults with their origin metadata."""
-        env_host = os.getenv("OWUI_DIRECT_HOST", "").strip()
-        env_api_key = os.getenv("OWUI_DIRECT_API_KEY", "").strip()
+        env_host = _strip_encapsulating_quotes(os.getenv("OWUI_DIRECT_HOST", "").strip())
+        env_api_key = _strip_encapsulating_quotes(os.getenv("OWUI_DIRECT_API_KEY", "").strip())
 
         with self._lock:
             stored_host = self._settings.get("OWUI_DIRECT_HOST") or self._settings.get("owui_direct_host")
             stored_api_key = self._settings.get("OWUI_DIRECT_API_KEY") or self._settings.get("owui_direct_api_key")
 
-        host_value = (stored_host or "").strip() if isinstance(stored_host, str) else ""
-        api_key_value = (stored_api_key or "").strip() if isinstance(stored_api_key, str) else ""
+        # Strip quotes defensively from stored values
+        host_value = _strip_encapsulating_quotes((stored_host or "").strip()) if isinstance(stored_host, str) else ""
+        api_key_value = _strip_encapsulating_quotes((stored_api_key or "").strip()) if isinstance(stored_api_key, str) else ""
 
         if host_value:
             host = host_value
@@ -2361,17 +2496,88 @@ class DataService:
         }
 
     def update_direct_connect_settings(self, *, host: Optional[str], api_key: Optional[str]) -> Dict[str, Any]:
-        """Persist updated Direct Connect defaults and return the effective values."""
+        """Persist updated Direct Connect defaults and return the effective values.
+
+        If the hostname changes, this triggers a transactional wipe and full reload:
+        1. Detect hostname change
+        2. Wipe all OpenWebUI-sourced data (chats, messages, users, models)
+        3. Trigger a full sync from the new hostname
+        4. Emit structured log events throughout the process
+        """
+        # Get current settings to detect changes
+        current_settings = self.get_direct_connect_settings()
+        current_host = current_settings.get("host", "")
+
         updates: Dict[str, Any] = {}
+        hostname_changed = False
+        new_hostname = None
+
         if host is not None:
-            updates["OWUI_DIRECT_HOST"] = host.strip()
+            # Strip quotes and whitespace from host
+            normalized_host = _strip_encapsulating_quotes(host.strip())
+            updates["OWUI_DIRECT_HOST"] = normalized_host
+            new_hostname = normalized_host
+
+            # Detect hostname change (normalize both for comparison)
+            current_normalized = _normalize_hostname(current_host) if current_host else ""
+            new_normalized = _normalize_hostname(normalized_host) if normalized_host else ""
+            hostname_changed = (current_normalized != new_normalized) and current_normalized != ""
+
+            LOGGER.info("Updating Direct Connect host setting (host=%s, changed=%s)", normalized_host, hostname_changed)
+
         if api_key is not None:
-            updates["OWUI_DIRECT_API_KEY"] = api_key.strip()
+            # Strip quotes and whitespace from API key
+            normalized_api_key = _strip_encapsulating_quotes(api_key.strip())
+            updates["OWUI_DIRECT_API_KEY"] = normalized_api_key
+            # Log API key update without exposing the actual value
+            redacted = f"{normalized_api_key[:4]}...{normalized_api_key[-4:]}" if len(normalized_api_key) > 8 else "***"
+            LOGGER.info("Updating Direct Connect API key setting (redacted=%s)", redacted)
 
         if updates:
             self._storage.write_settings(updates)
             with self._lock:
                 self._settings.update(updates)
+
+        # If hostname changed, trigger wipe and reload
+        if hostname_changed and new_hostname:
+            job_id = uuid4().hex[:12]
+            self._emit_log("info", "persist", f"Hostname changed to {new_hostname}, triggering wipe and reload", job_id=job_id)
+
+            try:
+                # Step 1: Wipe existing data
+                self._emit_log("info", "persist", "Starting transactional wipe of OpenWebUI data", job_id=job_id)
+                self._storage.wipe_openwebui_data()
+
+                # Clear in-memory state
+                with self._lock:
+                    self._chats = []
+                    self._messages = []
+                    self._users = []
+                    self._models = []
+                    self._source_origin = None
+                    self._dataset_source_override = None
+                    self._dataset_pulled_at = None
+                    self._bump_version()
+                    self._refresh_app_metadata(chat_updated=True, users_updated=True, models_updated=True)
+
+                self._emit_log("info", "persist", "Wipe complete", job_id=job_id)
+
+                # Step 2: Trigger full reload
+                self._emit_log("info", "fetch", f"Starting full reload from {new_hostname}", job_id=job_id)
+
+                # Get the API key (either the new one or existing one)
+                reload_api_key = api_key if api_key is not None else current_settings.get("api_key", "")
+
+                # Trigger sync (this will emit its own log events)
+                self.sync_from_openwebui(new_hostname, reload_api_key)
+
+                self._emit_log("info", "done", "Hostname change complete: wipe and reload finished", job_id=job_id)
+
+            except Exception as exc:
+                self._emit_log("error", "error", f"Wipe and reload failed: {str(exc)}", job_id=job_id)
+                LOGGER.exception("Failed to wipe and reload after hostname change")
+                # Re-raise to let the caller handle the error
+                raise
 
         return self.get_direct_connect_settings()
 
@@ -2383,48 +2589,58 @@ class DataService:
             "name": record["display_name"],
         }
 
-    def _prune_tokens(self, *, now: Optional[datetime] = None) -> None:
-        reference = now or self._now_utc()
-        expired: List[str] = []
-        for token, info in self._auth_tokens.items():
-            issued_at = info.get("issued_at")
-            if not isinstance(issued_at, datetime):
-                expired.append(token)
-                continue
-            if reference - issued_at > self._auth_token_ttl:
-                expired.append(token)
-        for token in expired:
-            self._auth_tokens.pop(token, None)
-
     def issue_access_token(self, username: str) -> str:
         normalized = self._normalize_username(username)
-        token = secrets.token_urlsafe(32)
+        token = secrets.token_urlsafe(48)
         now = self._now_utc()
-        with self._lock:
-            self._prune_tokens(now=now)
-            self._auth_tokens[token] = {"username": normalized, "issued_at": now}
+        expires_at = now + self._auth_token_ttl
+        token_hash = self._hash_access_token(token)
+        try:
+            self._storage.prune_expired_tokens(reference=now)
+            self._storage.create_access_token(
+                token_hash=token_hash,
+                username=normalized,
+                issued_at=now,
+                expires_at=expires_at,
+            )
+        except Exception:  # pylint: disable=broad-except
+            LOGGER.exception("Failed to issue access token for user %s", normalized)
+            raise
         return token
 
     def resolve_user_from_token(self, token: str) -> Optional[Dict[str, str]]:
         if not token:
             return None
         now = self._now_utc()
+        try:
+            token_hash = self._hash_access_token(token)
+        except ValueError:
+            return None
+        token_state = self._storage.fetch_access_token(token_hash)
+        if token_state is None:
+            return None
+        if token_state.revoked_at is not None:
+            return None
+        expires_at = self._normalize_utc(token_state.expires_at)
+        if expires_at <= now:
+            self._storage.delete_access_token(token_hash)
+            return None
+        try:
+            normalized_username = self._normalize_username(token_state.username)
+        except ValueError:
+            return None
         with self._lock:
-            self._prune_tokens(now=now)
-            info = self._auth_tokens.get(token)
-            if not info:
-                return None
-            username = info.get("username")
-            if not isinstance(username, str):
-                return None
-            remaining = info.get("issued_at")
-            if isinstance(remaining, datetime) and now - remaining > self._auth_token_ttl:
-                self._auth_tokens.pop(token, None)
-                return None
-            record = self._auth_users.get(username)
-            if record is None:
-                return None
-            return self._build_public_user(record)
+            record = self._auth_users.get(normalized_username)
+        if record is None:
+            # The cache might be stale; attempt to refresh from storage once.
+            self._hydrate_from_storage()
+            with self._lock:
+                record = self._auth_users.get(normalized_username)
+        if record is None:
+            # If the user no longer exists, revoke the token to prevent reuse.
+            self._storage.revoke_access_token(token_hash, revoked_at=now)
+            return None
+        return self._build_public_user(record)
 
     def revoke_token(self, token: str) -> bool:
         """Revoke an access token, effectively logging out the user.
@@ -2434,10 +2650,34 @@ class DataService:
         """
         if not token:
             return False
-        with self._lock:
-            return self._auth_tokens.pop(token, None) is not None
+        try:
+            token_hash = self._hash_access_token(token)
+        except ValueError:
+            return False
+        now = self._now_utc()
+        if self._storage.revoke_access_token(token_hash, revoked_at=now):
+            return True
+        return self._storage.delete_access_token(token_hash)
 
     def has_auth_users(self) -> bool:
+        count = self._storage.auth_user_count()
+        if count < 0:
+            LOGGER.warning("Unable to determine auth user count; preserving cached state.")
+            with self._lock:
+                return bool(self._auth_users)
+        if count == 0:
+            with self._lock:
+                if self._auth_users:
+                    self._auth_users.clear()
+                    self._auth_users_updated_at = None
+            return False
+
+        with self._lock:
+            if self._auth_users:
+                return True
+
+        # The database reports stored accounts but our cache is empty; refresh to stay consistent.
+        self._hydrate_from_storage()
         with self._lock:
             return bool(self._auth_users)
 
@@ -2522,6 +2762,140 @@ class DataService:
     def get_models(self) -> List[Dict[str, Any]]:
         with self._lock:
             return [model.copy() for model in self._models]
+
+    def get_sync_status(self) -> Dict[str, Any]:
+        """Get current sync status and watermark information.
+
+        Returns:
+            Dictionary with last_sync_at, last_watermark, has_data, recommended_mode,
+            is_stale, staleness_threshold_hours, and local_counts.
+        """
+        # Get staleness threshold from settings (default 6 hours)
+        staleness_threshold_hours = self._settings.get("SYNC_STALENESS_THRESHOLD_HOURS", 6)
+        if not isinstance(staleness_threshold_hours, int):
+            staleness_threshold_hours = 6
+
+        with self._lock:
+            has_data = len(self._chats) > 0
+            last_sync_at = self._dataset_pulled_at
+
+            # Determine recommended mode
+            recommended_mode: str = "incremental" if has_data else "full"
+
+            # Calculate staleness
+            is_stale = False
+            if last_sync_at is not None and isinstance(last_sync_at, datetime):
+                time_since_sync = self._now_utc() - last_sync_at
+                staleness_threshold = timedelta(hours=staleness_threshold_hours)
+                is_stale = time_since_sync > staleness_threshold
+            elif has_data:
+                # If we have data but no sync timestamp, consider it stale
+                is_stale = True
+
+            # Calculate watermark (max updated_at from chats)
+            last_watermark: Optional[str] = None
+            if has_data and self._chats:
+                max_timestamp = None
+                for chat in self._chats:
+                    updated_ts = chat.get("updated_at")
+                    if isinstance(updated_ts, datetime):
+                        if max_timestamp is None or updated_ts > max_timestamp:
+                            max_timestamp = updated_ts
+
+                if max_timestamp:
+                    last_watermark = self._serialize_datetime(max_timestamp)
+
+            # Local counts
+            local_counts = {
+                "chats": len(self._chats),
+                "messages": len(self._messages),
+                "users": len(self._users),
+                "models": len(self._models),
+            }
+
+            return {
+                "last_sync_at": last_sync_at,
+                "last_watermark": last_watermark,
+                "has_data": has_data,
+                "recommended_mode": recommended_mode,
+                "is_stale": is_stale,
+                "staleness_threshold_hours": staleness_threshold_hours,
+                "local_counts": local_counts,
+            }
+
+    def _load_scheduler_config(self) -> None:
+        """Load scheduler configuration from settings on startup."""
+        with self._lock:
+            self._scheduler_enabled = bool(self._settings.get("SYNC_SCHEDULER_ENABLED", False))
+            interval = self._settings.get("SYNC_SCHEDULER_INTERVAL_MINUTES", 60)
+            if isinstance(interval, int) and 5 <= interval <= 1440:
+                self._scheduler_interval_minutes = interval
+            else:
+                self._scheduler_interval_minutes = 60
+
+            # Load last run timestamp if available
+            last_run_str = self._settings.get("SYNC_SCHEDULER_LAST_RUN_AT")
+            if isinstance(last_run_str, str):
+                try:
+                    self._scheduler_last_run_at = datetime.fromisoformat(last_run_str)
+                except (ValueError, TypeError):
+                    self._scheduler_last_run_at = None
+
+        LOGGER.info(
+            "Scheduler config loaded: enabled=%s, interval=%d minutes",
+            self._scheduler_enabled,
+            self._scheduler_interval_minutes,
+        )
+
+    def get_scheduler_config(self) -> Dict[str, Any]:
+        """Get current scheduler configuration and state."""
+        with self._lock:
+            next_run_at = None
+            if self._scheduler_enabled and self._scheduler_last_run_at:
+                next_run_at = self._scheduler_last_run_at + timedelta(minutes=self._scheduler_interval_minutes)
+
+            return {
+                "enabled": self._scheduler_enabled,
+                "interval_minutes": self._scheduler_interval_minutes,
+                "last_run_at": self._scheduler_last_run_at,
+                "next_run_at": next_run_at,
+            }
+
+    def update_scheduler_config(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        interval_minutes: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Update scheduler configuration and persist to settings.
+
+        Args:
+            enabled: Enable or disable the scheduler
+            interval_minutes: Update the sync interval (5-1440 minutes)
+
+        Returns:
+            Updated scheduler configuration
+        """
+        updates: Dict[str, Any] = {}
+
+        if enabled is not None:
+            with self._lock:
+                self._scheduler_enabled = enabled
+            updates["SYNC_SCHEDULER_ENABLED"] = enabled
+            LOGGER.info("Scheduler %s", "enabled" if enabled else "disabled")
+
+        if interval_minutes is not None:
+            if not (5 <= interval_minutes <= 1440):
+                raise ValueError("Interval must be between 5 and 1440 minutes")
+            with self._lock:
+                self._scheduler_interval_minutes = interval_minutes
+            updates["SYNC_SCHEDULER_INTERVAL_MINUTES"] = interval_minutes
+            LOGGER.info("Scheduler interval updated to %d minutes", interval_minutes)
+
+        if updates:
+            self._storage.write_settings(updates)
+
+        return self.get_scheduler_config()
 
     def get_meta(self) -> DatasetMeta:
         with self._lock:

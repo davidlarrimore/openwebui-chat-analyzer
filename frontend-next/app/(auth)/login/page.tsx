@@ -9,8 +9,9 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
-import { ENABLE_GITHUB_OAUTH } from "@/lib/config";
 import { apiGet } from "@/lib/api";
+import { ENABLE_GITHUB_OAUTH } from "@/lib/config";
+import { logAuthEvent } from "@/lib/logger";
 import type { AuthStatus } from "@/lib/types";
 
 function LoginPageInner() {
@@ -29,15 +30,29 @@ function LoginPageInner() {
     : errorFromQuery;
 
   useEffect(() => {
+    logAuthEvent("debug", "Login page loaded.", { callbackUrl });
+    if (errorMessage) {
+      logAuthEvent("warn", "Login page received error message.", { error: errorMessage });
+    }
+  }, [callbackUrl, errorMessage]);
+
+  useEffect(() => {
     let isMounted = true;
     (async () => {
       try {
         const status = await apiGet<AuthStatus>("api/v1/auth/status");
+        logAuthEvent("debug", "Fetched auth status from backend.", { hasUsers: status.has_users });
         if (!status.has_users) {
+          logAuthEvent("info", "No auth users detected; redirecting to registration.", { destination: "/register" });
           router.replace("/register");
           return;
         }
-      } catch {
+      } catch (error) {
+        logAuthEvent(
+          "warn",
+          "Failed to fetch auth status; proceeding to render login form.",
+          { message: error instanceof Error ? error.message : "unknown-error" }
+        );
         // ignore failures and allow login form to render
       } finally {
         if (isMounted) {
@@ -54,6 +69,7 @@ function LoginPageInner() {
     event.preventDefault();
     startTransition(async () => {
       try {
+        logAuthEvent("info", "Submitting credential sign-in request.", { callbackUrl });
         const response = await signIn("credentials", {
           username,
           password,
@@ -62,18 +78,27 @@ function LoginPageInner() {
         });
 
         if (!response) {
+          logAuthEvent("error", "Received empty response from credential sign-in.", { callbackUrl });
           throw new Error("Unexpected authentication response.");
         }
 
         if (response.error) {
+          logAuthEvent("warn", "Credential sign-in rejected.", { callbackUrl, error: response.error });
           throw new Error(response.error);
         }
 
+        logAuthEvent("info", "Credential sign-in succeeded; redirecting user.", {
+          callbackUrl: response.url ?? callbackUrl
+        });
         router.push(response.url ?? callbackUrl);
         router.refresh();
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Unable to sign in with those credentials.";
+        logAuthEvent("error", "Credential sign-in flow failed.", {
+          callbackUrl,
+          message
+        });
         toast({
           title: "Authentication error",
           description: message,
@@ -85,6 +110,7 @@ function LoginPageInner() {
 
   const handleGitHubSignIn = () => {
     signIn("github", { callbackUrl }).catch(() => {
+      logAuthEvent("error", "GitHub sign-in failed.", { callbackUrl });
       toast({
         title: "GitHub sign-in failed",
         description: "Double-check OAuth credentials and try again.",

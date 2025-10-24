@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+import requests
 from sqlalchemy import text
 
 from .clients import get_ollama_client
 from .db import engine
+
+LOGGER = logging.getLogger(__name__)
 
 HEALTH_CHECK_INTERVAL_SECONDS = 5.0
 HEALTH_CHECK_TIMEOUT_SECONDS = 50.0
@@ -139,6 +143,117 @@ def check_backend_health(
     return poll_health(
         _ping_backend,
         service="backend",
+        interval_seconds=interval_seconds,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _ping_openwebui(host: str, api_key: Optional[str]) -> Dict[str, Any]:
+    """Test connectivity to an OpenWebUI instance.
+
+    Args:
+        host: The OpenWebUI host URL
+        api_key: Optional API key for authentication
+
+    Returns:
+        Dictionary with version and sample counts if successful
+
+    Raises:
+        RuntimeError: If connection fails or authentication is invalid
+    """
+    # Normalize host URL
+    base_url = host.strip()
+    if not base_url:
+        raise RuntimeError("Host URL is required")
+
+    # Ensure URL has scheme
+    if not base_url.startswith(("http://", "https://")):
+        base_url = f"https://{base_url}"
+
+    # Remove trailing slashes
+    base_url = base_url.rstrip("/")
+
+    # Build headers
+    headers = {"Accept": "application/json"}
+    token = (api_key or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        # Log that we're using authentication, but never log the key itself
+        LOGGER.debug("Testing OpenWebUI connection with authentication")
+    else:
+        LOGGER.debug("Testing OpenWebUI connection without authentication")
+
+    # Try to fetch basic endpoints
+    result: Dict[str, Any] = {}
+
+    try:
+        with requests.Session() as session:
+            session.headers.update(headers)
+
+            # Try to get version/config info
+            config_url = f"{base_url}/api/config"
+            try:
+                response = session.get(config_url, timeout=10)
+                response.raise_for_status()
+                config_data = response.json()
+                if isinstance(config_data, dict):
+                    result["version"] = config_data.get("version", "unknown")
+            except (requests.exceptions.RequestException, ValueError) as exc:
+                LOGGER.debug("Could not fetch config from %s: %s", config_url, exc)
+
+            # Try to get chat count (requires auth)
+            chats_url = f"{base_url}/api/v1/chats/all/db"
+            try:
+                response = session.get(chats_url, timeout=10)
+                response.raise_for_status()
+                chats_data = response.json()
+                if isinstance(chats_data, list):
+                    result["chat_count"] = len(chats_data)
+                elif isinstance(chats_data, dict) and "chats" in chats_data:
+                    result["chat_count"] = len(chats_data.get("chats", []))
+            except requests.exceptions.HTTPError as exc:
+                if exc.response.status_code == 401:
+                    raise RuntimeError("Authentication failed. Please check your API key.")
+                raise RuntimeError(f"HTTP {exc.response.status_code}: {exc.response.reason}")
+            except requests.exceptions.RequestException as exc:
+                raise RuntimeError(f"Connection failed: {str(exc)}")
+            except ValueError as exc:
+                raise RuntimeError(f"Invalid JSON response: {str(exc)}")
+
+    except requests.exceptions.ConnectionError as exc:
+        raise RuntimeError(f"Cannot connect to {base_url}. Please check the hostname.")
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f"Connection to {base_url} timed out.")
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f"Request failed: {str(exc)}")
+
+    return result
+
+
+def check_openwebui_health(
+    host: str,
+    api_key: Optional[str],
+    *,
+    interval_seconds: float = HEALTH_CHECK_INTERVAL_SECONDS,
+    timeout_seconds: float = HEALTH_CHECK_TIMEOUT_SECONDS,
+) -> HealthResult:
+    """Test connectivity and authentication to an OpenWebUI instance.
+
+    Args:
+        host: The OpenWebUI host URL
+        api_key: Optional API key for authentication
+        interval_seconds: Interval between retry attempts
+        timeout_seconds: Maximum time to wait for success
+
+    Returns:
+        HealthResult with status and metadata
+    """
+    def probe() -> Dict[str, Any]:
+        return _ping_openwebui(host, api_key)
+
+    return poll_health(
+        probe,
+        service="openwebui",
         interval_seconds=interval_seconds,
         timeout_seconds=timeout_seconds,
     )

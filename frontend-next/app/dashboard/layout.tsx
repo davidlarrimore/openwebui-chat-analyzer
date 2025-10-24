@@ -11,7 +11,8 @@ const NAV_LINKS = [
   { href: "/dashboard/content", label: "Content Analysis" },
   { href: "/dashboard/search", label: "Search" },
   { href: "/dashboard/browse", label: "Browse Chats" },
-  { href: "/dashboard/load-data", label: "Load Data" }
+  { href: "/dashboard/load-data", label: "Load Data" },
+  { href: "/dashboard/admin/connection", label: "Admin: Connection" }
 ];
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {

@@ -13,6 +13,7 @@ services:
       - ./data:/app/data:rw
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OWUI_LOG_LEVEL: ${OWUI_LOG_LEVEL:-INFO}
       TZ: ${TZ:-UTC}
     healthcheck:
       test:

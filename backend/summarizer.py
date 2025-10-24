@@ -17,6 +17,7 @@ from sentence_transformers import SentenceTransformer
 from .clients import OllamaClientError, OllamaOutOfMemoryError, get_ollama_client
 from .config import (
     OLLAMA_DEFAULT_TEMPERATURE,
+    OLLAMA_KEEP_ALIVE,
     OLLAMA_SUMMARY_MODEL,
     OLLAMA_SUMMARY_FALLBACK_MODEL,
 )
@@ -24,10 +25,10 @@ from .config import (
 MAX_CHARS = 256
 SALIENT_K = int(os.getenv("SALIENT_K", "10"))
 EMB_MODEL_NAME = os.getenv("EMB_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-SUMMARY_BATCH_TOKEN_LIMIT = max(1024, int(os.getenv("SUMMARY_BATCH_TOKEN_LIMIT", "16000")))
-SUMMARY_BATCH_MAX_OUTPUT_TOKENS = max(256, int(os.getenv("SUMMARY_BATCH_MAX_OUTPUT_TOKENS", "1024")))
 SUMMARY_FIELD = "gen_chat_summary"
 LEGACY_SUMMARY_FIELD = "summary_128"
+CHUNK_CHAR_LIMIT = max(64, int(os.getenv("SUMMARY_CHUNK_CHAR_LIMIT", "2048")))
+CHUNK_OVERLAP_LINES = max(0, int(os.getenv("SUMMARY_CHUNK_OVERLAP_LINES", "2")))
 
 def _normalize_base_url(value: str) -> str:
     """Normalize a host string into a usable HTTP base URL."""
@@ -40,6 +41,42 @@ def _normalize_base_url(value: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         raise ValueError(f"Invalid Open WebUI host: {value!r}")
     return candidate.rstrip("/")
+
+
+_DEBUG_JSON_LIMIT = 2048
+
+
+def _format_debug_json(payload: object) -> str:
+    """Return a truncated JSON serialization for debug logging."""
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        encoded = str(payload)
+    if len(encoded) > _DEBUG_JSON_LIMIT:
+        return f"{encoded[:_DEBUG_JSON_LIMIT]}…(truncated)"
+    return encoded
+
+
+def _format_debug_text(text: str) -> str:
+    """Return a truncated text preview for debug logging."""
+    if text is None:
+        return "<none>"
+    if len(text) > _DEBUG_JSON_LIMIT:
+        return f"{text[:_DEBUG_JSON_LIMIT]}…(truncated)"
+    return text
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """Return True/False based on common string representations."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 try:
@@ -60,10 +97,26 @@ if not OWUI_COMPLETIONS_MODEL:
     OWUI_COMPLETIONS_MODEL = "llama3.2:3b-instruct"
 
 _OWUI_COMPLETIONS_URL = f"{OWUI_BASE_URL}/api/chat/completions"
+OWUI_FALLBACK_ENABLED = _env_flag("OWUI_FALLBACK_ENABLED", default=False)
 
 _logger = logging.getLogger(__name__)
 if not _logger.handlers:
     logging.basicConfig(level=logging.INFO)
+if not OWUI_FALLBACK_ENABLED:
+    _logger.info(
+        "Open WebUI fallback disabled via OWUI_FALLBACK_ENABLED; summarizer will skip Open WebUI requests."
+    )
+
+
+def _disable_openwebui_fallback(reason: str) -> None:
+    """Disable Open WebUI fallback attempts for the current process."""
+    global OWUI_FALLBACK_ENABLED
+    if OWUI_FALLBACK_ENABLED:
+        OWUI_FALLBACK_ENABLED = False
+        _logger.warning(
+            "Disabling Open WebUI fallback after runtime failure: %s",
+            reason,
+        )
 
 _embeddings_model: Optional[SentenceTransformer] = None
 
@@ -92,6 +145,52 @@ def _set_chat_summary(chat: Dict[str, object], value: str) -> None:
             del chat[LEGACY_SUMMARY_FIELD]  # type: ignore[arg-type]
         except Exception:  # pragma: no cover
             pass
+
+
+def _chunk_lines(
+    lines: Sequence[str],
+    *,
+    char_limit: int,
+    overlap_lines: int,
+) -> List[List[str]]:
+    """Split normalized chat lines into overlapping chunks within a char budget."""
+    normalized_limit = max(64, char_limit)
+    normalized_overlap = max(0, overlap_lines)
+
+    chunks: List[List[str]] = []
+    buffer: List[str] = []
+    buffer_chars = 0
+
+    for raw_line in lines:
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+
+        line_len = len(line)
+
+        # Create a new chunk when the current buffer would overflow the limit.
+        prospective = buffer_chars + (1 if buffer else 0) + line_len
+        if buffer and prospective > normalized_limit:
+            chunks.append(buffer)
+            if normalized_overlap > 0:
+                overlap = buffer[-normalized_overlap:]
+                buffer = overlap.copy()
+                buffer_chars = sum(len(entry) for entry in buffer)
+                if buffer:
+                    buffer_chars += len(buffer) - 1
+            else:
+                buffer = []
+                buffer_chars = 0
+
+        if buffer:
+            buffer_chars += 1  # account for separating space
+        buffer.append(line)
+        buffer_chars += line_len
+
+    if buffer:
+        chunks.append(buffer)
+
+    return chunks or [[]]
 
 _requests_session = requests.Session()
 _requests_session.headers.update({"Accept": "application/json"})
@@ -261,6 +360,11 @@ def _headline_with_ollama(context: str, *, model: str = OLLAMA_SUMMARY_MODEL) ->
     """Generate a headline using the local Ollama service."""
     client = get_ollama_client()
     prompt = _HEADLINE_USER_TMPL.format(ctx=context)
+    _logger.debug(
+        "Requesting Ollama headline model=%s context_chars=%d",
+        model,
+        len(context),
+    )
     options = {
         "temperature": OLLAMA_DEFAULT_TEMPERATURE,
         "num_predict": 32,
@@ -271,9 +375,16 @@ def _headline_with_ollama(context: str, *, model: str = OLLAMA_SUMMARY_MODEL) ->
         model=model,
         system=_HEADLINE_SYS,
         options=options,
-        keep_alive="-1",
+        keep_alive=OLLAMA_KEEP_ALIVE,
     )
-    return _trim_one_line(result.response)
+    headline = _trim_one_line(result.response)
+    _logger.debug(
+        "Ollama headline response model=%s chars=%d preview=%r",
+        result.model,
+        len(result.response or ""),
+        headline[:120],
+    )
+    return headline
 
 
 def _headline_with_openwebui(context: str) -> str:
@@ -294,15 +405,28 @@ def _headline_with_openwebui(context: str) -> str:
         ],
     }
 
+    if _logger.isEnabledFor(logging.DEBUG):
+        _logger.debug("OpenWebUI headline payload: %s", _format_debug_json(payload))
+
     try:
         response = _requests_session.post(
             _OWUI_COMPLETIONS_URL,
             json=payload,
             timeout=60,
         )
+        _logger.debug(
+            "OpenWebUI headline request status=%s",
+            response.status_code,
+        )
         response.raise_for_status()
     except requests.exceptions.RequestException as exc:
         raise RuntimeError(f"Open WebUI completion request failed: {exc}") from exc
+
+    if _logger.isEnabledFor(logging.DEBUG):
+        _logger.debug(
+            "OpenWebUI headline raw response: %s",
+            _format_debug_text(response.text),
+        )
 
     try:
         data = response.json()
@@ -321,14 +445,25 @@ def _headline_with_openwebui(context: str) -> str:
             if isinstance(text_candidate, str):
                 text = text_candidate.strip()
 
-    return _trim_one_line(text)
+    if _logger.isEnabledFor(logging.DEBUG):
+        _logger.debug("OpenWebUI headline parsed JSON: %s", _format_debug_json(data))
+
+    headline = _trim_one_line(text)
+    _logger.debug(
+        "OpenWebUI headline response chars=%d preview=%r",
+        len(text),
+        headline[:120],
+    )
+    return headline
 
 
 def _headline_with_llm(context: str) -> str:
     """Attempt summarization via Ollama, falling back to Open WebUI if needed."""
+    _logger.debug("Summarizing headline via LLM for context_chars=%d", len(context))
     try:
         headline = _headline_with_ollama(context)
         if headline:
+            _logger.debug("Headline obtained via Ollama")
             return headline
     except OllamaOutOfMemoryError as exc:  # pragma: no cover - depends on runtime model.
         fallback_model = (
@@ -346,6 +481,7 @@ def _headline_with_llm(context: str) -> str:
             try:
                 headline = _headline_with_ollama(context, model=fallback_model)
                 if headline:
+                    _logger.debug("Headline obtained via Ollama fallback model %s", fallback_model)
                     return headline
             except OllamaClientError as fallback_exc:
                 _logger.warning(
@@ -372,10 +508,18 @@ def _headline_with_llm(context: str) -> str:
             exc_info=True,
         )
 
+    if not OWUI_FALLBACK_ENABLED:
+        _logger.debug("Open WebUI fallback disabled; returning empty headline")
+        return ""
+
     try:
-        return _headline_with_openwebui(context)
+        headline = _headline_with_openwebui(context)
+        if headline:
+            _logger.debug("Headline obtained via Open WebUI fallback")
+        return headline
     except Exception as exc:  # pragma: no cover - logged for observability.
         _logger.warning("Open WebUI fallback failed: %s", exc, exc_info=True)
+        _disable_openwebui_fallback(str(exc))
         return ""
 
 
@@ -403,186 +547,6 @@ def _build_batch_payload(batch_items: Sequence[Mapping[str, object]]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _strip_json_block(text: str) -> str:
-    """Remove Markdown code fences or leading commentary from model responses."""
-    if not text:
-        return ""
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        segments = cleaned.split("```")
-        if len(segments) >= 3:
-            cleaned = segments[1]
-        else:
-            cleaned = segments[-1]
-    return cleaned.strip()
-
-
-def _parse_batch_response(text: str) -> Dict[str, str]:
-    """Extract chat summaries from a JSON response payload."""
-    cleaned = _strip_json_block(text)
-    if not cleaned:
-        _logger.debug("Batch response was empty after stripping JSON blocks")
-        return {}
-    start = cleaned.find("[")
-    end = cleaned.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        _logger.debug("No valid JSON array found in batch response")
-        return {}
-    snippet = cleaned[start : end + 1]
-    try:
-        data = json.loads(snippet)
-    except ValueError as exc:
-        _logger.warning("Failed to parse JSON from batch response: %s", exc)
-        return {}
-
-    results: Dict[str, str] = {}
-    if not isinstance(data, list):
-        _logger.warning("Batch response JSON is not an array, got type: %s", type(data).__name__)
-        return results
-
-    for entry in data:
-        if not isinstance(entry, dict):
-            continue
-        chat_id = str(entry.get("chat_id") or "").strip()
-        summary = str(entry.get("summary") or "").strip()
-        if chat_id and summary:
-            results[chat_id] = summary
-        elif chat_id:
-            _logger.debug("Chat %s has empty summary in batch response", chat_id)
-
-    _logger.debug("Parsed %d summaries from batch response", len(results))
-    return results
-
-
-def _batch_headlines_with_ollama(payload: str, *, model: str = OLLAMA_SUMMARY_MODEL) -> str:
-    """Generate batch summaries using the local Ollama service."""
-    client = get_ollama_client()
-    options = {
-        "temperature": OLLAMA_DEFAULT_TEMPERATURE,
-        "num_predict": SUMMARY_BATCH_MAX_OUTPUT_TOKENS,
-        "num_ctx": 1024,
-    }
-    prompt = _BATCH_HEADLINE_USER_TMPL.format(payload=payload)
-    result = client.generate(
-        prompt=prompt,
-        model=model,
-        system=_BATCH_HEADLINE_SYS,
-        options=options,
-        keep_alive="-1",
-    )
-    return str(result.response or "").strip()
-
-
-def _batch_headlines_with_openwebui(payload_json: str) -> str:
-    """Call the Open WebUI completion endpoint for batch summarization."""
-    payload = {
-        "model": OWUI_COMPLETIONS_MODEL,
-        "temperature": 0.1,
-        "max_tokens": SUMMARY_BATCH_MAX_OUTPUT_TOKENS,
-        "messages": [
-            {"role": "system", "content": _BATCH_HEADLINE_SYS},
-            {"role": "user", "content": _BATCH_HEADLINE_USER_TMPL.format(payload=payload_json)},
-        ],
-    }
-
-    try:
-        response = _requests_session.post(
-            _OWUI_COMPLETIONS_URL,
-            json=payload,
-            timeout=90,
-        )
-        response.raise_for_status()
-    except requests.exceptions.RequestException as exc:
-        raise RuntimeError(f"Open WebUI batch completion request failed: {exc}") from exc
-
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise RuntimeError("Open WebUI batch completion response was not valid JSON.") from exc
-
-    text = ""
-    choices = data.get("choices")
-    if isinstance(choices, list) and choices:
-        primary = choices[0] or {}
-        message = primary.get("message")
-        if isinstance(message, dict):
-            text = str(message.get("content") or "").strip()
-        if not text:
-            text_candidate = primary.get("text")
-            if isinstance(text_candidate, str):
-                text = text_candidate.strip()
-    return text
-
-
-def _batch_headlines_with_llm(batch_items: Sequence[Dict[str, object]]) -> Dict[str, str]:
-    """Request batched chat summaries via Ollama, falling back to Open WebUI when needed."""
-    if not batch_items:
-        return {}
-
-    prompt_payload = _build_batch_payload(batch_items)
-    try:
-        response_text = _batch_headlines_with_ollama(prompt_payload)
-        parsed = _parse_batch_response(response_text)
-        if parsed:
-            return parsed
-    except OllamaOutOfMemoryError as exc:
-        fallback_model = (
-            OLLAMA_SUMMARY_FALLBACK_MODEL
-            if OLLAMA_SUMMARY_FALLBACK_MODEL and OLLAMA_SUMMARY_FALLBACK_MODEL != OLLAMA_SUMMARY_MODEL
-            else ""
-        )
-        if fallback_model:
-            _logger.warning(
-                "Ollama batch summarization ran out of memory; retrying with fallback model %s.",
-                fallback_model,
-                exc_info=True,
-            )
-            try:
-                response_text = _batch_headlines_with_ollama(prompt_payload, model=fallback_model)
-                parsed = _parse_batch_response(response_text)
-                if parsed:
-                    return parsed
-            except OllamaClientError as fallback_exc:
-                _logger.warning(
-                    "Ollama fallback batch model %s failed: %s",
-                    fallback_model,
-                    fallback_exc,
-                    exc_info=True,
-                )
-        else:
-            _logger.warning(
-                "Ollama batch summarization failed due to OOM and no fallback model is configured.",
-                exc_info=True,
-            )
-    except OllamaClientError as exc:
-        _logger.warning(
-            "Ollama batch summarization failed: %s",
-            exc,
-            exc_info=True,
-        )
-    except Exception as exc:  # pragma: no cover - logged for observability.
-        _logger.warning(
-            "Unexpected error during Ollama batch summarization: %s",
-            exc,
-            exc_info=True,
-        )
-
-    try:
-        response_text = _batch_headlines_with_openwebui(prompt_payload)
-        parsed = _parse_batch_response(response_text)
-        if parsed:
-            return parsed
-    except Exception as exc:  # pragma: no cover - logged for observability.
-        _logger.warning("Open WebUI batch summarization failed: %s", exc, exc_info=True)
-
-    return {}
-
-
-def _summarize_batch_items(batch_items: Sequence[Dict[str, object]]) -> Dict[str, str]:
-    """Wrapper used by summarize_chats to facilitate monkeypatching in tests."""
-    return _batch_headlines_with_llm(batch_items)
-
-
 def _summarize_context(context: str) -> str:
     """Generate a summary via the LLM with a deterministic fallback.
 
@@ -593,14 +557,18 @@ def _summarize_context(context: str) -> str:
     """
     if not context:
         return ""
+    _logger.debug("Summarizing single chat context_chars=%d", len(context))
     try:
         headline = _headline_with_llm(context)
         if headline:
+            _logger.debug("Summary obtained via LLM preview=%r", headline[:120])
             return headline
         _logger.warning("LLM returned an empty summary; using fallback snippet.")
     except Exception as exc:
         _logger.warning("LLM summary request failed; falling back to snippet: %s", exc, exc_info=True)
-    return _trim_one_line(context, MAX_CHARS)
+    fallback = _trim_one_line(context, MAX_CHARS)
+    _logger.debug("Using fallback snippet preview=%r", fallback[:120])
+    return fallback
 
 
 def summarize_chat(messages: Sequence[Mapping[str, object]]) -> str:
@@ -620,6 +588,41 @@ def summarize_chat(messages: Sequence[Mapping[str, object]]) -> str:
 
 ProgressCallback = Optional[Callable[[int, int, str, str, Optional[Dict[str, object]]], None]]
 # Optional hook signature used to stream summarization progress back to callers.
+
+
+def _summarize_with_chunks(
+    lines: Sequence[str],
+    *,
+    fallback_context: str,
+    on_progress: ProgressCallback,
+    progress_index: int,
+    total: int,
+    chat_id: str,
+) -> str:
+    """Summarize a chat using a single request against the LLM."""
+    context = fallback_context.strip()
+    if not context:
+        joined_lines = " ".join(str(line).strip() for line in lines if str(line).strip())
+        context = joined_lines
+    if not context:
+        return ""
+
+    _logger.debug(
+        "Summarizing chat %s without chunking (context_chars=%d)",
+        chat_id or "<unknown>",
+        len(context),
+    )
+
+    summary_candidate = _summarize_context(context)
+    if summary_candidate:
+        final_summary = _trim_one_line(summary_candidate, MAX_CHARS)
+        _logger.debug(
+            "Non-chunked summary generated for chat %s preview=%r",
+            chat_id or "<unknown>",
+            final_summary[:120],
+        )
+        return final_summary
+    return ""
 
 
 def summarize_chats(
@@ -662,94 +665,6 @@ def summarize_chats(
     skipped = 0
     failures = 0
     generated = 0
-
-    pending_batch: List[Dict[str, object]] = []
-    pending_tokens = 0
-
-    def _flush_pending_batch() -> None:
-        nonlocal pending_batch, pending_tokens, generated, failures
-        if not pending_batch:
-            return
-
-        batch_size = len(pending_batch)
-        batch_chat_ids = [item["chat_id"] for item in pending_batch]
-        _logger.info(
-            "Processing batch of %d chats (estimated %d tokens)",
-            batch_size,
-            pending_tokens,
-        )
-
-        try:
-            batch_results = _summarize_batch_items(pending_batch)
-            _logger.info(
-                "Batch summarization returned %d summaries for %d chats",
-                len(batch_results),
-                batch_size,
-            )
-        except Exception as exc:  # pragma: no cover - logged for observability.
-            _logger.warning(
-                "Batch summarization failed; falling back to per-chat summaries: %s",
-                exc,
-                exc_info=True,
-            )
-            batch_results = {}
-
-        # Collect summaries for this batch to persist immediately
-        batch_summaries: Dict[str, str] = {}
-
-        for item in pending_batch:
-            chat = item["chat"]
-            chat_id = item["chat_id"]
-            previous_summary = item["previous_summary"]
-            fallback_context = item["context"]
-
-            summary_text = str(batch_results.get(chat_id) or "").strip()
-            if summary_text:
-                summary_text = _trim_one_line(summary_text, MAX_CHARS)
-            elif batch_results:
-                # Batch returned results but not for this chat_id - log and fall back
-                _logger.debug(
-                    "Chat %s missing from batch results; falling back to individual summarization",
-                    chat_id,
-                )
-            if not summary_text:
-                summary_text = _summarize_context(fallback_context)
-
-            if summary_text:
-                generated += 1
-                summary_map[chat_id] = summary_text
-                _set_chat_summary(chat, summary_text)
-                batch_summaries[chat_id] = summary_text
-                outcome = "generated"
-            else:
-                failures += 1
-                _set_chat_summary(chat, previous_summary if previous_summary else "")
-                outcome = "failed"
-
-            if on_progress:
-                details = {
-                    "type": "chat",
-                    "chat_id": chat_id,
-                    "completed": item["position"],
-                    "total": total,
-                    "outcome": outcome,
-                    "event_id": f"chat-{chat_id or 'unknown'}-{item['position']}",
-                }
-                try:
-                    on_progress(item["position"], total, chat_id, outcome, details)
-                except Exception:  # pragma: no cover
-                    pass
-
-        # Persist batch summaries immediately to database
-        if on_batch_complete and batch_summaries:
-            try:
-                on_batch_complete(batch_summaries)
-                _logger.info("Persisted %d summaries from batch to database", len(batch_summaries))
-            except Exception as exc:  # pragma: no cover
-                _logger.warning("Failed to persist batch summaries: %s", exc, exc_info=True)
-
-        pending_batch = []
-        pending_tokens = 0
 
     for idx, chat in enumerate(chats_list, start=1):
         chat_id_raw = chat.get("chat_id")
@@ -818,24 +733,45 @@ def summarize_chats(
         if not context:
             context = " ".join(lines[: SALIENT_K])
 
-        prompt_lines = "\n".join(lines)
-        token_estimate = _estimate_token_length(prompt_lines) + 64
-        if pending_batch and pending_tokens + token_estimate > SUMMARY_BATCH_TOKEN_LIMIT:
-            _flush_pending_batch()
-
-        pending_batch.append(
-            {
-                "chat": chat,
-                "chat_id": chat_id,
-                "context": context,
-                "lines": lines,
-                "position": idx,
-                "previous_summary": previous_summary,
-            }
+        summary_text = _summarize_with_chunks(
+            lines,
+            fallback_context=context,
+            on_progress=on_progress,
+            progress_index=idx,
+            total=total,
+            chat_id=chat_id,
         )
-        pending_tokens += min(token_estimate, SUMMARY_BATCH_TOKEN_LIMIT)
 
-    _flush_pending_batch()
+        if summary_text:
+            generated += 1
+            summary_text = _trim_one_line(summary_text, MAX_CHARS)
+            summary_map[chat_id] = summary_text
+            _set_chat_summary(chat, summary_text)
+            outcome = "generated"
+            if on_batch_complete:
+                try:
+                    on_batch_complete({chat_id: summary_text})
+                    _logger.info("Persisted summary for chat %s", chat_id)
+                except Exception as exc:  # pragma: no cover
+                    _logger.warning("Failed to persist summary for chat %s: %s", chat_id, exc, exc_info=True)
+        else:
+            failures += 1
+            _set_chat_summary(chat, previous_summary if previous_summary else "")
+            outcome = "failed"
+
+        if on_progress:
+            details = {
+                "type": "chat",
+                "chat_id": chat_id,
+                "completed": idx,
+                "total": total,
+                "outcome": outcome,
+                "event_id": f"chat-{chat_id or 'unknown'}-{idx}",
+            }
+            try:
+                on_progress(idx, total, chat_id, outcome, details)
+            except Exception:  # pragma: no cover
+                pass
 
     stats = {
         "total": total,

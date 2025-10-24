@@ -137,6 +137,22 @@ class Account(TimestampMixin, Base):
     is_active = Column(Boolean, nullable=False, server_default="true")
 
 
+class AccessToken(TimestampMixin, Base):
+    """Opaque access tokens issued to authenticated users."""
+
+    __tablename__ = "access_tokens"
+
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String(128), nullable=False, unique=True, index=True)
+    username = Column(String(320), ForeignKey("accounts.username", ondelete="CASCADE"), nullable=False, index=True)
+    issued_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+
+
+Index("ix_access_tokens_expiry", AccessToken.expires_at)
+
+
 class Setting(TimestampMixin, Base):
     """Key-value application settings sourced from app.json."""
 
