@@ -10,7 +10,7 @@ Local analytics stack for exploring Open WebUI chat exports. The project pairs a
 - **Instant metrics display**—dataset statistics update immediately after data loads while summaries process in the background
 - Filtering across every visualisation by Open WebUI user and model
 - Built-in summariser generates one-line chat headlines using local sentence embeddings plus a bundled Ollama service (with Open WebUI completions as a fallback)
-- **Incremental summary persistence**—batches are written to SQLite as they complete so partial work is never lost
+- **Incremental summary persistence**—summaries are written to SQLite as each chat completes so partial work is never lost
 - Time analysis (daily trend, conversation length, hour-by-day heatmap) and content analysis (word clouds, message length)
 - Sentiment breakdown with TextBlob, full-text search, paginated browsing, per-thread JSON downloads, and CSV exports
 - Modern dashboard built with Next.js, Tailwind, shadcn/ui primitives, and Auth.js for credential and GitHub sign-in
@@ -28,7 +28,7 @@ Review [AGENTS.md](AGENTS.md) for consolidated contributor workflows, coding sta
    - `OWUI_DIRECT_HOST` – Default Open WebUI base URL shown on the Load Data page.
    - `OWUI_DIRECT_API_KEY` – Optional API token that appears in the Direct Connect form (stored only in your local `.env`).
 4. (Optional) Tune the summariser and GenAI helpers:
-   - `SUMMARY_MAX_CHARS` / `SALIENT_K` – Control headline length and how many salient utterances feed the LLM.
+   - `SALIENT_K` – Control how many salient utterances feed the LLM for context.
    - `EMB_MODEL` – Sentence transformer used to pick salient lines (`sentence-transformers/all-MiniLM-L6-v2` by default).
    - `OLLAMA_*` variables – Configure the Ollama runtime, timeout, preload list, and default models for summaries, long-form responses, and embeddings.
    - `OWUI_COMPLETIONS_MODEL` – Chat completion model requested from your Open WebUI deployment (legacy fallback path).
@@ -95,10 +95,10 @@ Run `uvicorn backend.app:app --reload` during development to keep the API availa
 ## Automated Chat Summaries
 - Summaries are persisted in the `gen_chat_summary` field for each chat and surface throughout the Browse and Overview experiences.
 - Every dataset update (direct sync or file upload) queues the summariser; progress is shown in the Load Data processing log with toast notifications.
-- **Incremental persistence**: summaries are written to the database immediately after each batch is processed by Ollama, rather than waiting for all chats to complete. This means:
+- **Incremental persistence**: summaries are written to the database immediately after each individual chat is processed by Ollama, rather than waiting for all chats to complete. This means:
   - Dataset metrics update instantly after data loads, before summaries begin generating.
-  - Summaries become available progressively as each batch completes.
-  - If the summariser is interrupted, all previously completed batches are already saved.
+  - Summaries become available progressively as each chat completes.
+  - If the summariser is interrupted, all previously completed chats are already saved.
   - The dashboard remains responsive during long summarisation jobs.
 - The summariser picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the bundled Ollama service (`OLLAMA_SUMMARY_MODEL`) with an automatic fallback to the Open WebUI completions endpoint at `OWUI_DIRECT_HOST`.
 - Rebuild summaries anytime from **Load Data → Admin Tools → Rerun summaries** or through the API (`POST /api/v1/summaries/rebuild` + `/summaries/status`).

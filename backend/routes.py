@@ -47,7 +47,7 @@ from .config import (
     OLLAMA_SUMMARY_MODEL,
     OLLAMA_SUMMARY_FALLBACK_MODEL,
 )
-from .summarizer import MAX_CHARS, _HEADLINE_SYS, _HEADLINE_USER_TMPL, _trim_one_line
+from .summarizer import _HEADLINE_SYS, _HEADLINE_USER_TMPL, _trim_one_line
 from .health import check_backend_health, check_database_health, check_ollama_health, check_openwebui_health
 
 LOGGER = logging.getLogger(__name__)
@@ -584,11 +584,11 @@ def generate_summary(
         and OLLAMA_SUMMARY_FALLBACK_MODEL != primary_model
         else None
     )
-    char_limit = payload.max_chars or MAX_CHARS
     temperature = (
         payload.temperature if payload.temperature is not None else OLLAMA_DEFAULT_TEMPERATURE
     )
-    num_predict = min(48, max(32, char_limit // 8))
+    # Use max_chars if provided for token prediction, otherwise use reasonable default
+    num_predict = min(48, max(32, (payload.max_chars or 256) // 8))
 
     if not context:
         return GenAISummarizeResponse(summary="", model=primary_model)
@@ -636,8 +636,9 @@ def generate_summary(
     raw_summary = result.response or ""
     primary_line = raw_summary.splitlines()[0] if raw_summary else ""
     normalized = " ".join(primary_line.strip().split())
-    if normalized and len(normalized) > char_limit:
-        summary = normalized[: char_limit - 1].rstrip() + "…"
+    # Apply client-requested max_chars truncation if specified
+    if payload.max_chars and normalized and len(normalized) > payload.max_chars:
+        summary = normalized[: payload.max_chars - 1].rstrip() + "…"
     else:
         summary = normalized
     return GenAISummarizeResponse(summary=summary, model=result.model or active_model)

@@ -22,7 +22,6 @@ from .config import (
     OLLAMA_SUMMARY_FALLBACK_MODEL,
 )
 
-MAX_CHARS = 256
 SALIENT_K = int(os.getenv("SALIENT_K", "10"))
 EMB_MODEL_NAME = os.getenv("EMB_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 SUMMARY_FIELD = "gen_chat_summary"
@@ -209,26 +208,6 @@ _HEADLINE_USER_TMPL = (
     "Summary:"
 )
 
-_BATCH_HEADLINE_SYS = (
-    "You write concise, single-line conversation summaries that describe both the topic and "
-    "key points for each chat you receive. You always respond with strictly valid JSON and nothing else."
-)
-_BATCH_HEADLINE_USER_TMPL = (
-    "You will be given multiple chat transcripts as JSON objects with keys `chat_id` and "
-    "`lines`. Each `lines` value is an ordered list of \"role: message\" entries representing "
-    "a conversation between a user and an assistant.\n\n"
-    "For every chat:\n"
-    "1. Write a single sentence summary under 256 characters.\n"
-    "2. Capture the user's main intent, whether it was fulfilled, and the type of response provided.\n"
-    "3. Do not include quotation marks or trailing punctuation at the end of the summary.\n\n"
-    "CRITICAL: You must return ONLY a valid JSON array with NO additional text, commentary, or markdown formatting.\n"
-    "Each object in the array MUST have exactly this structure:\n"
-    "{{\"chat_id\": \"<exact_chat_id_from_input>\", \"summary\": \"<your_summary_here>\"}}\n\n"
-    "Ensure every chat_id from the input appears in your response with its corresponding summary.\n\n"
-    "Chats:\n{payload}"
-)
-
-
 def _clean(text: str) -> str:
     """Normalize message content so it is safe for downstream processing.
 
@@ -340,13 +319,11 @@ def _select_salient(lines: Sequence[str], k: int) -> List[str]:
     return [lines[idx] for idx in chosen]
 
 
-def _trim_one_line(text: str, max_chars: int = MAX_CHARS) -> str:
-    """Return a single-line summary clipped to the configured character limit."""
+def _trim_one_line(text: str) -> str:
+    """Return a single-line summary with no enforced character limit."""
     cleaned = _clean(text)
     cleaned = cleaned.split("\n", 1)[0]
     cleaned = cleaned.strip('"\'' "“”‘’ ").rstrip(".")
-    if len(cleaned) > max_chars:
-        return cleaned[: max_chars - 1] + "…"
     return cleaned
 
 
@@ -533,20 +510,6 @@ def _estimate_token_length(text: str) -> int:
     return max(1, len(cleaned) // 4)
 
 
-def _build_batch_payload(batch_items: Sequence[Mapping[str, object]]) -> str:
-    """Serialize chat batches into JSON payloads for the batch summarization prompt."""
-    payload: List[Dict[str, object]] = []
-    for item in batch_items:
-        chat_id = str(item.get("chat_id") or "").strip()
-        raw_lines = item.get("lines")
-        if isinstance(raw_lines, list):
-            lines = [str(entry) for entry in raw_lines if str(entry).strip()]
-        else:
-            lines = []
-        payload.append({"chat_id": chat_id, "lines": lines})
-    return json.dumps(payload, ensure_ascii=False)
-
-
 def _summarize_context(context: str) -> str:
     """Generate a summary via the LLM with a deterministic fallback.
 
@@ -566,7 +529,7 @@ def _summarize_context(context: str) -> str:
         _logger.warning("LLM returned an empty summary; using fallback snippet.")
     except Exception as exc:
         _logger.warning("LLM summary request failed; falling back to snippet: %s", exc, exc_info=True)
-    fallback = _trim_one_line(context, MAX_CHARS)
+    fallback = _trim_one_line(context)
     _logger.debug("Using fallback snippet preview=%r", fallback[:120])
     return fallback
 
@@ -615,7 +578,7 @@ def _summarize_with_chunks(
 
     summary_candidate = _summarize_context(context)
     if summary_candidate:
-        final_summary = _trim_one_line(summary_candidate, MAX_CHARS)
+        final_summary = _trim_one_line(summary_candidate)
         _logger.debug(
             "Non-chunked summary generated for chat %s preview=%r",
             chat_id or "<unknown>",
@@ -631,17 +594,17 @@ def summarize_chats(
     on_progress: ProgressCallback = None,
     *,
     replace_existing: bool = False,
-    on_batch_complete: Optional[Callable[[Dict[str, str]], None]] = None,
+    on_chat_complete: Optional[Callable[[Dict[str, str]], None]] = None,
 ) -> tuple[Dict[str, str], Dict[str, int]]:
-    """Summarize chats and return a map of chat_id -> summary plus stats.
+    """Summarize chats individually and return a map of chat_id -> summary plus stats.
 
     Args:
         chats (Iterable[Dict[str, object]]): Chat metadata dictionaries.
         messages (Sequence[Mapping[str, object]]): All messages in the dataset.
         on_progress (ProgressCallback, optional): Callback invoked after each chat.
         replace_existing (bool, optional): When True, regenerate summaries even if one already exists.
-        on_batch_complete (Callable[[Dict[str, str]], None], optional): Callback invoked after each batch
-            is processed with the batch summaries for immediate persistence.
+        on_chat_complete (Callable[[Dict[str, str]], None], optional): Callback invoked after each chat
+            is processed with a single-entry dict {chat_id: summary} for immediate persistence.
     Returns:
         tuple[Dict[str, str], Dict[str, int]]: Summary map and aggregate statistics.
     """
@@ -744,13 +707,13 @@ def summarize_chats(
 
         if summary_text:
             generated += 1
-            summary_text = _trim_one_line(summary_text, MAX_CHARS)
+            # preserve full summary text; no enforced cap
             summary_map[chat_id] = summary_text
             _set_chat_summary(chat, summary_text)
             outcome = "generated"
-            if on_batch_complete:
+            if on_chat_complete:
                 try:
-                    on_batch_complete({chat_id: summary_text})
+                    on_chat_complete({chat_id: summary_text})
                     _logger.info("Persisted summary for chat %s", chat_id)
                 except Exception as exc:  # pragma: no cover
                     _logger.warning("Failed to persist summary for chat %s: %s", chat_id, exc, exc_info=True)

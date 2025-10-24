@@ -1757,20 +1757,20 @@ class DataService:
             reason,
         )
 
-        def batch_persist_callback(batch_summaries: Dict[str, str]) -> None:
-            """Immediately persist batch summaries to database and update in-memory records."""
-            if not batch_summaries:
+        def chat_persist_callback(chat_summary: Dict[str, str]) -> None:
+            """Immediately persist individual chat summary to database and update in-memory records."""
+            if not chat_summary:
                 return
 
             # Update in-memory chat records
             with self._lock:
                 for chat in self._chats:
                     chat_id = str(chat.get("chat_id") or "")
-                    if chat_id in batch_summaries:
-                        _set_chat_summary(chat, batch_summaries[chat_id])
+                    if chat_id in chat_summary:
+                        _set_chat_summary(chat, chat_summary[chat_id])
 
             # Persist to database immediately
-            self._storage.update_chat_summaries(batch_summaries)
+            self._storage.update_chat_summaries(chat_summary)
 
         try:
             summary_map, stats = summarize_chats(
@@ -1778,7 +1778,7 @@ class DataService:
                 messages_snapshot,
                 on_progress=progress_cb,
                 replace_existing=force_resummarize,
-                on_batch_complete=batch_persist_callback,
+                on_chat_complete=chat_persist_callback,
             )
 
             with self._summary_state_lock:
