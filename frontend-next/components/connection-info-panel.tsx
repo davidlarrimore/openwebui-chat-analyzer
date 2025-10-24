@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import {
+  apiGet,
   getOpenWebUISettings,
   updateOpenWebUISettings,
   testOpenWebUIConnection,
@@ -25,7 +26,7 @@ import {
 } from "@/lib/api";
 import { toast } from "@/components/ui/use-toast";
 import { LogViewer } from "@/components/log-viewer";
-import type { SummaryEvent, SummaryStatus } from "@/lib/types";
+import type { SummaryEvent, SummaryStatus, DatasetMeta } from "@/lib/types";
 
 const SUMMARY_POLL_INTERVAL_MS = 2000;
 const TERMINAL_SUMMARY_STATES = new Set(["idle", "completed", "failed", "cancelled"]);
@@ -141,6 +142,10 @@ interface ConnectionInfoState {
   lastSync: string | null;
   datasetLoaded: boolean;
   isStale: boolean;
+  chatCount: number;
+  userCount: number;
+  modelCount: number;
+  messageCount: number;
   hostSource?: "database" | "environment" | "default";
   apiKeySource?: "database" | "environment" | "empty";
   isLoading: boolean;
@@ -167,6 +172,10 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     lastSync: null,
     datasetLoaded: false,
     isStale: false,
+    chatCount: 0,
+    userCount: 0,
+    modelCount: 0,
+    messageCount: 0,
     hostSource: initialSettings?.host_source,
     apiKeySource: initialSettings?.api_key_source,
     isLoading: false,
@@ -320,14 +329,40 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }
   }, [appendSummaryEventsToLogs]);
 
-  // Fetch settings, sync status, and scheduler config on mount
+  // Fetch settings, sync status, scheduler config, and dataset metadata on mount
   React.useEffect(() => {
     if (!initialSettings) {
       fetchSettings();
     }
     fetchSyncStatus();
     fetchSchedulerConfig();
+    fetchDatasetMeta();
   }, [initialSettings]);
+
+  const fetchDatasetMeta = async () => {
+    try {
+      const meta = await apiGet<DatasetMeta>("api/v1/datasets/meta");
+      setState(prev => ({
+        ...prev,
+        chatCount: meta.chat_count,
+        userCount: meta.user_count,
+        modelCount: meta.model_count,
+        messageCount: meta.message_count,
+        datasetLoaded: meta.chat_count > 0 || meta.user_count > 0 || meta.model_count > 0,
+      }));
+    } catch (err) {
+      console.error("Failed to fetch dataset metadata:", err);
+      // If fetch fails, assume no data loaded
+      setState(prev => ({
+        ...prev,
+        chatCount: 0,
+        userCount: 0,
+        modelCount: 0,
+        messageCount: 0,
+        datasetLoaded: false,
+      }));
+    }
+  };
 
   const fetchSyncStatus = async () => {
     try {
@@ -496,8 +531,9 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         mode: state.mode,
       });
 
-      // Refresh sync status after successful sync
+      // Refresh sync status and dataset metadata after successful sync
       await fetchSyncStatus();
+      await fetchDatasetMeta();
 
       toast({
         title: "Data Sync Complete",
@@ -506,7 +542,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         duration: 5000,
       });
 
-      setState(prev => ({ ...prev, isLoading: false, datasetLoaded: true }));
+      setState(prev => ({ ...prev, isLoading: false }));
     } catch (err) {
       setState(prev => ({
         ...prev,
@@ -567,8 +603,8 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
           variant: "default",
           duration: 5000,
         });
-        setState(prev => ({ ...prev, datasetLoaded: true }));
         await fetchSyncStatus();
+        await fetchDatasetMeta();
       } else if (currentStatus.state === "failed") {
         const message = currentStatus.message ?? "Summary job failed.";
         appendManualSummaryLog(message, "error");
@@ -634,94 +670,198 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
 
   return (
     <div className={cn("w-full space-y-6", className)}>
-      {/* Header Bar */}
-      <div className="flex items-center justify-between border-b bg-card p-4 rounded-lg shadow-sm">
-        <h1 className="text-2xl font-bold">Connection Info</h1>
-
-        <div className="flex items-center gap-3">
-          {/* Dataset Loaded Pill */}
-          {/* TODO: Connect to actual dataset state from backend */}
-          <div
-            className={cn(
-              "rounded-full px-3 py-1 text-xs font-medium",
-              state.datasetLoaded
-                ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
-                : "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200"
-            )}
-          >
-            {state.datasetLoaded ? "Dataset Loaded" : "No Dataset"}
-          </div>
-
-          {/* Last Sync */}
-          <div className="text-sm text-muted-foreground">
-            Last Sync: {state.lastSync ? new Date(state.lastSync).toLocaleString() : "Never"}
-          </div>
-
-          {/* Staleness Pill */}
-          {state.lastSync && (
-            <div
-              className={cn(
-                "rounded-full px-3 py-1 text-xs font-medium",
-                state.isStale
-                  ? "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
-                  : "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
-              )}
-            >
-              {state.isStale ? "Stale" : "Up to date"}
-            </div>
-          )}
-
-          {/* Mode Toggle */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleModeToggle}
-            className="min-w-[120px]"
-            title={state.mode === "full" ? "Full sync replaces all data" : "Incremental sync adds new data"}
-          >
-            Mode: {state.mode === "full" ? "Full" : "Incremental"}
-          </Button>
-
-          {/* Test Connection Button */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleTestConnection}
-            disabled={state.isTesting || state.isSaving || state.isLoading}
-          >
-            {state.isTesting ? "Testing..." : "Test Connection"}
-          </Button>
-
-          {/* Load Data Button */}
-          <Button
-            variant="default"
-            size="sm"
-            onClick={handleLoadData}
-            disabled={state.isLoading || state.isSaving || state.isTesting || state.isRebuildingSummaries}
-          >
-            {state.isLoading ? "Loading..." : "Load Data"}
-          </Button>
-
-          {/* Rerun Summaries Button */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRerunSummaries}
-            disabled={state.isRebuildingSummaries || state.isLoading || state.isSaving || state.isTesting}
-          >
-            {state.isRebuildingSummaries ? "Rebuilding..." : "Rerun Summaries"}
-          </Button>
-
-          {/* Scheduler Settings Button */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setState(prev => ({ ...prev, schedulerDrawerOpen: true }))}
-          >
-            Scheduler
-          </Button>
-        </div>
+      {/* Header */}
+      <div className="border-b bg-card p-4 rounded-t-lg shadow-sm">
+        <h1 className="text-2xl font-bold">System Administration</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Manage OpenWebUI connection, data synchronization, and system operations
+        </p>
       </div>
+
+      {/* System Status Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <span className="text-lg">📊 System Status</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Connection Status */}
+            <div className="space-y-2 p-4 border rounded-lg bg-muted/30">
+              <div className="text-sm font-medium text-muted-foreground">Connection Status</div>
+              <div className="flex items-center gap-2">
+                <div className={cn(
+                  "h-3 w-3 rounded-full",
+                  state.hostname ? "bg-green-500" : "bg-red-500"
+                )} />
+                <span className="font-semibold">
+                  {state.hostname ? "Configured" : "Not Configured"}
+                </span>
+              </div>
+              {state.hostname && (
+                <div className="text-xs text-muted-foreground truncate">
+                  {state.hostname}
+                </div>
+              )}
+            </div>
+
+            {/* Dataset Status */}
+            <div className="space-y-2 p-4 border rounded-lg bg-muted/30">
+              <div className="text-sm font-medium text-muted-foreground">Dataset Status</div>
+              <div className="space-y-1">
+                <div
+                  className={cn(
+                    "inline-flex rounded-full px-3 py-1 text-xs font-semibold",
+                    state.datasetLoaded
+                      ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                      : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+                  )}
+                >
+                  {state.datasetLoaded ? "✓ Data Loaded" : "⚠ No Data Loaded"}
+                </div>
+                {state.datasetLoaded && (
+                  <div className="text-xs text-muted-foreground space-y-0.5 mt-2">
+                    <div>{state.chatCount.toLocaleString()} chats</div>
+                    <div>{state.userCount.toLocaleString()} users</div>
+                    <div>{state.modelCount.toLocaleString()} models</div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Last Sync Status */}
+            <div className="space-y-2 p-4 border rounded-lg bg-muted/30">
+              <div className="text-sm font-medium text-muted-foreground">Last Sync</div>
+              <div className="space-y-1">
+                <div className="text-sm font-semibold">
+                  {state.lastSync ? new Date(state.lastSync).toLocaleString() : "Never"}
+                </div>
+                {state.lastSync && (
+                  <div
+                    className={cn(
+                      "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
+                      state.isStale
+                        ? "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+                        : "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                    )}
+                  >
+                    {state.isStale ? "Stale" : "Current"}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Quick Actions Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <span className="text-lg">⚡ Quick Actions</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* Sync Data Now */}
+            <Button
+              variant="default"
+              className="h-auto flex-col items-start p-4 gap-2"
+              onClick={handleLoadData}
+              disabled={state.isLoading || state.isSaving || state.isTesting || state.isRebuildingSummaries}
+            >
+              <div className="text-lg">🔄</div>
+              <div className="text-left">
+                <div className="font-semibold">{state.isLoading ? "Syncing..." : "Sync Data Now"}</div>
+                <div className="text-xs opacity-90 font-normal">
+                  Run {state.mode} sync immediately
+                </div>
+              </div>
+            </Button>
+
+            {/* Test Connection */}
+            <Button
+              variant="outline"
+              className="h-auto flex-col items-start p-4 gap-2"
+              onClick={handleTestConnection}
+              disabled={state.isTesting || state.isSaving || state.isLoading}
+            >
+              <div className="text-lg">🔌</div>
+              <div className="text-left">
+                <div className="font-semibold">{state.isTesting ? "Testing..." : "Test Connection"}</div>
+                <div className="text-xs text-muted-foreground font-normal">
+                  Verify OpenWebUI access
+                </div>
+              </div>
+            </Button>
+
+            {/* Rebuild Summaries */}
+            <Button
+              variant="outline"
+              className="h-auto flex-col items-start p-4 gap-2"
+              onClick={handleRerunSummaries}
+              disabled={state.isRebuildingSummaries || state.isLoading || state.isSaving || state.isTesting}
+            >
+              <div className="text-lg">🧠</div>
+              <div className="text-left">
+                <div className="font-semibold">
+                  {state.isRebuildingSummaries ? "Rebuilding..." : "Rebuild Summaries"}
+                </div>
+                <div className="text-xs text-muted-foreground font-normal">
+                  Regenerate all AI summaries
+                </div>
+              </div>
+            </Button>
+
+            {/* Scheduler Settings */}
+            <Button
+              variant="outline"
+              className="h-auto flex-col items-start p-4 gap-2"
+              onClick={() => setState(prev => ({ ...prev, schedulerDrawerOpen: true }))}
+            >
+              <div className="text-lg">⏰</div>
+              <div className="text-left">
+                <div className="font-semibold">Scheduler</div>
+                <div className="text-xs text-muted-foreground font-normal">
+                  {state.schedulerEnabled ? `Active (${state.schedulerInterval}m)` : "Disabled"}
+                </div>
+              </div>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Sync Configuration Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <span className="text-lg">⚙️ Sync Configuration</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {/* Sync Mode Selector */}
+            <div className="flex items-center justify-between p-4 border rounded-lg">
+              <div className="space-y-1">
+                <div className="font-medium">Sync Mode</div>
+                <div className="text-sm text-muted-foreground">
+                  {state.mode === "full"
+                    ? "Full sync replaces all existing data"
+                    : "Incremental sync adds only new data"}
+                </div>
+              </div>
+              <Button
+                variant={state.mode === "full" ? "default" : "outline"}
+                onClick={handleModeToggle}
+                className="min-w-[140px]"
+              >
+                {state.mode === "full" ? "Full Sync" : "Incremental"}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Scheduler Settings Drawer */}
       {state.schedulerDrawerOpen && (
@@ -731,7 +871,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold">Scheduler Settings</h2>
+              <h2 className="text-xl font-bold">⏰ Scheduler</h2>
               <Button
                 variant="ghost"
                 size="sm"
@@ -742,12 +882,33 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
             </div>
 
             <div className="space-y-6">
+              {/* Manual Sync Action */}
+              <div className="p-4 border-2 border-dashed rounded-lg space-y-3">
+                <div className="font-medium">Manual Sync</div>
+                <p className="text-sm text-muted-foreground">
+                  Run a data sync immediately without waiting for the scheduled interval
+                </p>
+                <Button
+                  variant="default"
+                  className="w-full"
+                  onClick={async () => {
+                    setState(prev => ({ ...prev, schedulerDrawerOpen: false }));
+                    await handleLoadData();
+                  }}
+                  disabled={state.isLoading || state.isSaving || state.isTesting || state.isRebuildingSummaries}
+                >
+                  {state.isLoading ? "Syncing..." : "🔄 Run Sync Now"}
+                </Button>
+              </div>
+
+              <div className="h-px bg-border" />
+
               {/* Enable/Disable Toggle */}
               <div className="flex items-center justify-between">
                 <div>
-                  <Label htmlFor="scheduler-enabled" className="text-base">Enable Scheduler</Label>
+                  <Label htmlFor="scheduler-enabled" className="text-base">Automatic Scheduling</Label>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Automatically sync data at regular intervals
+                    Sync data automatically at regular intervals
                   </p>
                 </div>
                 <Button
@@ -823,9 +984,9 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
 
               {/* Info */}
               <div className="bg-muted p-3 rounded text-sm space-y-1">
-                <p><strong>Note:</strong> The scheduler runs automatic incremental syncs in the background.</p>
+                <p><strong>📌 Note:</strong> The scheduler runs automatic incremental syncs in the background.</p>
                 <p className="text-muted-foreground">
-                  You can still manually trigger syncs using the &quot;Load Data&quot; button.
+                  Manual syncs use the mode configured in &quot;Sync Configuration&quot; section.
                 </p>
               </div>
             </div>
@@ -833,67 +994,74 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         </div>
       )}
 
-      {/* Two Column Layout */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Left Column: Settings Form */}
-        <Card>
-          <CardHeader>
-            <div className="flex w-full items-center gap-4">
-              <CardTitle className="text-lg font-semibold">Data Source Settings</CardTitle>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="ml-auto"
-                onClick={handleEditDataSource}
-                disabled={state.isEditMode}
-              >
-                Edit Data Source
-              </Button>
+      {/* Data Source Configuration */}
+      <Card>
+        <CardHeader>
+          <div className="flex w-full items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-lg">🔗 Data Source Configuration</CardTitle>
             </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {state.isLoading ? (
-              <div className="flex items-center justify-center p-8">
-                <p className="text-sm text-muted-foreground">Loading settings...</p>
-              </div>
-            ) : (
-              <>
-                {state.error && (
-                  <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-                    {state.error}
-                  </div>
-                )}
+            {!state.isEditMode && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleEditDataSource}
+              >
+                ✏️ Edit Credentials
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {state.isLoading ? (
+            <div className="flex items-center justify-center p-8">
+              <p className="text-sm text-muted-foreground">Loading settings...</p>
+            </div>
+          ) : (
+            <>
+              {state.error && (
+                <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive flex items-center gap-2">
+                  <span>⚠️</span>
+                  <span>{state.error}</span>
+                </div>
+              )}
 
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Hostname */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="hostname">Hostname</Label>
+                    <Label htmlFor="hostname" className="font-medium">OpenWebUI Hostname</Label>
                     {state.hostSource && (
-                      <span className="text-xs text-muted-foreground">
-                        Source: {state.hostSource}
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                        {state.hostSource}
                       </span>
                     )}
                   </div>
                   <Input
                     id="hostname"
                     type="text"
-                    placeholder="https://example.com"
+                    placeholder="https://your-openwebui.example.com"
                     value={state.hostname}
                     onChange={(e) =>
                       setState((prev) => ({ ...prev, hostname: e.target.value }))
                     }
                     disabled={!state.isEditMode || state.isSaving}
+                    className={!state.isEditMode ? "bg-muted" : ""}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    The base URL of your Open WebUI instance
-                  </p>
+                  {!state.isEditMode && (
+                    <p className="text-xs text-muted-foreground">
+                      Base URL for your OpenWebUI instance
+                    </p>
+                  )}
                 </div>
 
+                {/* API Key */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="apiKey">API Key</Label>
+                    <Label htmlFor="apiKey" className="font-medium">API Key</Label>
                     {state.apiKeySource && (
-                      <span className="text-xs text-muted-foreground">
-                        Source: {state.apiKeySource}
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                        {state.apiKeySource}
                       </span>
                     )}
                   </div>
@@ -906,53 +1074,53 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
                       setState((prev) => ({ ...prev, apiKey: e.target.value }))
                     }
                     disabled={!state.isEditMode || state.isSaving}
+                    className={!state.isEditMode ? "bg-muted" : ""}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Your Open WebUI API key for authentication
-                  </p>
+                  {!state.isEditMode && (
+                    <p className="text-xs text-muted-foreground">
+                      Authentication key for API access
+                    </p>
+                  )}
                 </div>
+              </div>
 
-                {/* Show Save/Cancel buttons only in edit mode */}
-                {state.isEditMode && (
-                  <div className="flex gap-2 pt-4">
-                    <Button
-                      variant="default"
-                      className="flex-1"
-                      onClick={handleSaveSettings}
-                      disabled={!hasChanges || state.isSaving}
-                    >
-                      {state.isSaving ? "Saving..." : "Save Settings"}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="flex-1"
-                      onClick={handleCancelEdit}
-                      disabled={state.isSaving}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                )}
-              </>
-            )}
-          </CardContent>
-        </Card>
+              {/* Show Save/Cancel buttons only in edit mode */}
+              {state.isEditMode && (
+                <div className="flex gap-3 pt-2">
+                  <Button
+                    variant="default"
+                    className="flex-1"
+                    onClick={handleSaveSettings}
+                    disabled={!hasChanges || state.isSaving}
+                  >
+                    {state.isSaving ? "💾 Saving..." : "💾 Save Changes"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={handleCancelEdit}
+                    disabled={state.isSaving}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
 
-        {/* Right Column: Processing Log */}
-        <Card className="flex flex-col">
-          <CardHeader>
-            <CardTitle>Processing Log</CardTitle>
-          </CardHeader>
-          <CardContent className="flex-1 flex flex-col min-h-[400px] max-h-[600px]">
-            <LogViewer className="flex-1" pollInterval={2000} maxLogs={200} supplementalLogs={summaryLogs} />
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Additional sections can be added below */}
-      {/* TODO: Add connection status indicators */}
-      {/* TODO: Add data sync statistics */}
-      {/* TODO: Add recent activity timeline */}
+      {/* Processing Log */}
+      <Card className="flex flex-col">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <span className="text-lg">📋 Processing Log</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col h-[500px] overflow-hidden">
+          <LogViewer className="flex-1" pollInterval={2000} maxLogs={200} supplementalLogs={summaryLogs} />
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -73,6 +73,7 @@ class DatabaseStorage:
             "user_id": record.user_id,
             "title": record.title,
             "gen_chat_summary": record.gen_chat_summary,
+            "gen_chat_outcome": record.gen_chat_outcome,
             "created_at": record.created_ts,
             "updated_at": record.updated_ts,
             "timestamp": record.timestamp,
@@ -211,7 +212,51 @@ class DatabaseStorage:
     # ------------------------------------------------------------------
     @staticmethod
     def _extract_summary(payload: Dict[str, Any]) -> Optional[str]:
-        return payload.get("gen_chat_summary")
+        """Extract and validate the chat summary from a payload.
+
+        This method provides a final safety check to ensure that summaries
+        are always plain text and never JSON strings. If a JSON string is
+        detected, it attempts to extract the actual summary text.
+
+        Args:
+            payload: Chat data dictionary potentially containing a summary.
+
+        Returns:
+            Plain text summary string, or None if not present/invalid.
+        """
+        import json as json_lib
+
+        summary = payload.get("gen_chat_summary")
+        if not summary:
+            return None
+
+        summary_str = str(summary).strip()
+        if not summary_str:
+            return None
+
+        # Defensive check: ensure this is not a JSON string
+        if summary_str.startswith("{") or summary_str.startswith("["):
+            LOGGER.warning(
+                "Detected JSON-formatted summary in payload for chat %s, attempting to extract plain text",
+                payload.get("chat_id", "unknown")
+            )
+            try:
+                parsed = json_lib.loads(summary_str)
+                if isinstance(parsed, dict) and "summary" in parsed:
+                    extracted = str(parsed["summary"]).strip()
+                    LOGGER.info("Successfully extracted plain text from JSON summary")
+                    return extracted if extracted else None
+                else:
+                    LOGGER.error(
+                        "Summary is JSON but lacks expected structure for chat %s",
+                        payload.get("chat_id", "unknown")
+                    )
+                    return None
+            except json_lib.JSONDecodeError:
+                # Not actually JSON, allow it
+                pass
+
+        return summary_str
 
     @staticmethod
     def _chat_from_dict(payload: Dict[str, Any]) -> ChatRecord:
@@ -220,6 +265,7 @@ class DatabaseStorage:
             user_id=payload.get("user_id"),
             title=payload.get("title"),
             gen_chat_summary=DatabaseStorage._extract_summary(payload),
+            gen_chat_outcome=payload.get("gen_chat_outcome"),
             created_ts=payload.get("created_at"),
             updated_ts=payload.get("updated_at"),
             timestamp=payload.get("timestamp"),
@@ -511,17 +557,40 @@ class DatabaseStorage:
             # Logging ingestion failures should never block the primary flow.
             LOGGER.exception("Failed to persist ingest log for operation %s", operation)
 
-    def update_chat_summaries(self, summaries: Dict[str, str]) -> None:
+    def update_chat_summaries(
+        self,
+        summaries: Dict[str, str],
+        outcomes: Optional[Dict[str, int]] = None
+    ) -> None:
+        """Update chat summaries and optionally outcomes in the database.
+
+        Args:
+            summaries: Dictionary mapping chat_id to summary text
+            outcomes: Optional dictionary mapping chat_id to outcome score (1-5)
+        """
         if not summaries:
             return
         with session_scope() as session:
             for chat_id, summary in summaries.items():
+                values = {"gen_chat_summary": summary}
+                # Include outcome if provided for this chat
+                if outcomes and chat_id in outcomes:
+                    values["gen_chat_outcome"] = outcomes[chat_id]
+
                 session.execute(
                     update(ChatRecord)
                     .where(ChatRecord.chat_id == chat_id)
-                    .values(gen_chat_summary=summary)
+                    .values(**values)
                 )
-        LOGGER.info("Updated summaries for %d chats", len(summaries))
+
+        if outcomes:
+            LOGGER.info(
+                "Updated summaries and outcomes for %d chats (%d with outcomes)",
+                len(summaries),
+                len(outcomes)
+            )
+        else:
+            LOGGER.info("Updated summaries for %d chats", len(summaries))
 
     def wipe_openwebui_data(self) -> None:
         """Transactionally wipe all OpenWebUI-sourced data (chats, messages, users, models).

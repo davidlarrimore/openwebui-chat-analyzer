@@ -1737,20 +1737,28 @@ class DataService:
             reason,
         )
 
-        def chat_persist_callback(chat_summary: Dict[str, str]) -> None:
-            """Immediately persist individual chat summary to database and update in-memory records."""
+        def chat_persist_callback(chat_summary: Dict[str, str], chat_outcomes: Dict[str, int]) -> None:
+            """Immediately persist individual chat summary and outcome to database and update in-memory records.
+
+            Args:
+                chat_summary: Dict mapping chat_id to summary text
+                chat_outcomes: Dict mapping chat_id to outcome score (1-5)
+            """
             if not chat_summary:
                 return
 
-            # Update in-memory chat records
+            # Update in-memory chat records with both summary and outcome
             with self._lock:
                 for chat in self._chats:
                     chat_id = str(chat.get("chat_id") or "")
                     if chat_id in chat_summary:
                         _set_chat_summary(chat, chat_summary[chat_id])
+                        # Update outcome if present
+                        if chat_id in chat_outcomes:
+                            chat["gen_chat_outcome"] = chat_outcomes[chat_id]
 
-            # Persist to database immediately
-            self._storage.update_chat_summaries(chat_summary)
+            # Persist to database immediately with both summary and outcome
+            self._storage.update_chat_summaries(chat_summary, chat_outcomes)
 
         try:
             summary_map, stats = summarize_chats(
@@ -1780,15 +1788,21 @@ class DataService:
 
             summary_map = {chat_id: summary for chat_id, summary in summary_map.items() if summary}
 
+            # Collect outcomes from the chats that were just summarized
+            outcome_map: Dict[str, int] = {}
             with self._lock:
                 for chat in self._chats:
                     chat_id = str(chat.get("chat_id") or "")
                     if chat_id in summary_map:
                         _set_chat_summary(chat, summary_map[chat_id])
+                        # Collect outcome if present
+                        outcome_value = chat.get("gen_chat_outcome")
+                        if isinstance(outcome_value, int) and 1 <= outcome_value <= 5:
+                            outcome_map[chat_id] = outcome_value
                 self._bump_version()
                 self._refresh_app_metadata(persist=False)
 
-            self._storage.update_chat_summaries(summary_map)
+            self._storage.update_chat_summaries(summary_map, outcome_map)
 
             logger.info("Summary job %s finished successfully.", job_id)
             completed_at = self._summary_now_iso()

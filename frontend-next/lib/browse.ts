@@ -127,11 +127,37 @@ function coerceTimestamp(value: unknown): string | null {
 
 export { ALL_MODELS_OPTION, ALL_USERS_OPTION, buildModelOptions, buildUserOptions, filterMessagesByUserAndModel };
 
+/**
+ * Map outcome score (1-5) to emoji and category name.
+ */
+export function formatOutcome(outcome: number | null | undefined): string | null {
+  if (!outcome || typeof outcome !== "number") {
+    return null;
+  }
+
+  const rounded = Math.round(outcome);
+  switch (rounded) {
+    case 1:
+      return "❌ Not Successful";
+    case 2:
+      return "⚠️ Partially Successful";
+    case 3:
+      return "😐 Moderately Successful";
+    case 4:
+      return "👍 Mostly Successful";
+    case 5:
+      return "🌟 Fully Successful";
+    default:
+      return null;
+  }
+}
+
 export interface BrowseChat {
   chatId: string;
   userId: string | null;
   title: string;
   summary: string;
+  outcome: number | null;
   createdAt: string | null;
   updatedAt: string | null;
   userDisplay: string;
@@ -231,6 +257,13 @@ export function normaliseBrowseChats(rawChats: unknown, rawUsers: unknown): Brow
           : {};
       const summary = pickSummary(record, meta);
 
+      // Extract outcome score (1-5)
+      const outcomeValue = record.gen_chat_outcome ?? record.outcome;
+      let outcome: number | null = null;
+      if (typeof outcomeValue === "number" && outcomeValue >= 1 && outcomeValue <= 5) {
+        outcome = Math.round(outcomeValue);
+      }
+
       const tagsSet = new Set<string>();
       for (const candidate of toStringArray(meta.tags)) {
         tagsSet.add(candidate);
@@ -252,6 +285,7 @@ export function normaliseBrowseChats(rawChats: unknown, rawUsers: unknown): Brow
         userId: userId ?? null,
         title,
         summary,
+        outcome,
         createdAt,
         updatedAt,
         userDisplay,

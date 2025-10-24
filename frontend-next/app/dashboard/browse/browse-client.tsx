@@ -11,7 +11,8 @@ import {
   buildModelOptions,
   buildThreadExportPayload,
   buildUserOptions,
-  filterMessagesByUserAndModel
+  filterMessagesByUserAndModel,
+  formatOutcome
 } from "@/lib/browse";
 import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 
@@ -328,6 +329,7 @@ export default function BrowseClient({ chats, messages }: BrowseClientProps) {
                       <span>🧠 Summary</span>
                       {chat.userDisplay && <span>👤 {chat.userDisplay}</span>}
                       {chat.models.length > 0 && <span>🤖 {chat.models[0]}</span>}
+                      {formatOutcome(chat.outcome) && <span>{formatOutcome(chat.outcome)}</span>}
                     </div>
                     <p className="whitespace-pre-wrap leading-relaxed">
                       {chat.summary?.trim() ? chat.summary.trim() : "No summary available."}
