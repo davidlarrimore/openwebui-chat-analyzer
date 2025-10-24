@@ -84,9 +84,7 @@ function pickSummary(record: UnknownRecord, meta: UnknownRecord): string {
     record.summary_512,
     record.summary_256,
     ...metaSummary,
-    ...chatSummaryCandidates,
-    record.summary128,
-    record.summary_128
+    ...chatSummaryCandidates
   ];
 
   for (const candidate of candidates) {

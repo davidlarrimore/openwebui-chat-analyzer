@@ -19,7 +19,6 @@ describe("browse helpers", () => {
       title: "Sample Conversation",
       summary_full: fullSummary,
       gen_chat_summary: "Quick recap of the discussion.",
-      summary_128: "Quick recap of the discussion.",
       created_at: "2024-05-01T12:00:00Z",
       updated_at: "2024-05-01T13:00:00Z",
       files_uploaded: 2,
@@ -115,23 +114,6 @@ describe("browse helpers", () => {
 
     expect(chats).toHaveLength(1);
     expect(chats[0].summary).toBe("Concise summary only.");
-  });
-
-  it("accepts legacy summary_128 fields for backwards compatibility", () => {
-    const chats = normaliseBrowseChats(
-      [
-        {
-          chat_id: "chat-legacy",
-          user_id: "user-1",
-          title: "Legacy Conversation",
-          summary_128: "Legacy truncated summary."
-        }
-      ],
-      rawUsers
-    );
-
-    expect(chats).toHaveLength(1);
-    expect(chats[0].summary).toBe("Legacy truncated summary.");
   });
 
   it("uses summaries persisted in chat metadata when provided", () => {

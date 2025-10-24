@@ -211,9 +211,7 @@ class DatabaseStorage:
     # ------------------------------------------------------------------
     @staticmethod
     def _extract_summary(payload: Dict[str, Any]) -> Optional[str]:
-        if "gen_chat_summary" in payload and payload.get("gen_chat_summary") is not None:
-            return payload.get("gen_chat_summary")
-        return payload.get("summary_128")
+        return payload.get("gen_chat_summary")
 
     @staticmethod
     def _chat_from_dict(payload: Dict[str, Any]) -> ChatRecord:

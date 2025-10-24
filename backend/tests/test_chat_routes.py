@@ -15,7 +15,7 @@ def _fake_auth_user() -> AuthUserPublic:
 
 
 def test_list_chats_includes_generated_summary(monkeypatch):
-    """Ensure /chats returns both gen_chat_summary and legacy summary_128."""
+    """Ensure /chats returns gen_chat_summary field."""
 
     class FakeService:
         def get_chats(self):
@@ -45,4 +45,3 @@ def test_list_chats_includes_generated_summary(monkeypatch):
 
     chat = payload[0]
     assert chat["gen_chat_summary"] == "Discussed API field mappings for summaries."
-    assert chat["summary_128"] == "Discussed API field mappings for summaries."

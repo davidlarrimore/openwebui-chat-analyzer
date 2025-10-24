@@ -35,10 +35,7 @@ class SummaryJobCancelled(Exception):
 
 
 SUMMARY_EXPORT_FIELD = "owca_gen_chat_summary"
-LEGACY_SUMMARY_EXPORT_FIELD = "owca_summary_128"
-SUMMARY_EXPORT_FIELDS = (SUMMARY_EXPORT_FIELD, LEGACY_SUMMARY_EXPORT_FIELD)
 SUMMARY_FIELD = "gen_chat_summary"
-LEGACY_SUMMARY_FIELD = "summary_128"
 DEFAULT_DIRECT_CONNECT_HOST = "http://localhost:4000"
 SUMMARY_EVENT_HISTORY_LIMIT = 500
 
@@ -73,18 +70,14 @@ def _strip_encapsulating_quotes(value: str) -> str:
 def _get_chat_summary(payload: Dict[str, Any]) -> str:
     """Retrieve the normalized chat summary from a payload."""
     value = payload.get(SUMMARY_FIELD)
-    if value is None or (isinstance(value, str) and not value.strip()):
-        value = payload.get(LEGACY_SUMMARY_FIELD)
     if value is None:
         return ""
     return str(value).strip()
 
 
 def _set_chat_summary(payload: Dict[str, Any], summary: str) -> None:
-    """Persist a chat summary to a payload while cleaning legacy fields."""
+    """Persist a chat summary to a payload."""
     payload[SUMMARY_FIELD] = summary
-    if LEGACY_SUMMARY_FIELD in payload:
-        payload.pop(LEGACY_SUMMARY_FIELD, None)
 
 
 def _coerce_timestamp(value: Any) -> Optional[datetime]:
@@ -373,19 +366,10 @@ def _parse_chat_export(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[Dic
             "folder_id": folder_id,
             "history_current_id": history_current_id,
         }
-        chat_summary_value = None
-        for export_field in SUMMARY_EXPORT_FIELDS:
-            summary_value = item.get(export_field)
-            if isinstance(summary_value, str):
-                chat_summary_value = summary_value
-                break
-        if chat_summary_value is None:
-            for export_field in SUMMARY_EXPORT_FIELDS:
-                nested_summary = chat_meta.get(export_field)
-                if isinstance(nested_summary, str):
-                    chat_summary_value = nested_summary
-                    break
-        if chat_summary_value is not None:
+        chat_summary_value = item.get(SUMMARY_EXPORT_FIELD)
+        if not isinstance(chat_summary_value, str):
+            chat_summary_value = chat_meta.get(SUMMARY_EXPORT_FIELD)
+        if isinstance(chat_summary_value, str):
             _set_chat_summary(chat_info, str(chat_summary_value))
 
         chats.append(chat_info)
@@ -843,13 +827,9 @@ def _apply_summaries_to_export_payload(
         summary = summary_map.get(chat_id_str)
         if summary is None:
             continue
-        for export_field in SUMMARY_EXPORT_FIELDS:
-            entry.pop(export_field, None)
         entry[SUMMARY_EXPORT_FIELD] = summary
         chat_section = entry.get("chat")
         if isinstance(chat_section, dict):
-            for export_field in SUMMARY_EXPORT_FIELDS:
-                chat_section.pop(export_field, None)
             chat_section[SUMMARY_EXPORT_FIELD] = summary
     return payload
 

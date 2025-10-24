@@ -25,7 +25,6 @@ from .config import (
 SALIENT_K = int(os.getenv("SALIENT_K", "10"))
 EMB_MODEL_NAME = os.getenv("EMB_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 SUMMARY_FIELD = "gen_chat_summary"
-LEGACY_SUMMARY_FIELD = "summary_128"
 CHUNK_CHAR_LIMIT = max(64, int(os.getenv("SUMMARY_CHUNK_CHAR_LIMIT", "2048")))
 CHUNK_OVERLAP_LINES = max(0, int(os.getenv("SUMMARY_CHUNK_OVERLAP_LINES", "2")))
 
@@ -131,19 +130,12 @@ def _get_embeddings_model() -> SentenceTransformer:
 def _get_chat_summary(chat: Mapping[str, object]) -> str:
     """Return the current summary value from a chat payload."""
     primary = chat.get(SUMMARY_FIELD)
-    if primary is None or (isinstance(primary, str) and not primary.strip()):
-        primary = chat.get(LEGACY_SUMMARY_FIELD)
     return str(primary or "").strip()
 
 
 def _set_chat_summary(chat: Dict[str, object], value: str) -> None:
-    """Persist a summary value to the chat payload, removing legacy keys."""
+    """Persist a summary value to the chat payload."""
     chat[SUMMARY_FIELD] = value
-    if LEGACY_SUMMARY_FIELD in chat:
-        try:
-            del chat[LEGACY_SUMMARY_FIELD]  # type: ignore[arg-type]
-        except Exception:  # pragma: no cover
-            pass
 
 
 def _chunk_lines(
