@@ -100,7 +100,7 @@ Run `uvicorn backend.app:app --reload` during development to keep the API availa
   - Summaries become available progressively as each chat completes.
   - If the summariser is interrupted, all previously completed chats are already saved.
   - The dashboard remains responsive during long summarisation jobs.
-- The summariser picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the bundled Ollama service (`OLLAMA_SUMMARY_MODEL`) with an automatic fallback to the Open WebUI completions endpoint at `OWUI_DIRECT_HOST`.
+- The summariser picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the configured Ollama service using the model selected on the Connection Management page, with an automatic fallback to the Open WebUI completions endpoint at `OWUI_DIRECT_HOST`.
 - Rebuild summaries anytime from **Load Data → Admin Tools → Rerun summaries** or through the API (`POST /api/v1/summaries/rebuild` + `/summaries/status`).
 
 ## Dashboard Tour

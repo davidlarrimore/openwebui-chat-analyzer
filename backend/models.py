@@ -513,6 +513,29 @@ class AdminDirectConnectSettingsUpdate(BaseModel):
     )
 
 
+class SummarizerSettings(BaseModel):
+    """Admin-configurable defaults for the summarizer workflow."""
+
+    model: str = Field(
+        ...,
+        description="Effective Ollama model identifier used for summarization tasks.",
+    )
+    source: Literal["database", "environment", "default"] = Field(
+        ...,
+        description="Origin for the summarizer model (database override, environment variable, or default).",
+    )
+
+
+class SummarizerSettingsUpdate(BaseModel):
+    """Payload allowing admins to update summarizer defaults."""
+
+    model: str = Field(
+        ...,
+        description="New Ollama model identifier to use for summarization tasks.",
+        min_length=1,
+    )
+
+
 class OpenWebUIHealthTestRequest(BaseModel):
     """Request payload for testing OpenWebUI connection."""
 

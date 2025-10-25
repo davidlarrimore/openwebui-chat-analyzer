@@ -243,3 +243,80 @@ def test_hostname_change_triggers_wipe_and_reload(monkeypatch):
     assert response.status_code == 200
     assert wipe_called is True
     assert sync_called_with == {"hostname": "http://new-host.com", "api_key": "test-key"}
+
+
+def test_get_summarizer_settings(monkeypatch):
+    """Summarizer settings endpoint should return service-provided data."""
+
+    class FakeService:
+        def get_summarizer_settings(self):
+            return {"model": "llama3.2:3b-instruct-q4_K_M", "source": "database"}
+
+    fake_service = FakeService()
+
+    monkeypatch.setattr("backend.app.data_service.load_initial_data", lambda: None)
+    monkeypatch.setattr("backend.routes.require_authenticated_user", lambda: _fake_auth_user())
+    monkeypatch.setattr("backend.routes.get_data_service", lambda: fake_service)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/admin/settings/summarizer")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "model": "llama3.2:3b-instruct-q4_K_M",
+        "source": "database",
+    }
+
+
+def test_update_summarizer_settings(monkeypatch):
+    """Summarizer settings update should delegate to the data service."""
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.updated_with: str | None = None
+
+        def update_summarizer_settings(self, *, model: str):
+            self.updated_with = model
+            return {"model": model, "source": "database"}
+
+    fake_service = FakeService()
+
+    monkeypatch.setattr("backend.app.data_service.load_initial_data", lambda: None)
+    monkeypatch.setattr("backend.routes.require_authenticated_user", lambda: _fake_auth_user())
+    monkeypatch.setattr("backend.routes.get_data_service", lambda: fake_service)
+
+    with TestClient(app) as client:
+        response = client.put(
+            "/api/v1/admin/settings/summarizer",
+            json={"model": "phi3:mini"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "model": "phi3:mini",
+        "source": "database",
+    }
+    assert fake_service.updated_with == "phi3:mini"
+
+
+def test_update_summarizer_settings_validation_error(monkeypatch):
+    """Validation failures from the service should surface as HTTP 400."""
+
+    class FakeService:
+        def update_summarizer_settings(self, *, model: str):
+            raise ValueError("Model must not be empty.")
+
+    fake_service = FakeService()
+
+    monkeypatch.setattr("backend.app.data_service.load_initial_data", lambda: None)
+    monkeypatch.setattr("backend.routes.require_authenticated_user", lambda: _fake_auth_user())
+    monkeypatch.setattr("backend.routes.get_data_service", lambda: fake_service)
+
+    with TestClient(app) as client:
+        response = client.put(
+            "/api/v1/admin/settings/summarizer",
+            json={"model": ""},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Model must not be empty."

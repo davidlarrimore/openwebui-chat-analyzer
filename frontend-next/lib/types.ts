@@ -118,6 +118,14 @@ export interface SummaryEventsResponse {
   reset?: boolean;
 }
 
+export interface OllamaModelTag {
+  name: string;
+  modified_at?: string;
+  digest?: string;
+  size?: number;
+  [key: string]: unknown;
+}
+
 export interface AuthStatus {
   has_users: boolean;
 }

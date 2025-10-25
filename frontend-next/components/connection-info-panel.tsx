@@ -19,6 +19,9 @@ import {
   rebuildSummaries,
   getSummaryStatus,
   getSummaryEvents,
+  getSummarizerSettings,
+  updateSummarizerSettings,
+  getOllamaModels,
   type OpenWebUISettingsResponse,
   type SyncStatusResponse,
   type SyncSchedulerConfig,
@@ -26,7 +29,7 @@ import {
 } from "@/lib/api";
 import { toast } from "@/components/ui/use-toast";
 import { LogViewer } from "@/components/log-viewer";
-import type { SummaryEvent, SummaryStatus, DatasetMeta } from "@/lib/types";
+import type { SummaryEvent, SummaryStatus, DatasetMeta, OllamaModelTag } from "@/lib/types";
 
 const SUMMARY_POLL_INTERVAL_MS = 2000;
 const TERMINAL_SUMMARY_STATES = new Set(["idle", "completed", "failed", "cancelled"]);
@@ -157,6 +160,12 @@ interface ConnectionInfoState {
   schedulerDrawerOpen: boolean;
   schedulerEnabled: boolean;
   schedulerInterval: number;
+  summaryModel: string;
+  summaryModelSource?: "database" | "environment" | "default";
+  availableSummaryModels: string[];
+  summaryModelError: string | null;
+  isLoadingSummaryModels: boolean;
+  isUpdatingSummaryModel: boolean;
 }
 
 interface ConnectionInfoPanelProps {
@@ -187,6 +196,12 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     schedulerDrawerOpen: false,
     schedulerEnabled: false,
     schedulerInterval: 60,
+    summaryModel: "",
+    summaryModelSource: undefined,
+    availableSummaryModels: [],
+    summaryModelError: null,
+    isLoadingSummaryModels: false,
+    isUpdatingSummaryModel: false,
   });
 
   // Track original values to detect changes
@@ -329,6 +344,55 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }
   }, [appendSummaryEventsToLogs]);
 
+  const fetchSummarizerConfig = React.useCallback(async () => {
+    setState(prev => ({
+      ...prev,
+      isLoadingSummaryModels: true,
+      summaryModelError: null,
+    }));
+    try {
+      const [models, summarizerSettings] = await Promise.all([
+        getOllamaModels(),
+        getSummarizerSettings(),
+      ]);
+
+      const modelNames = Array.from(
+        new Set(
+          models
+            .map((model: OllamaModelTag) => (typeof model?.name === "string" ? model.name.trim() : ""))
+            .filter((name): name is string => Boolean(name)),
+        ),
+      ).sort((a, b) => a.localeCompare(b));
+
+      let selectedModel = (summarizerSettings.model || "").trim();
+      if (!selectedModel && modelNames.length > 0) {
+        selectedModel = modelNames[0];
+      }
+
+      const options = modelNames.slice();
+      if (selectedModel && !options.includes(selectedModel)) {
+        options.unshift(selectedModel);
+      }
+
+      setState(prev => ({
+        ...prev,
+        availableSummaryModels: options,
+        summaryModel: selectedModel,
+        summaryModelSource: summarizerSettings.source,
+        isLoadingSummaryModels: false,
+        summaryModelError: null,
+      }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load summarizer settings";
+      setState(prev => ({
+        ...prev,
+        isLoadingSummaryModels: false,
+        summaryModelError: message,
+        availableSummaryModels: [],
+      }));
+    }
+  }, []);
+
   // Fetch settings, sync status, scheduler config, and dataset metadata on mount
   React.useEffect(() => {
     if (!initialSettings) {
@@ -337,7 +401,8 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     fetchSyncStatus();
     fetchSchedulerConfig();
     fetchDatasetMeta();
-  }, [initialSettings]);
+    fetchSummarizerConfig();
+  }, [initialSettings, fetchSummarizerConfig]);
 
   const fetchDatasetMeta = async () => {
     try {
@@ -467,6 +532,12 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }));
   };
 
+  const summaryModelUnavailable =
+    !!state.summaryModel &&
+    !state.summaryModelError &&
+    !state.isLoadingSummaryModels &&
+    !state.availableSummaryModels.includes(state.summaryModel);
+
   const hasChanges = state.hostname !== originalValues.hostname || state.apiKey !== originalValues.apiKey;
 
   const handleTestConnection = async () => {
@@ -553,6 +624,58 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       toast({
         title: "Data Sync Failed",
         description: err instanceof Error ? err.message : "An unexpected error occurred",
+        variant: "destructive",
+        duration: 7000,
+      });
+    }
+  };
+
+  const handleSummaryModelChange = async (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const nextModel = event.target.value.trim();
+    if (!nextModel || state.isUpdatingSummaryModel) {
+      return;
+    }
+
+    const previousModel = state.summaryModel;
+    setState(prev => ({
+      ...prev,
+      summaryModel: nextModel,
+      isUpdatingSummaryModel: true,
+      summaryModelError: null,
+    }));
+
+    try {
+      const updated = await updateSummarizerSettings({ model: nextModel });
+      setState(prev => {
+        const options = prev.availableSummaryModels.includes(updated.model)
+          ? prev.availableSummaryModels
+          : [updated.model, ...prev.availableSummaryModels];
+        return {
+          ...prev,
+          summaryModel: updated.model,
+          summaryModelSource: updated.source,
+          availableSummaryModels: options,
+          isUpdatingSummaryModel: false,
+          summaryModelError: null,
+        };
+      });
+      toast({
+        title: "Summarizer model updated",
+        description: `Summaries will now run with ${nextModel}`,
+        variant: "default",
+        duration: 5000,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to update summarizer model";
+      setState(prev => ({
+        ...prev,
+        summaryModel: previousModel,
+        isUpdatingSummaryModel: false,
+        summaryModelError: message,
+      }));
+      toast({
+        title: "Update failed",
+        description: message,
         variant: "destructive",
         duration: 7000,
       });
@@ -829,6 +952,94 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
               </div>
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Summarizer Configuration */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <span>🧠 Summarizer Settings</span>
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Choose which Ollama model powers automated chat summaries.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchSummarizerConfig}
+              disabled={state.isLoadingSummaryModels}
+            >
+              {state.isLoadingSummaryModels ? "Refreshing..." : "Refresh"}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {state.summaryModelError ? (
+            <div className="flex items-start justify-between gap-3 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+              <div className="flex-1">
+                <span>⚠️ {state.summaryModelError}</span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={fetchSummarizerConfig}
+                disabled={state.isLoadingSummaryModels}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="summarizer-model" className="font-medium">
+                  Summarizer Model
+                </Label>
+                {state.summaryModelSource && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                    {state.summaryModelSource}
+                  </span>
+                )}
+              </div>
+              <select
+                id="summarizer-model"
+                className={cn(
+                  "w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring",
+                  state.isUpdatingSummaryModel ? "opacity-75" : "",
+                )}
+                value={state.summaryModel}
+                onChange={handleSummaryModelChange}
+                disabled={
+                  state.isLoadingSummaryModels ||
+                  state.isUpdatingSummaryModel ||
+                  state.availableSummaryModels.length === 0
+                }
+              >
+                {state.availableSummaryModels.length === 0 ? (
+                  <option value="">
+                    {state.isLoadingSummaryModels ? "Loading models..." : "No models detected"}
+                  </option>
+                ) : (
+                  state.availableSummaryModels.map(model => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))
+                )}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                This model is used when rebuilding summaries or running manual summarizer jobs.
+              </p>
+              {summaryModelUnavailable && (
+                <p className="text-xs text-destructive">
+                  The configured model was not found on the Ollama server. Select another option before running summaries.
+                </p>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 

@@ -13,6 +13,8 @@ from .models import (
     AuthUserPublic,
     AdminDirectConnectSettings,
     AdminDirectConnectSettingsUpdate,
+    SummarizerSettings,
+    SummarizerSettingsUpdate,
     OpenWebUIHealthTestRequest,
     Chat,
     DatasetMeta,
@@ -44,10 +46,14 @@ from .config import (
     OLLAMA_EMBED_MODEL,
     OLLAMA_LONGFORM_MODEL,
     OLLAMA_KEEP_ALIVE,
-    OLLAMA_SUMMARY_MODEL,
-    OLLAMA_SUMMARY_FALLBACK_MODEL,
 )
-from .summarizer import _HEADLINE_SYS, _HEADLINE_USER_TMPL, _trim_one_line
+from .summarizer import (
+    _HEADLINE_SYS,
+    _HEADLINE_USER_TMPL,
+    _trim_one_line,
+    get_summary_model,
+    get_summary_fallback_model,
+)
 from .health import check_backend_health, check_database_health, check_ollama_health, check_openwebui_health
 
 LOGGER = logging.getLogger(__name__)
@@ -574,16 +580,12 @@ def generate_summary(
 ) -> GenAISummarizeResponse:
     """Generate a concise summary using the Ollama service."""
     context = payload.context.strip()
-    primary_model = payload.model or OLLAMA_SUMMARY_MODEL
-    if payload.model is None and primary_model != "llama3.1":
-        primary_model = "llama3.1"
-    fallback_model = (
-        OLLAMA_SUMMARY_FALLBACK_MODEL
-        if not payload.model
-        and OLLAMA_SUMMARY_FALLBACK_MODEL
-        and OLLAMA_SUMMARY_FALLBACK_MODEL != primary_model
-        else None
-    )
+    primary_model = (payload.model or "").strip() or get_summary_model()
+    fallback_model = None
+    if not payload.model:
+        fallback_candidate = get_summary_fallback_model()
+        if fallback_candidate and fallback_candidate != primary_model:
+            fallback_model = fallback_candidate
     temperature = (
         payload.temperature if payload.temperature is not None else OLLAMA_DEFAULT_TEMPERATURE
     )
@@ -900,3 +902,35 @@ def update_admin_direct_connect_settings(
         api_key=payload.api_key,
     )
     return AdminDirectConnectSettings(**settings)
+
+
+@router.get(
+    "/admin/settings/summarizer",
+    response_model=SummarizerSettings,
+    tags=["admin"],
+)
+def get_admin_summarizer_settings(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> SummarizerSettings:
+    """Return the active summarizer configuration for authenticated admins."""
+    settings = service.get_summarizer_settings()
+    return SummarizerSettings(**settings)
+
+
+@router.put(
+    "/admin/settings/summarizer",
+    response_model=SummarizerSettings,
+    tags=["admin"],
+)
+def update_admin_summarizer_settings(
+    payload: SummarizerSettingsUpdate,
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> SummarizerSettings:
+    """Persist summarizer configuration updates."""
+    try:
+        settings = service.update_summarizer_settings(model=payload.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SummarizerSettings(**settings)

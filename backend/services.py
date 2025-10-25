@@ -24,7 +24,7 @@ from urllib.parse import urlparse, urlunparse
 
 from .config import AUTH_TOKEN_HASH_SECRET, AUTH_TOKEN_TTL_SECONDS, DATA_DIR
 from .models import AppMetadata, DatasetMeta, DatasetSyncStats
-from .summarizer import summarize_chats
+from .summarizer import summarize_chats, set_summary_model, get_summary_model
 from .storage import DatabaseState, DatabaseStorage
 
 LOGGER = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ SUMMARY_EXPORT_FIELD = "owca_gen_chat_summary"
 SUMMARY_FIELD = "gen_chat_summary"
 DEFAULT_DIRECT_CONNECT_HOST = "http://localhost:4000"
 SUMMARY_EVENT_HISTORY_LIMIT = 500
+SUMMARIZER_MODEL_SETTING_KEY = "SUMMARIZER_PRIMARY_MODEL"
 
 
 def _strip_encapsulating_quotes(value: str) -> str:
@@ -1084,6 +1085,7 @@ class DataService:
         if legacy_updates:
             self._storage.write_settings(legacy_updates)
         self._log_dataset_summary("Dataset hydration complete")
+        self._apply_summarizer_setting_from_state()
 
     def _ensure_direct_connect_defaults_seeded(self) -> None:
         """Ensure the settings table stores Direct Connect defaults."""
@@ -1114,6 +1116,29 @@ class DataService:
                 updates.get("OWUI_DIRECT_HOST"),
                 bool(updates.get("OWUI_DIRECT_API_KEY")),
             )
+
+    def _apply_summarizer_setting_from_state(self) -> None:
+        """Ensure the summarizer module reflects stored or environment defaults."""
+        with self._lock:
+            raw_setting = self._settings.get(SUMMARIZER_MODEL_SETTING_KEY)
+        stored_value = (
+            _strip_encapsulating_quotes(raw_setting.strip()) if isinstance(raw_setting, str) else ""
+        )
+        env_value = _strip_encapsulating_quotes(os.getenv("OLLAMA_SUMMARY_MODEL", "").strip())
+        if stored_value:
+            active = stored_value
+            source = "database"
+        elif env_value:
+            active = env_value
+            source = "environment"
+        else:
+            active = ""
+            source = "default"
+        set_summary_model(active or None)
+        if active:
+            LOGGER.info("Configured summarizer primary model (model=%s, source=%s)", active, source)
+        else:
+            LOGGER.info("Using default summarizer primary model (model=%s)", get_summary_model())
 
     def _seed_initial_state_from_files(self) -> Optional[DatabaseState]:
         """Populate the database from legacy app.json metadata if necessary."""
@@ -2489,6 +2514,30 @@ class DataService:
             "api_key_source": api_key_source,
         }
 
+    def get_summarizer_settings(self) -> Dict[str, Any]:
+        """Return the active summarizer configuration with its origin metadata."""
+        env_model = _strip_encapsulating_quotes(os.getenv("OLLAMA_SUMMARY_MODEL", "").strip())
+        with self._lock:
+            stored_raw = self._settings.get(SUMMARIZER_MODEL_SETTING_KEY)
+        stored_model = (
+            _strip_encapsulating_quotes(stored_raw.strip()) if isinstance(stored_raw, str) else ""
+        )
+
+        if stored_model:
+            model = stored_model
+            source = "database"
+        elif env_model:
+            model = env_model
+            source = "environment"
+        else:
+            model = get_summary_model()
+            source = "default"
+
+        return {
+            "model": model,
+            "source": source,
+        }
+
     def update_direct_connect_settings(self, *, host: Optional[str], api_key: Optional[str]) -> Dict[str, Any]:
         """Persist updated Direct Connect defaults and return the effective values.
 
@@ -2574,6 +2623,21 @@ class DataService:
                 raise
 
         return self.get_direct_connect_settings()
+
+    def update_summarizer_settings(self, *, model: str) -> Dict[str, Any]:
+        """Persist the summarizer model preference and return the effective values."""
+        normalized_model = _strip_encapsulating_quotes((model or "").strip())
+        if not normalized_model:
+            raise ValueError("Model must not be empty.")
+
+        updates = {SUMMARIZER_MODEL_SETTING_KEY: normalized_model}
+        self._storage.write_settings(updates)
+        with self._lock:
+            self._settings.update(updates)
+
+        set_summary_model(normalized_model)
+        LOGGER.info("Updated summarizer primary model (model=%s)", normalized_model)
+        return self.get_summarizer_settings()
 
     def _build_public_user(self, record: Dict[str, Any]) -> Dict[str, str]:
         return {

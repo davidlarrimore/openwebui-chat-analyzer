@@ -23,6 +23,42 @@ from .config import (
     OLLAMA_SUMMARY_FALLBACK_MODEL,
 )
 
+
+# ---------------------------------------------------------------------------
+# Runtime-configurable Ollama model settings
+# ---------------------------------------------------------------------------
+_SUMMARY_MODEL = (OLLAMA_SUMMARY_MODEL or "").strip()
+_SUMMARY_FALLBACK_MODEL = (OLLAMA_SUMMARY_FALLBACK_MODEL or "").strip()
+
+
+def get_summary_model() -> str:
+    """Return the active Ollama model used for summarization."""
+    return _SUMMARY_MODEL or OLLAMA_SUMMARY_MODEL
+
+
+def get_summary_fallback_model() -> str:
+    """Return the configured fallback model, ensuring it differs from the primary."""
+    fallback = _SUMMARY_FALLBACK_MODEL or OLLAMA_SUMMARY_FALLBACK_MODEL or ""
+    primary = get_summary_model()
+    if fallback and fallback == primary:
+        return ""
+    return fallback
+
+
+def set_summary_model(model: Optional[str]) -> None:
+    """Set the primary Ollama model used for summarization at runtime."""
+    global _SUMMARY_MODEL  # noqa: PLW0603 - module-level cache is intentional
+    normalized = (model or "").strip()
+    _SUMMARY_MODEL = normalized
+
+
+def set_summary_fallback_model(model: Optional[str]) -> None:
+    """Set the fallback Ollama model used for summarization at runtime."""
+    global _SUMMARY_FALLBACK_MODEL  # noqa: PLW0603 - module-level cache is intentional
+    normalized = (model or "").strip()
+    _SUMMARY_FALLBACK_MODEL = normalized
+
+
 @dataclass
 class ConversationAnalysis:
     """Structured analysis result from LLM containing conversation metrics.
@@ -524,7 +560,7 @@ def _build_context(messages: Sequence[Mapping[str, object]]) -> str:
     return _build_context_from_lines(lines)
 
 
-def _headline_with_ollama(context: str, *, model: str = OLLAMA_SUMMARY_MODEL) -> ConversationAnalysis:
+def _headline_with_ollama(context: str, *, model: Optional[str] = None) -> ConversationAnalysis:
     """Generate structured conversation analysis using the local Ollama service.
 
     Sends a prompt to Ollama requesting JSON output with summary and outcome fields.
@@ -537,11 +573,12 @@ def _headline_with_ollama(context: str, *, model: str = OLLAMA_SUMMARY_MODEL) ->
     Returns:
         ConversationAnalysis with plain text summary and optional outcome score.
     """
+    active_model = (model or "").strip() or get_summary_model()
     client = get_ollama_client()
     prompt = _HEADLINE_USER_TMPL.format(ctx=context)
     _logger.debug(
         "Requesting Ollama analysis model=%s context_chars=%d",
-        model,
+        active_model,
         len(context),
     )
     options = {
@@ -551,7 +588,7 @@ def _headline_with_ollama(context: str, *, model: str = OLLAMA_SUMMARY_MODEL) ->
     }
     result = client.generate(
         prompt=prompt,
-        model=model,
+        model=active_model,
         system=_HEADLINE_SYS,
         options=options,
         keep_alive=OLLAMA_KEEP_ALIVE,
@@ -641,21 +678,19 @@ def _headline_with_openwebui(context: str) -> ConversationAnalysis:
 def _headline_with_llm(context: str) -> ConversationAnalysis:
     """Attempt structured conversation analysis via Ollama, falling back to Open WebUI if needed."""
     _logger.debug("Analyzing conversation via LLM for context_chars=%d", len(context))
+    primary_model = get_summary_model()
+    fallback_candidate = get_summary_fallback_model()
     try:
         analysis = _headline_with_ollama(context)
         if analysis.summary:
             _logger.debug("Analysis obtained via Ollama")
             return analysis
     except OllamaOutOfMemoryError as exc:  # pragma: no cover - depends on runtime model.
-        fallback_model = (
-            OLLAMA_SUMMARY_FALLBACK_MODEL
-            if OLLAMA_SUMMARY_FALLBACK_MODEL and OLLAMA_SUMMARY_FALLBACK_MODEL != OLLAMA_SUMMARY_MODEL
-            else ""
-        )
+        fallback_model = fallback_candidate
         if fallback_model:
             _logger.warning(
                 "Ollama model %s ran out of memory; retrying with fallback model %s.",
-                OLLAMA_SUMMARY_MODEL,
+                primary_model,
                 fallback_model,
                 exc_info=True,
             )

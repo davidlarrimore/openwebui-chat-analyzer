@@ -1,5 +1,5 @@
 import { logAuthEvent } from "./logger";
-import type { SummaryEventsResponse, SummaryStatus } from "./types";
+import type { SummaryEventsResponse, SummaryStatus, OllamaModelTag } from "./types";
 
 const ALLOWED_PATH = /^\/?api\/v1\//;
 const AUTH_OPTIONAL_PATHS = new Set([
@@ -164,6 +164,29 @@ export async function updateOpenWebUISettings(
   settings: OpenWebUISettingsUpdate
 ): Promise<OpenWebUISettingsResponse> {
   return apiPut<OpenWebUISettingsResponse>("api/v1/admin/settings/direct-connect", settings);
+}
+
+// ============================================================================
+// Summarizer Settings API
+// ============================================================================
+
+export interface SummarizerSettingsResponse {
+  model: string;
+  source: "database" | "environment" | "default";
+}
+
+export interface SummarizerSettingsUpdate {
+  model: string;
+}
+
+export async function getSummarizerSettings(): Promise<SummarizerSettingsResponse> {
+  return apiGet<SummarizerSettingsResponse>("api/v1/admin/settings/summarizer");
+}
+
+export async function updateSummarizerSettings(
+  payload: SummarizerSettingsUpdate
+): Promise<SummarizerSettingsResponse> {
+  return apiPut<SummarizerSettingsResponse>("api/v1/admin/settings/summarizer", payload);
 }
 
 // ============================================================================
@@ -346,4 +369,12 @@ export async function getSummaryEvents(after?: string, limit?: number): Promise<
   const query = params.toString();
   const path = query ? `api/v1/summaries/events?${query}` : "api/v1/summaries/events";
   return apiGet<SummaryEventsResponse>(path, undefined, { skipAuthRedirect: true });
+}
+
+// ============================================================================
+// Ollama Models API
+// ============================================================================
+
+export async function getOllamaModels(): Promise<OllamaModelTag[]> {
+  return apiGet<OllamaModelTag[]>("api/v1/genai/models");
 }
