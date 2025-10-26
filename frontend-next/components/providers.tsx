@@ -12,25 +12,8 @@ interface ProvidersProps {
 }
 
 function AuthenticatedProviders({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
-  const { status } = useSession();
-
-  const isAuthRoute = pathname === "/login" || pathname === "/register";
-  const isAuthenticated = status === "authenticated";
-  const isLoading = status === "loading";
-
-  // Don't wrap with SummarizerProgressProvider on auth routes
-  if (isAuthRoute) {
-    return (
-      <>
-        {children}
-        <Toaster />
-      </>
-    );
-  }
-
-  // Wrap with SummarizerProgressProvider for dashboard routes
-  // (even during loading to prevent hook errors)
+  // Always wrap with SummarizerProgressProvider
+  // The provider itself handles auth state and will not poll if unauthenticated
   return (
     <SummarizerProgressProvider>
       {children}
