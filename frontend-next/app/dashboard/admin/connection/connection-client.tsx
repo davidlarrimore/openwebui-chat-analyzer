@@ -18,7 +18,7 @@ export default function ConnectionClient({ initialSettings }: ConnectionClientPr
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-3xl font-bold tracking-tight">Admin: Connection Management</h2>
+        <h2 className="text-3xl font-bold tracking-tight">⚙️ Configuration</h2>
         <p className="text-muted-foreground mt-2">
           Manage your data source connection, sync settings, and monitor processing logs.
         </p>

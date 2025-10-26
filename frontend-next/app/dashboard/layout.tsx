@@ -6,13 +6,12 @@ import { LogoutButton } from "@/components/logout-button";
 import { getServerAuthSession } from "@/lib/auth";
 
 const NAV_LINKS = [
-  { href: "/dashboard", label: "Overview" },
-  { href: "/dashboard/time", label: "Time Analysis" },
-  { href: "/dashboard/content", label: "Content Analysis" },
-  { href: "/dashboard/search", label: "Search" },
-  { href: "/dashboard/browse", label: "Browse Chats" },
-  { href: "/dashboard/load-data", label: "Load Data" },
-  { href: "/dashboard/admin/connection", label: "Admin: Connection" }
+  { href: "/dashboard", label: "📊 Overview" },
+  { href: "/dashboard/time", label: "📈 Time Analysis" },
+  { href: "/dashboard/content", label: "📝 Content Analysis" },
+  { href: "/dashboard/search", label: "🔍 Search" },
+  { href: "/dashboard/browse", label: "💬 Browse Chats" },
+  { href: "/dashboard/admin/connection", label: "⚙️ Configuration", separator: true }
 ];
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
@@ -35,6 +34,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
           <ul className="space-y-1">
             {NAV_LINKS.map((item) => (
               <li key={item.href}>
+                {item.separator && <hr className="my-3 border-border" />}
                 <Link
                   className="block rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
                   href={item.href}

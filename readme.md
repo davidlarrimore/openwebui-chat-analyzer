@@ -1,63 +1,73 @@
 # 💬 Open WebUI Chat Analyzer
 
-Local analytics stack for exploring Open WebUI chat exports. The project pairs a FastAPI backend with a Next.js dashboard (`frontend-next/`) so you can explore conversations, summaries, and engagement trends without sending data outside your machine.
+> **A local-first analytics platform for exploring your Open WebUI conversations**
 
-## Highlights
-- Local FastAPI backend plus Next.js dashboard—your exports never leave your environment
-- Load data by connecting to a live Open WebUI instance or by dropping exports into `data/`
-- Automatic ingestion of the latest `all-chats-export-*.json` plus optional `users.csv` for friendly display names
-- Overview metrics for chats, messages, user activity, model usage, file uploads, and approximate token volume
-- **Instant metrics display**—dataset statistics update immediately after data loads while summaries process in the background
-- Filtering across every visualisation by Open WebUI user and model
-- Built-in summariser generates one-line chat headlines using local sentence embeddings plus a bundled Ollama service (with Open WebUI completions as a fallback)
-- **Incremental summary persistence**—summaries are written to SQLite as each chat completes so partial work is never lost
-- Time analysis (daily trend, conversation length, hour-by-day heatmap) and content analysis (word clouds, message length)
-- Sentiment breakdown with TextBlob, full-text search, paginated browsing, per-thread JSON downloads, and CSV exports
-- Modern dashboard built with Next.js, Tailwind, shadcn/ui primitives, and Auth.js for credential and GitHub sign-in
+Transform your Open WebUI chat history into actionable insights with this comprehensive analytics stack. Featuring a FastAPI backend paired with a modern Next.js dashboard, your conversation data never leaves your environment—making it perfect for privacy-conscious teams and individual power users.
 
-## Contributor Guide
-Review [AGENTS.md](AGENTS.md) for consolidated contributor workflows, coding standards, and release expectations.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Configuration
-1. Copy `.env.example` to `.env` before running anything.
-2. Configure backend connectivity:
-   - `OWUI_API_BASE_URL` – Primary URL the dashboard should target (`http://localhost:8502` locally, `http://backend:8502` for Docker Compose).
-   - `OWUI_API_ALLOWED_ORIGINS` – Comma-separated list of origins permitted to call the FastAPI backend (defaults cover `http://localhost:3000` and `http://localhost:8503`).
-   - `OWUI_DATA_DIR` – Directory where default exports live (relative to the project root).
-3. (Optional) Prefill the Direct Connect form:
-   - `OWUI_DIRECT_HOST` – Default Open WebUI base URL shown on the Load Data page.
-   - `OWUI_DIRECT_API_KEY` – Optional API token that appears in the Direct Connect form (stored only in your local `.env`).
-4. (Optional) Tune the summariser and GenAI helpers:
-   - `SALIENT_K` – Control how many salient utterances feed the LLM for context.
-   - `EMB_MODEL` – Sentence transformer used to pick salient lines (`sentence-transformers/all-MiniLM-L6-v2` by default).
-   - `OLLAMA_*` variables – Configure the Ollama runtime, timeout, preload list, and default models for summaries, long-form responses, and embeddings.
-   - `OWUI_COMPLETIONS_MODEL` – Chat completion model requested from your Open WebUI deployment (legacy fallback path).
-5. Frontend defaults:
-   - `FRONTEND_NEXT_PORT` – Published Docker port for the Next.js dashboard (defaults to `8503`).
-   - `FRONTEND_NEXT_PUBLIC_URL` – External URL used for Auth.js redirects.
-   - `FRONTEND_NEXT_BACKEND_BASE_URL` – Internal URL the Next.js proxy should use for FastAPI.
-   - `NEXTAUTH_SECRET` / `NEXTAUTH_URL` – Secrets and base URLs for Auth.js session management.
-   - Optional GitHub OAuth: `GITHUB_OAUTH_ENABLED`, `NEXT_PUBLIC_GITHUB_OAUTH_ENABLED`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`.
-6. Restart the backend after changing environment variables. The first summariser run downloads embeddings locally and may take a moment.
+---
 
-## Input Data
-Load data through either workflow:
+## ✨ Key Features
 
-- **Direct Connect** – Use **Load Data → Direct Connect** to point the analyzer at a live Open WebUI deployment. Provide the base URL (for example `http://localhost:3000`) and an API key; the backend will pull chats and users, persist them locally, display updated metrics instantly, and queue the summariser in the background.
-- **File Uploads / Local Directory** – Export `all-chats-export-*.json` from Open WebUI (Admin Panel → **Settings → Data & Privacy → Export All Chats**) and optionally `users.csv` (Admin Panel → **Settings → Database → Export Users**) plus `models.json` captured from `/api/v1/models` for friendly model names. Drop the files in `data/` for automatic loading on startup or upload them on the Load Data page. Uploaded artifacts live under `uploads/`.
+### 🔒 **Privacy-First Architecture**
+- **100% Local Processing** – All data stays on your machine
+- **No External Services** – Dashboard communicates only with your local backend
+- **Self-Hosted by Design** – Complete control over your conversation analytics
 
-## Quick Start
+### 📊 **Comprehensive Analytics**
+- **📈 Time Analysis** – Daily trends, conversation patterns, hour-by-day heatmaps
+- **📝 Content Analysis** – Word clouds, message length distributions, sentiment breakdown
+- **💬 Chat Browser** – Full-text search, filters, and detailed conversation views
+- **🔍 Advanced Search** – Query across all messages with powerful filtering options
 
-### Option A – Docker (recommended)
+### 🚀 **Intelligent Data Loading**
+- **Direct Connect** – Sync live from your Open WebUI instance with one click
+- **File Import** – Drop exports into `data/` or upload through the UI
+- **Instant Metrics** – Dashboard updates immediately while summaries process in background
+- **Incremental Sync** – Smart updates that only fetch new conversations
+
+### 🤖 **AI-Powered Summaries**
+- **Local LLM Integration** – Uses Ollama for automatic chat summarization
+- **Incremental Persistence** – Summaries saved as each chat completes (no data loss)
+- **Smart Context** – Sentence transformers identify salient utterances for better summaries
+- **Fallback Support** – Can use Open WebUI completions endpoint if needed
+
+### 🎨 **Modern UI/UX**
+- **Next.js 14 App Router** – Fast, responsive single-page application
+- **Tailwind + shadcn/ui** – Beautiful, accessible component library
+- **Real-Time Updates** – Live processing logs and progress tracking
+- **Multi-User Support** – Auth.js with credentials and GitHub OAuth
+
+---
+
+## 🎯 Quick Start
+
+### Option A: Docker (Recommended)
+
 ```bash
 git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
 cd openwebui-chat-analyzer
 cp .env.example .env
 make up
 ```
-The FastAPI backend listens on `http://localhost:8502` and the Next.js dashboard is exposed on `http://localhost:8503` (or the value of `FRONTEND_NEXT_PORT`). Use `make logs` to tail combined logs and `make down` to stop everything.
 
-### Option B – Local Python + Next.js environment
+**Access Points:**
+- 🎨 **Dashboard**: http://localhost:8503
+- 🔌 **API**: http://localhost:8502
+- 📖 **API Docs**: http://localhost:8502/docs
+
+**Useful Commands:**
+```bash
+make logs    # View combined logs
+make down    # Stop all services
+make restart # Restart services
+make help    # See all available commands
+```
+
+### Option B: Local Development
+
+**Backend:**
 ```bash
 git clone https://github.com/davidlarrimore/openwebui-chat-analyzer.git
 cd openwebui-chat-analyzer
@@ -65,271 +75,463 @@ python3 -m venv venv && source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 cp .env.example .env
-python -m textblob.download_corpora   # first run only
-uvicorn backend.app:app --reload --port 8502  # terminal 1
+
+# First run only
+python -m textblob.download_corpora
+
+# Start backend
+uvicorn backend.app:app --reload --port 8502
 ```
-In a second terminal:
+
+**Frontend** (in a new terminal):
 ```bash
 cd openwebui-chat-analyzer/frontend-next
 pnpm install
-pnpm dev
-```
-The dashboard runs on [http://localhost:3000](http://localhost:3000) during development. Keep the backend process running so the proxy routes can reach `http://localhost:8502`.
-
-### Option C – Guided setup scripts
-Run `scripts/setup.sh` for an interactive wizard that prepares Docker or the local development environment. The script can also generate a `run.sh` helper that launches both the backend and Next.js dev server together.
-
-## Backend API
-The Next.js dashboard communicates with a FastAPI service that normalizes and serves chat exports. Key endpoints:
-
-- `GET /api/v1/datasets/meta` – Current dataset identifier, row counts, source label, and last updated timestamp.
-- `GET /api/v1/chats` / `GET /api/v1/messages` / `GET /api/v1/users` – Hydrated chat metadata, messages, and optional user directory.
-- `POST /api/v1/openwebui/sync` – Pull chats and users directly from Open WebUI using a hostname plus API token.
-- `POST /api/v1/uploads/chat-export` – Upload a new `all-chats-export*.json`; replaces the in-memory dataset and bumps the dataset id.
-- `POST /api/v1/uploads/users` – Upload a companion `users.csv` for friendly display names.
-- `POST /api/v1/datasets/reset` – Delete all stored chat, message, and user records plus metadata.
-- `GET /api/v1/summaries/status` / `POST /api/v1/summaries/rebuild` – Monitor or requeue the background summariser job.
-
-Run `uvicorn backend.app:app --reload` during development to keep the API available to the dashboard.
-
-## Automated Chat Summaries
-- Summaries are persisted in the `gen_chat_summary` field for each chat and surface throughout the Browse and Overview experiences.
-- Every dataset update (direct sync or file upload) queues the summariser; progress is shown in the Load Data processing log with toast notifications.
-- **Incremental persistence**: summaries are written to the database immediately after each individual chat is processed by Ollama, rather than waiting for all chats to complete. This means:
-  - Dataset metrics update instantly after data loads, before summaries begin generating.
-  - Summaries become available progressively as each chat completes.
-  - If the summariser is interrupted, all previously completed chats are already saved.
-  - The dashboard remains responsive during long summarisation jobs.
-- The summariser picks salient utterances with `sentence-transformers/all-MiniLM-L6-v2`, then calls the configured Ollama service using the model selected on the Connection Management page, with an automatic fallback to the Open WebUI completions endpoint at `OWUI_DIRECT_HOST`.
-- Rebuild summaries anytime from **Load Data → Admin Tools → Rerun summaries** or through the API (`POST /api/v1/summaries/rebuild` + `/summaries/status`).
-
-## Dashboard Tour
-- **Load Data page**: View dataset stats that update instantly after data loads, stream processing logs in real-time, Direct Connect to Open WebUI, upload exports (with optional `users.csv`), and access admin tools to reset or rerun summaries. Metrics display immediately even while summaries generate in the background.
-- **Overview metrics**: Totals and averages for chats, messages, per-role counts, file uploads, and approximate input/output token volumes (derived from character length).
-- **Time analysis**: Daily trends, conversation length distributions, and hour-by-day heatmaps with filters for model and user.
-- **Content analysis**: Word clouds for salient terms plus message length histograms broken down by role/model.
-- **Sentiment**: TextBlob polarity triages conversations into positive, neutral, or negative bins with per-user breakdowns.
-- **Browse and Search**: Dive into individual conversations, filter by user/model, run full-text search, and download enriched JSON/CSV exports.
-- **Connection Info page**: Manage your OpenWebUI Direct Connect settings, monitor data freshness, view real-time sync logs, and configure automatic sync scheduling. See detailed documentation below.
-
-## Connection Info Page
-
-The Connection Info page (accessible at `/dashboard/admin/connection`) provides comprehensive management of your OpenWebUI Direct Connect integration with real-time monitoring and automated sync capabilities.
-
-### Test Connection Flow
-
-The **Test Connection** button verifies your OpenWebUI instance is reachable without importing data:
-
-1. Click **Test Connection** to validate credentials and connectivity
-2. The system tests both anonymous and authenticated endpoints
-3. Success displays a toast with:
-   - OpenWebUI version detected
-   - Number of chats found
-   - Connection attempts (if retries occurred)
-4. Failure shows an error toast with detailed diagnostics
-5. All tests complete without modifying your local dataset
-
-**Security**: API keys are never logged or displayed. Connection logs only show "Using authenticated connection" without exposing credentials.
-
-### Full vs Incremental Sync
-
-Choose between two sync modes using the **Mode** toggle:
-
-**Full Sync** (replaces all data):
-- Wipes existing chats, messages, users, and models
-- Fetches complete dataset from OpenWebUI
-- Use when: switching data sources, recovering from corruption, or resetting the analyzer
-- Triggered automatically when changing the hostname setting
-
-**Incremental Sync** (appends new data):
-- Compares source hostnames to detect same-source syncs
-- Uses watermark tracking (max `updated_at` timestamp) to identify new chats
-- Merges new chats, messages, users, and models into existing dataset
-- Recommended mode when `has_data: true` and source matches
-- Faster and preserves locally-generated summaries
-
-**Last Sync Display**:
-- Shows timestamp of most recent successful sync
-- Displays "Never" if no sync has occurred
-- Updates immediately after **Load Data** completes
-- Persists across application restarts
-
-### Quote-Free Settings Storage
-
-The settings system automatically normalizes input to prevent serialization issues:
-
-- **Quote Stripping**: Values like `"http://example.com"` are stored as `http://example.com`
-- **Defensive Parsing**: Legacy quoted values are stripped on read
-- **Migration**: Database migration (Migration 2) retroactively strips quotes from existing settings
-- **API Response**: Settings endpoints always return clean, unquoted values
-- **Source Tracking**: Each setting shows its origin (database, environment, or default)
-
-**Note**: The legacy `dataset_source_display` setting has been removed. The dataset source is now derived directly from `OWUI_DIRECT_HOST`.
-
-### Hostname Change: Wipe & Reload
-
-Changing the hostname triggers a safe, transactional data refresh:
-
-1. **Detection**: System compares normalized current vs new hostname
-2. **Wipe Phase** (if hostname differs):
-   - Transactional deletion in FK-safe order: messages → chats → users → models
-   - SQLite PRAGMA `foreign_keys=ON` enforced
-   - All-or-nothing: rollback on any failure
-   - Emits structured log: `"Starting transactional wipe of OpenWebUI data"`
-3. **Reload Phase**:
-   - Triggers full sync from new hostname
-   - Uses updated API key (or existing if unchanged)
-   - Inherits all sync logging from standard pipeline
-   - Emits log: `"Starting full reload from {new_hostname}"`
-4. **Completion**:
-   - In-memory state cleared and version bumped
-   - Dataset metadata refreshed
-   - Final log: `"Hostname change complete: wipe and reload finished"`
-
-**Error Handling**: Exceptions during wipe/reload emit error logs and re-raise to caller for proper HTTP error response.
-
-### Processing Log Viewer
-
-The right panel displays real-time structured logs from all sync operations:
-
-**Log Structure**:
-- **Timestamp**: ISO 8601 with millisecond precision
-- **Level**: debug, info, warning, error (color-coded)
-- **Phase**: connect, fetch, persist, summarize, done, error (with icons)
-- **Job ID**: Optional identifier for filtering multi-operation workflows
-- **Message**: Human-readable description
-- **Details**: Optional JSON metadata (e.g., `{"count": 150}`)
-
-**Features**:
-- **Auto-scroll**: Follows new entries (disable by scrolling up)
-- **Auto-refresh**: Polls `/api/v1/logs` every 2 seconds
-- **Filtering**: Query by `job_id` to isolate specific operations
-- **Circular Buffer**: Retains last 200 events in memory
-- **Secret Redaction**: API keys never appear in logs (only `"Using authenticated connection"`)
-
-**Example Log Sequence** (hostname change):
-```
-[12:00:00.123] 🔌 INFO     Hostname changed to http://new.com, triggering wipe and reload
-[12:00:00.456] 💾 INFO     Starting transactional wipe of OpenWebUI data
-[12:00:01.789] 💾 INFO     Wipe complete
-[12:00:01.890] 📥 INFO     Starting full reload from http://new.com
-[12:00:02.123] 🔌 INFO     Starting sync from http://new.com
-[12:00:03.456] 📥 INFO     Fetched 150 chats
-[12:00:04.789] 💾 INFO     Performing full sync (different source or first sync)
-[12:00:05.012] ✅ INFO     Full sync complete: 150 chats, 1250 messages
+pnpm dev  # Runs on http://localhost:3000
 ```
 
-### Data Freshness & Staleness
+### Option C: Guided Setup
 
-Visual indicators help you monitor data currency:
+```bash
+scripts/setup.sh  # Interactive wizard for Docker or local setup
+```
 
-**Staleness Pill** (next to Last Sync):
-- **Green "Up to date"**: Last sync within threshold (default 6 hours)
-- **Amber "Stale"**: Last sync exceeds threshold
-- Hidden when no sync has occurred
-- Threshold configurable via `SYNC_STALENESS_THRESHOLD_HOURS` setting
+---
 
-**Staleness Calculation**:
-- Compares `last_sync_at` to current time
-- Uses `timedelta(hours=staleness_threshold_hours)`
-- Data with no timestamp but existing chats marked stale
-- Fresh data marked `is_stale: false`
+## 📖 Dashboard Overview
 
-**Local Counts** (in sync status API):
-- Chats, messages, users, models
-- Returned in `/api/v1/sync/status` response
-- Useful for comparing local vs upstream counts
+### 📊 Overview
+- Total conversations, messages, and user activity
+- Model usage statistics and file upload tracking
+- Approximate token volume (derived from character counts)
+- User and model breakdowns with visual charts
+
+### 📈 Time Analysis
+- **Daily Trends** – Message volume over time
+- **Conversation Length** – Distribution of chat durations
+- **Heatmaps** – Activity by hour and day of week
+- **Filters** – Segment by user and model
+
+### 📝 Content Analysis
+- **Word Clouds** – Most frequently used terms
+- **Message Length** – Histograms by role and model
+- **Sentiment Breakdown** – Positive, neutral, negative classification
+- **Per-User Insights** – Individual communication patterns
+
+### 🔍 Search
+- **Full-Text Search** – Query across all messages
+- **Advanced Filters** – By user, model, date range, sentiment
+- **Export Results** – Download filtered data as CSV or JSON
+
+### 💬 Browse Chats
+- **Paginated View** – Browse all conversations
+- **Rich Metadata** – Timestamps, participants, model info
+- **AI Summaries** – One-line headlines for each chat
+- **Quick Actions** – Download individual threads as JSON
+
+### ⚙️ Configuration
+- **Data Source Management** – Connect to Open WebUI or upload exports
+- **Sync Settings** – Configure full vs incremental sync modes
+- **Automated Scheduler** – Set up periodic data refreshes
+- **Summarizer Settings** – Choose Ollama model for AI summaries
+- **Real-Time Logs** – Monitor sync and processing operations
+- **System Status** – View connection health and data freshness
+
+---
+
+## 🔧 Configuration
+
+### Environment Setup
+
+Copy `.env.example` to `.env` and configure:
+
+#### Backend Connectivity
+```bash
+OWUI_API_BASE_URL=http://localhost:8502       # Backend URL for dashboard
+OWUI_API_ALLOWED_ORIGINS=http://localhost:3000 # CORS origins
+OWUI_DATA_DIR=./data                           # Default export directory
+```
+
+#### Direct Connect Defaults
+```bash
+OWUI_DIRECT_HOST=http://localhost:3000         # Open WebUI base URL
+OWUI_DIRECT_API_KEY=                          # Optional prefill API key
+```
+
+#### AI & Summarization
+```bash
+# Sentence Transformers
+EMB_MODEL=sentence-transformers/all-MiniLM-L6-v2
+SALIENT_K=10                                   # Number of salient utterances
+
+# Ollama Configuration
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_TIMEOUT=180
+OLLAMA_DEFAULT_MODEL=llama3.2:latest
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text:latest
+```
+
+#### Frontend Settings
+```bash
+FRONTEND_NEXT_PORT=8503                        # Published dashboard port
+FRONTEND_NEXT_PUBLIC_URL=http://localhost:8503 # External URL
+FRONTEND_NEXT_BACKEND_BASE_URL=http://backend:8502 # Internal backend URL
+
+# Auth.js
+NEXTAUTH_SECRET=your-secret-here
+NEXTAUTH_URL=http://localhost:8503
+
+# Optional GitHub OAuth
+GITHUB_OAUTH_ENABLED=false
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+```
+
+---
+
+## 📥 Loading Data
+
+### Method 1: Direct Connect (Recommended)
+
+1. Navigate to **⚙️ Configuration** in the dashboard
+2. Click **Edit Credentials** and enter:
+   - Your Open WebUI base URL (e.g., `http://localhost:3000`)
+   - An API key with read permissions
+3. Click **Test Connection** to verify
+4. Click **Sync Data Now** to import
+
+**Benefits:**
+- ✅ Automatic incremental updates
+- ✅ Always in sync with your Open WebUI instance
+- ✅ No manual export/import workflow
+- ✅ Scheduler support for automated syncs
+
+### Method 2: File Upload
+
+1. Export from Open WebUI:
+   - **Settings → Data & Privacy → Export All Chats** (`all-chats-export-*.json`)
+   - **Settings → Database → Export Users** (`users.csv`, optional)
+   - Capture `/api/v1/models` as `models.json` (optional, for friendly names)
+
+2. Import options:
+   - Drop files in the `data/` directory (auto-loaded on startup)
+   - Upload through **⚙️ Configuration** page
+   - Files stored in `uploads/` directory
+
+---
+
+## 🤖 AI Summaries
+
+### How It Works
+
+The analyzer automatically generates one-line summaries for each conversation:
+
+1. **Salient Extraction** – Uses sentence-transformers to identify key utterances
+2. **LLM Summarization** – Feeds context to your configured Ollama model
+3. **Incremental Persistence** – Saves each summary immediately (no data loss)
+4. **Background Processing** – Metrics update instantly; summaries generate async
+
+### Configuration
+
+Choose your summarization model in **⚙️ Configuration → Summarizer Settings**:
+- Select from available Ollama models
+- Settings persist to database
+- Changes apply to future summarization jobs
+
+### Rebuilding Summaries
+
+Regenerate all summaries anytime:
+- Click **⚙️ Configuration → Quick Actions → Rebuild Summaries**
+- Or via API: `POST /api/v1/summaries/rebuild`
+- Monitor progress in the **Processing Log**
+
+---
+
+## 🔄 Sync Modes
+
+### Full Sync
+- **When to Use**: First sync, changing data sources, or recovering from issues
+- **What It Does**: Replaces all local data with fresh import from Open WebUI
+- **Recommended**: When `has_data: false` or hostname changes
+
+### Incremental Sync
+- **When to Use**: Regular updates from the same Open WebUI instance
+- **What It Does**: Fetches only new conversations since last sync
+- **Recommended**: When `has_data: true` and source matches
+- **Benefits**: Faster, preserves local summaries, efficient
+
+The dashboard **automatically recommends** the appropriate mode based on your current dataset state.
+
+---
+
+## 🔌 Backend API
+
+Key endpoints for integration and automation:
+
+### Dataset & Metadata
+```bash
+GET  /api/v1/datasets/meta          # Current dataset stats
+GET  /api/v1/chats                  # Chat metadata
+GET  /api/v1/messages               # Message content
+GET  /api/v1/users                  # User directory
+POST /api/v1/datasets/reset         # Delete all data
+```
+
+### Direct Connect
+```bash
+POST /api/v1/openwebui/sync         # Sync from Open WebUI
+POST /api/v1/openwebui/test         # Test connection
+GET  /api/v1/sync/status            # Sync status & freshness
+```
+
+### File Uploads
+```bash
+POST /api/v1/uploads/chat-export    # Upload all-chats-export.json
+POST /api/v1/uploads/users          # Upload users.csv
+POST /api/v1/uploads/models         # Upload models.json
+```
+
+### Summaries
+```bash
+GET  /api/v1/summaries/status       # Current summarizer status
+POST /api/v1/summaries/rebuild      # Regenerate all summaries
+GET  /api/v1/summaries/events       # Stream summary events
+```
+
+### Admin Settings
+```bash
+GET  /api/v1/admin/settings/direct-connect     # Get Direct Connect settings
+PUT  /api/v1/admin/settings/direct-connect     # Update settings
+GET  /api/v1/sync/scheduler                    # Get scheduler config
+POST /api/v1/sync/scheduler                    # Update scheduler
+```
+
+**Interactive API Docs**: Visit http://localhost:8502/docs when backend is running
+
+---
+
+## 📊 Data Export
+
+### CSV Downloads
+- **What's Included**: Same columns shown in dashboard tables
+- **Use Cases**: Analysis in Excel, pandas, Tableau, Power BI
+- **Fields**: Timestamps, participants, sentiment scores, token estimates
+
+### JSON Downloads
+- **What's Included**: Complete conversation metadata and messages
+- **Format**: ISO timestamps, attachments, role information
+- **Use Cases**: Backup, data migration, custom processing
+
+### Notes
+- Token estimates are **heuristic** (based on character counts)
+- Sentiment scores use **TextBlob** polarity scale (−1 to 1)
+- Exports reflect current filter/search state
+
+---
+
+## 🧪 Sample Data
+
+Explore the dashboard instantly with sample data:
+
+```bash
+cp sample_data/sample_data_extract.json data/
+cp sample_data/sample_users.csv data/
+# Restart backend to auto-load, or upload via Configuration page
+```
+
+---
+
+## 🏗️ Project Structure
+
+```
+openwebui-chat-analyzer/
+├── backend/                 # FastAPI application
+│   ├── app.py              # Main application entry point
+│   ├── routes.py           # API endpoint definitions
+│   ├── services.py         # Business logic & data processing
+│   ├── db.py               # SQLite database layer
+│   ├── models.py           # Pydantic models
+│   ├── summarizer.py       # AI summarization pipeline
+│   └── tests/              # Backend test suite
+│
+├── frontend-next/          # Next.js 14 dashboard
+│   ├── app/                # App Router pages & layouts
+│   ├── components/         # React components
+│   ├── lib/                # Utilities, types, API client
+│   └── tests/              # Frontend test suite
+│
+├── data/                   # Default export directory
+├── uploads/                # User-uploaded files
+├── scripts/                # Setup & utility scripts
+├── sample_data/            # Example datasets
+├── .env.example            # Environment template
+└── docker-compose.yml      # Container orchestration
+```
+
+---
+
+## 🔐 Privacy & Security
+
+### Data Handling
+- ✅ **100% Local** – All processing happens on your machine
+- ✅ **No External Calls** – Dashboard only talks to local backend
+- ✅ **No Telemetry** – Zero tracking or analytics collection
+- ✅ **File-Based Storage** – SQLite database in your project directory
+
+### Credential Management
+- 🔒 API keys stored in database with quote-safe normalization
+- 🔒 Password fields in UI (`type="password"`)
+- 🔒 Redacted logging (shows `supe...2345` instead of full key)
+- 🔒 Keys never appear in processing logs or responses
+
+### Authentication
+- Auth.js (NextAuth) with local credentials provider
+- Optional GitHub OAuth integration
+- Session-based authentication
+- Protected API routes
+
+---
+
+## 🧩 Advanced Features
 
 ### Automatic Sync Scheduler
+- Configure periodic incremental syncs (5 min to 24 hours)
+- Enable/disable via **⚙️ Configuration → Scheduler**
+- Settings persist across restarts
+- Runs in background without blocking dashboard
 
-Configure periodic incremental syncs via the **Scheduler** button:
+### Data Freshness Indicators
+- **Staleness Threshold**: Configurable via `SYNC_STALENESS_THRESHOLD_HOURS` (default: 6 hours)
+- **Visual Pills**: Green "Current" / Amber "Stale" indicators
+- **Last Sync Display**: Human-readable timestamps with relative time
 
-**Scheduler Drawer**:
-- **Enable/Disable Toggle**: Turn automatic syncs on/off
-- **Interval Selector**: 5-1440 minutes (5 min to 24 hours)
-- **Save Interval**: Persists configuration to database
-- **State Display**: Shows enabled status, interval, last run, next run
+### Processing Log Viewer
+- **Real-Time Streaming**: Polls `/api/v1/logs` every 2 seconds
+- **Auto-Scroll**: Follows new entries (disable by scrolling up)
+- **Structured Logs**: Timestamp, level, phase, job ID, message, details
+- **Circular Buffer**: Retains last 200 events
+- **Color-Coded Levels**: Debug, info, warning, error
 
-**How It Works**:
-- Scheduler state stored in database (`SYNC_SCHEDULER_ENABLED`, `SYNC_SCHEDULER_INTERVAL_MINUTES`)
-- Interval validated: 5 ≤ interval ≤ 1440
-- Next run calculated as `last_run_at + interval`
-- Manual syncs unaffected (always available via **Load Data** button)
+### WAL Mode & Performance
+- SQLite Write-Ahead Logging for better concurrency
+- Foreign key enforcement for data integrity
+- Normal synchronous mode for speed with safety
+- Prevents long locks during large syncs
 
-**API Endpoints**:
-- `GET /api/v1/sync/scheduler`: Fetch current config
-- `POST /api/v1/sync/scheduler`: Update config with `{enabled: bool, interval_minutes: int}`
+---
 
-**Note**: The scheduler infrastructure tracks state and configuration. Actual background execution (cron-like functionality) requires additional threading/scheduling implementation (e.g., `APScheduler`, `threading.Timer`).
+## 🛠️ Development
 
-### Edit Mode & Settings Persistence
+### Frontend Development
+```bash
+cd frontend-next
+pnpm dev        # Start dev server (http://localhost:3000)
+pnpm build      # Production build
+pnpm test       # Run test suite
+pnpm lint       # ESLint check
+```
 
-Data source settings are protected by edit mode:
+### Backend Development
+```bash
+source venv/bin/activate
+uvicorn backend.app:app --reload --port 8502  # Auto-reload on changes
+pytest backend/tests/                          # Run tests
+```
 
-1. **Default State**: Hostname and API Key fields are **disabled**
-2. **Edit Mode**: Click **Edit Data Source** to enable fields
-3. **In Edit Mode**:
-   - Fields become editable
-   - **Save Settings** and **Cancel** buttons appear
-   - Changes tracked against original values
-4. **Save**:
-   - Only changed values sent to backend (`PUT /api/v1/admin/settings/direct-connect`)
-   - Settings persisted to database
-   - Hostname change triggers wipe/reload (see above)
-   - Edit mode exits on success
-5. **Cancel**:
-   - Reverts fields to original values
-   - Exits edit mode without API call
+### Docker Development
+```bash
+make dev        # Hot-reload for both frontend and backend
+make logs       # Tail all container logs
+make shell      # Access backend container shell
+```
 
-**Security**:
-- API keys displayed as password field (`type="password"`)
-- Backend logs show redacted keys: `supe...2345` (first 4 + last 4 chars)
-- Full secrets never logged or displayed
+### Testing
+```bash
+# Backend
+pytest backend/tests/ -v
 
-### WAL Mode & Concurrency
+# Frontend
+cd frontend-next && pnpm test
+```
 
-The database uses SQLite optimizations for better performance during large syncs:
+---
 
-- **WAL Mode**: Write-Ahead Logging (`PRAGMA journal_mode=WAL`)
-- **Foreign Keys**: Enforced (`PRAGMA foreign_keys=ON`)
-- **Synchronous**: Set to NORMAL (`PRAGMA synchronous=NORMAL`) for speed while maintaining safety
+## 🐛 Troubleshooting
 
-**Benefits**:
-- Prevents long locks during reload operations
-- Allows concurrent reads during writes
-- Maintains transactional integrity
+### Dashboard Won't Start
+- ✅ Verify Node.js 20+ is installed: `node --version`
+- ✅ Verify pnpm is installed: `pnpm --version`
+- ✅ Clear cache: `pnpm store prune`
 
-## Working With the Data
-- CSV downloads contain the same columns the dashboard uses, making follow-on analysis in pandas, spreadsheets, or BI tools straightforward.
-- Per-thread JSON downloads include metadata, ISO timestamps, attachments, and every message shown in the interface.
-- Sentiment scores and token estimates are heuristic: tokens are inferred from character counts, and sentiment uses TextBlob’s polarity scale (−1 to 1).
+### Backend Connection Issues
+- ✅ Confirm backend is running: `curl http://localhost:8502/health`
+- ✅ Check `OWUI_API_BASE_URL` in `.env`
+- ✅ Verify no port conflicts: `lsof -i :8502`
 
-## Sample Data
-`sample_data/sample_data_extract.json` and `sample_data/sample_users.csv` let you explore the dashboard without waiting for a fresh export. Copy them to `data/` or upload them through the UI to see the charts populate immediately.
+### Summarizer Failing
+- ✅ Confirm Ollama is running: `ollama list`
+- ✅ Verify model is available: `ollama run llama3.2:latest`
+- ✅ Check `OLLAMA_BASE_URL` in `.env`
+- ✅ Increase timeout: `OLLAMA_TIMEOUT=300`
 
-## Development Notes
-- `docker-compose.yml` defines the backend, Next.js frontend, and optional Nginx reverse proxy. Use `make dev` (or `docker compose -f docker-compose.yml -f docker-compose.dev.yml up`) for hot reload.
-- The `Makefile` centralises build and lifecycle commands — start with `make help`.
-- Python dependencies live under `backend/requirements.txt` (aggregated through the root `requirements.txt`).
-- The Next.js app lives under `frontend-next/`; use `pnpm dev`, `pnpm build`, and `pnpm test` for local workflows.
-- The root Dockerfile includes a dedicated Next.js stage so you can build `frontend-next` alongside the Python services (`docker build --target frontend-next .`).
+### Word Clouds Not Rendering
+- ✅ Install system fonts: `sudo apt-get install fonts-dejavu`
+- ✅ Restart backend after font installation
 
-## Frontend Architecture
-- `frontend-next/app/` – App Router routes, layouts, and API proxy handlers.
-- `frontend-next/components/` – Shared UI primitives, charts, tables, and providers.
-- `frontend-next/lib/` – Auth helpers, type definitions, and backend proxy utilities.
-- `frontend-next/tests/` – Jest smoke tests that exercise the server-side proxy handlers.
-- Authentication flows are powered by Auth.js (NextAuth) with credentials and optional GitHub OAuth providers.
+### Database Locked Errors
+- ✅ Ensure only one backend instance is running
+- ✅ Check for stale lock files in database directory
+- ✅ Verify WAL mode is enabled (automatic in recent versions)
 
-## Privacy & Storage
-All requests stay on your machine—the Next.js dashboard only talks to the bundled FastAPI service. Uploaded files remain under the repository (`data/` and `uploads/`) until you remove them.
+### Sync Shows "Stale" Data
+- ✅ Run manual sync from **⚙️ Configuration**
+- ✅ Adjust `SYNC_STALENESS_THRESHOLD_HOURS` if needed
+- ✅ Enable automatic scheduler for regular updates
 
-## Troubleshooting
-- If the Next.js dev server fails to start, confirm Node 20+ and pnpm 8 are installed.
-- Summaries failing or timing out? Confirm your Open WebUI deployment at `OWUI_DIRECT_HOST` is reachable, the API key is valid, and that the sentence-transformers model has been downloaded (first run may take a minute).
-- Seeing 5xx errors from `/api/v1/genai/*`? Make sure your local Ollama runtime is up (`ollama list`) and that the required models are available.
-- Some environments need a font package for `wordcloud`; installing system fonts (for example `sudo apt-get install fonts-dejavu`) fixes blank visuals.
-- Seeing “Unable to connect to the backend API”? Make sure `uvicorn backend.app:app --port 8502` (or the Docker `backend` service) is running and reachable.
+---
 
-## License
-MIT — see `LICENSE` for the full text.
+## 🤝 Contributing
+
+Contributions are welcome! Please review [AGENTS.md](AGENTS.md) for:
+- Coding standards and conventions
+- Development workflow guidelines
+- Testing requirements
+- Release procedures
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🙏 Acknowledgments
+
+Built with:
+- [Next.js](https://nextjs.org/) - React framework
+- [FastAPI](https://fastapi.tiangolo.com/) - Python web framework
+- [Tailwind CSS](https://tailwindcss.com/) - Utility-first CSS
+- [shadcn/ui](https://ui.shadcn.com/) - Component library
+- [Auth.js](https://authjs.dev/) - Authentication
+- [Ollama](https://ollama.ai/) - Local LLM runtime
+- [Sentence Transformers](https://www.sbert.net/) - Semantic embeddings
+- [TextBlob](https://textblob.readthedocs.io/) - Sentiment analysis
+
+---
+
+## 📬 Support
+
+- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/davidlarrimore/openwebui-chat-analyzer/issues)
+- 💡 **Feature Requests**: [GitHub Discussions](https://github.com/davidlarrimore/openwebui-chat-analyzer/discussions)
+- 📖 **Documentation**: This README and inline code comments
+
+---
+
+<div align="center">
+
+**Made with ❤️ for the Open WebUI community**
+
+[⬆ Back to Top](#-open-webui-chat-analyzer)
+
+</div>

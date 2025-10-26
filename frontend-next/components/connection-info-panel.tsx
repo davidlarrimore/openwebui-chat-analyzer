@@ -793,14 +793,6 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
 
   return (
     <div className={cn("w-full space-y-6", className)}>
-      {/* Header */}
-      <div className="border-b bg-card p-4 rounded-t-lg shadow-sm">
-        <h1 className="text-2xl font-bold">System Administration</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Manage OpenWebUI connection, data synchronization, and system operations
-        </p>
-      </div>
-
       {/* System Status Section */}
       <Card>
         <CardHeader>
