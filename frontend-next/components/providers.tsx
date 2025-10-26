@@ -17,8 +17,10 @@ function AuthenticatedProviders({ children }: { children: React.ReactNode }) {
 
   const isAuthRoute = pathname === "/login" || pathname === "/register";
   const isAuthenticated = status === "authenticated";
+  const isLoading = status === "loading";
 
-  if (isAuthRoute || !isAuthenticated) {
+  // Don't wrap with SummarizerProgressProvider on auth routes
+  if (isAuthRoute) {
     return (
       <>
         {children}
@@ -27,6 +29,8 @@ function AuthenticatedProviders({ children }: { children: React.ReactNode }) {
     );
   }
 
+  // Wrap with SummarizerProgressProvider for dashboard routes
+  // (even during loading to prevent hook errors)
   return (
     <SummarizerProgressProvider>
       {children}
