@@ -2857,8 +2857,10 @@ class DataService:
                 for chat in self._chats:
                     updated_ts = chat.get("updated_at")
                     if isinstance(updated_ts, datetime):
-                        if max_timestamp is None or updated_ts > max_timestamp:
-                            max_timestamp = updated_ts
+                        # Normalize to UTC to avoid timezone comparison errors
+                        normalized_ts = self._normalize_utc(updated_ts)
+                        if max_timestamp is None or normalized_ts > max_timestamp:
+                            max_timestamp = normalized_ts
 
                 if max_timestamp:
                     last_watermark = self._serialize_datetime(max_timestamp)
@@ -2872,7 +2874,7 @@ class DataService:
             }
 
             return {
-                "last_sync_at": last_sync_at,
+                "last_sync_at": self._serialize_datetime(last_sync_at),
                 "last_watermark": last_watermark,
                 "has_data": has_data,
                 "recommended_mode": recommended_mode,
