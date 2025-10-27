@@ -24,7 +24,7 @@ from urllib.parse import urlparse, urlunparse
 
 from .config import AUTH_TOKEN_HASH_SECRET, AUTH_TOKEN_TTL_SECONDS, DATA_DIR
 from .models import AppMetadata, DatasetMeta, DatasetSyncStats
-from .summarizer import summarize_chats, set_summary_model, get_summary_model
+from .summarizer import summarize_chats, set_summary_model, get_summary_model, set_summary_temperature, get_summary_temperature
 from .storage import DatabaseState, DatabaseStorage
 
 LOGGER = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ SUMMARY_FIELD = "gen_chat_summary"
 DEFAULT_DIRECT_CONNECT_HOST = "http://localhost:4000"
 SUMMARY_EVENT_HISTORY_LIMIT = 500
 SUMMARIZER_MODEL_SETTING_KEY = "SUMMARIZER_PRIMARY_MODEL"
+SUMMARIZER_TEMPERATURE_SETTING_KEY = "SUMMARIZER_TEMPERATURE"
 
 
 def _strip_encapsulating_quotes(value: str) -> str:
@@ -2525,17 +2526,44 @@ class DataService:
 
         if stored_model:
             model = stored_model
-            source = "database"
+            model_source = "database"
         elif env_model:
             model = env_model
-            source = "environment"
+            model_source = "environment"
         else:
             model = get_summary_model()
-            source = "default"
+            model_source = "default"
+
+        # Handle temperature setting
+        env_temp_str = os.getenv("OLLAMA_DEFAULT_TEMPERATURE", "").strip()
+        env_temp = None
+        if env_temp_str:
+            try:
+                env_temp = float(env_temp_str)
+            except ValueError:
+                env_temp = None
+
+        with self._lock:
+            stored_temp_raw = self._settings.get(SUMMARIZER_TEMPERATURE_SETTING_KEY)
+        stored_temp = None
+        if isinstance(stored_temp_raw, (int, float)):
+            stored_temp = float(stored_temp_raw)
+
+        if stored_temp is not None:
+            temperature = stored_temp
+            temperature_source = "database"
+        elif env_temp is not None:
+            temperature = env_temp
+            temperature_source = "environment"
+        else:
+            temperature = get_summary_temperature()
+            temperature_source = "default"
 
         return {
             "model": model,
-            "source": source,
+            "temperature": temperature,
+            "model_source": model_source,
+            "temperature_source": temperature_source,
         }
 
     def update_direct_connect_settings(self, *, host: Optional[str], api_key: Optional[str]) -> Dict[str, Any]:
@@ -2624,19 +2652,36 @@ class DataService:
 
         return self.get_direct_connect_settings()
 
-    def update_summarizer_settings(self, *, model: str) -> Dict[str, Any]:
-        """Persist the summarizer model preference and return the effective values."""
-        normalized_model = _strip_encapsulating_quotes((model or "").strip())
-        if not normalized_model:
-            raise ValueError("Model must not be empty.")
+    def update_summarizer_settings(self, *, model: Optional[str] = None, temperature: Optional[float] = None) -> Dict[str, Any]:
+        """Persist the summarizer model and/or temperature preference and return the effective values."""
+        updates: Dict[str, Any] = {}
 
-        updates = {SUMMARIZER_MODEL_SETTING_KEY: normalized_model}
+        if model is not None:
+            normalized_model = _strip_encapsulating_quotes((model or "").strip())
+            if not normalized_model:
+                raise ValueError("Model must not be empty.")
+            updates[SUMMARIZER_MODEL_SETTING_KEY] = normalized_model
+
+        if temperature is not None:
+            if not (0.0 <= temperature <= 2.0):
+                raise ValueError("Temperature must be between 0.0 and 2.0.")
+            updates[SUMMARIZER_TEMPERATURE_SETTING_KEY] = temperature
+
+        if not updates:
+            raise ValueError("At least one of model or temperature must be provided.")
+
         self._storage.write_settings(updates)
         with self._lock:
             self._settings.update(updates)
 
-        set_summary_model(normalized_model)
-        LOGGER.info("Updated summarizer primary model (model=%s)", normalized_model)
+        if model is not None:
+            set_summary_model(updates[SUMMARIZER_MODEL_SETTING_KEY])
+            LOGGER.info("Updated summarizer primary model (model=%s)", updates[SUMMARIZER_MODEL_SETTING_KEY])
+
+        if temperature is not None:
+            set_summary_temperature(updates[SUMMARIZER_TEMPERATURE_SETTING_KEY])
+            LOGGER.info("Updated summarizer temperature (temperature=%s)", updates[SUMMARIZER_TEMPERATURE_SETTING_KEY])
+
         return self.get_summarizer_settings()
 
     def _build_public_user(self, record: Dict[str, Any]) -> Dict[str, str]:

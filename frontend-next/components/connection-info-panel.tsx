@@ -21,7 +21,7 @@ import {
   getSummaryEvents,
   getSummarizerSettings,
   updateSummarizerSettings,
-  getOllamaModels,
+  getAvailableOllamaModels,
   type OpenWebUISettingsResponse,
   type SyncStatusResponse,
   type SyncSchedulerConfig,
@@ -34,6 +34,16 @@ import type { SummaryEvent, SummaryStatus, DatasetMeta, OllamaModelTag } from "@
 const SUMMARY_POLL_INTERVAL_MS = 2000;
 const TERMINAL_SUMMARY_STATES = new Set(["idle", "completed", "failed", "cancelled"]);
 const SUMMARY_WARNING_EVENT_TYPES = new Set(["invalid_chat", "empty_context"]);
+
+function getTemperatureLabel(temperature: number): string {
+  if (temperature === 0.0) return "Strict";
+  if (temperature <= 0.2) return "Precise";
+  if (temperature <= 0.5) return "Balanced";
+  if (temperature <= 0.8) return "Creative";
+  if (temperature <= 1.1) return "Inventive";
+  if (temperature <= 1.5) return "Experimental";
+  return "Max";
+}
 
 function isTerminalSummaryState(state: string | null | undefined): boolean {
   if (state === null || state === undefined) {
@@ -162,10 +172,13 @@ interface ConnectionInfoState {
   schedulerInterval: number;
   summaryModel: string;
   summaryModelSource?: "database" | "environment" | "default";
+  summaryTemperature: number;
+  summaryTemperatureSource?: "database" | "environment" | "default";
   availableSummaryModels: string[];
   summaryModelError: string | null;
   isLoadingSummaryModels: boolean;
   isUpdatingSummaryModel: boolean;
+  isUpdatingSummaryTemperature: boolean;
 }
 
 interface ConnectionInfoPanelProps {
@@ -198,10 +211,13 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     schedulerInterval: 60,
     summaryModel: "",
     summaryModelSource: undefined,
+    summaryTemperature: 0.2,
+    summaryTemperatureSource: undefined,
     availableSummaryModels: [],
     summaryModelError: null,
     isLoadingSummaryModels: false,
     isUpdatingSummaryModel: false,
+    isUpdatingSummaryTemperature: false,
   });
 
   // Track original values to detect changes
@@ -351,15 +367,15 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       summaryModelError: null,
     }));
     try {
-      const [models, summarizerSettings] = await Promise.all([
-        getOllamaModels(),
+      const [modelsResponse, summarizerSettings] = await Promise.all([
+        getAvailableOllamaModels(),
         getSummarizerSettings(),
       ]);
 
       const modelNames = Array.from(
         new Set(
-          models
-            .map((model: OllamaModelTag) => (typeof model?.name === "string" ? model.name.trim() : ""))
+          modelsResponse.models
+            .map((model) => (typeof model?.name === "string" ? model.name.trim() : ""))
             .filter((name): name is string => Boolean(name)),
         ),
       ).sort((a, b) => a.localeCompare(b));
@@ -378,7 +394,9 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         ...prev,
         availableSummaryModels: options,
         summaryModel: selectedModel,
-        summaryModelSource: summarizerSettings.source,
+        summaryModelSource: summarizerSettings.model_source,
+        summaryTemperature: summarizerSettings.temperature,
+        summaryTemperatureSource: summarizerSettings.temperature_source,
         isLoadingSummaryModels: false,
         summaryModelError: null,
       }));
@@ -653,7 +671,9 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         return {
           ...prev,
           summaryModel: updated.model,
-          summaryModelSource: updated.source,
+          summaryModelSource: updated.model_source,
+          summaryTemperature: updated.temperature,
+          summaryTemperatureSource: updated.temperature_source,
           availableSummaryModels: options,
           isUpdatingSummaryModel: false,
           summaryModelError: null,
@@ -678,6 +698,50 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         description: message,
         variant: "destructive",
         duration: 7000,
+      });
+    }
+  };
+
+  const handleTemperatureChange = async (newTemperature: number) => {
+    if (state.isUpdatingSummaryTemperature) {
+      return;
+    }
+
+    const previousTemperature = state.summaryTemperature;
+    setState(prev => ({
+      ...prev,
+      summaryTemperature: newTemperature,
+      isUpdatingSummaryTemperature: true,
+    }));
+
+    try {
+      const updated = await updateSummarizerSettings({ temperature: newTemperature });
+      setState(prev => ({
+        ...prev,
+        summaryTemperature: updated.temperature,
+        summaryTemperatureSource: updated.temperature_source,
+        isUpdatingSummaryTemperature: false,
+      }));
+
+      const tempLabel = getTemperatureLabel(newTemperature);
+      toast({
+        title: "Temperature updated",
+        description: `Summarizer temperature set to ${newTemperature.toFixed(1)} (${tempLabel})`,
+        variant: "default",
+        duration: 3000,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to update temperature";
+      setState(prev => ({
+        ...prev,
+        summaryTemperature: previousTemperature,
+        isUpdatingSummaryTemperature: false,
+      }));
+      toast({
+        title: "Update failed",
+        description: message,
+        variant: "destructive",
+        duration: 5000,
       });
     }
   };
@@ -956,7 +1020,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
                 <span>🧠 Summarizer Settings</span>
               </CardTitle>
               <p className="text-sm text-muted-foreground">
-                Choose which Ollama model powers automated chat summaries.
+                Configure the Ollama model and temperature for automated chat summaries.
               </p>
             </div>
             <Button
@@ -1030,6 +1094,61 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
                   The configured model was not found on the Ollama server. Select another option before running summaries.
                 </p>
               )}
+
+              {/* Temperature Slider */}
+              <div className="space-y-3 pt-4 border-t">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="summarizer-temperature" className="font-medium">
+                      Temperature
+                    </Label>
+                    <div className="text-xs text-muted-foreground">
+                      {getTemperatureLabel(state.summaryTemperature)} — {state.summaryTemperature.toFixed(1)}
+                    </div>
+                  </div>
+                  {state.summaryTemperatureSource && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                      {state.summaryTemperatureSource}
+                    </span>
+                  )}
+                </div>
+                <input
+                  id="summarizer-temperature"
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  value={state.summaryTemperature}
+                  onChange={(e) => {
+                    const newValue = parseFloat(e.target.value);
+                    setState(prev => ({ ...prev, summaryTemperature: newValue }));
+                  }}
+                  onMouseUp={(e) => {
+                    const target = e.target as HTMLInputElement;
+                    handleTemperatureChange(parseFloat(target.value));
+                  }}
+                  onTouchEnd={(e) => {
+                    const target = e.target as HTMLInputElement;
+                    handleTemperatureChange(parseFloat(target.value));
+                  }}
+                  disabled={state.isLoadingSummaryModels || state.isUpdatingSummaryTemperature}
+                  className={cn(
+                    "w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer",
+                    "[&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary",
+                    "[&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-0",
+                    state.isUpdatingSummaryTemperature ? "opacity-50" : ""
+                  )}
+                />
+                <div className="flex justify-between text-xs text-muted-foreground px-1">
+                  <span>Strict (0.0)</span>
+                  <span>Balanced (0.5)</span>
+                  <span>Experimental (1.5)</span>
+                  <span>Max (2.0)</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Controls creativity vs. consistency in generated summaries. Lower values follow instructions more closely, higher values are more creative.
+                </p>
+              </div>
             </div>
           )}
         </CardContent>

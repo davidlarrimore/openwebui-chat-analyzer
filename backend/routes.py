@@ -930,7 +930,24 @@ def update_admin_summarizer_settings(
 ) -> SummarizerSettings:
     """Persist summarizer configuration updates."""
     try:
-        settings = service.update_summarizer_settings(model=payload.model)
+        settings = service.update_summarizer_settings(model=payload.model, temperature=payload.temperature)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SummarizerSettings(**settings)
+
+
+@router.get(
+    "/admin/ollama/models",
+    tags=["admin"],
+)
+def get_available_ollama_models(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+) -> Dict[str, Any]:
+    """Return a list of available Ollama models."""
+    from .clients import get_ollama_client
+    try:
+        client = get_ollama_client()
+        models = client.list_models()
+        return {"models": models}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Ollama models: {str(exc)}") from exc

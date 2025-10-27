@@ -172,11 +172,14 @@ export async function updateOpenWebUISettings(
 
 export interface SummarizerSettingsResponse {
   model: string;
-  source: "database" | "environment" | "default";
+  temperature: number;
+  model_source: "database" | "environment" | "default";
+  temperature_source: "database" | "environment" | "default";
 }
 
 export interface SummarizerSettingsUpdate {
-  model: string;
+  model?: string;
+  temperature?: number;
 }
 
 export async function getSummarizerSettings(): Promise<SummarizerSettingsResponse> {
@@ -187,6 +190,26 @@ export async function updateSummarizerSettings(
   payload: SummarizerSettingsUpdate
 ): Promise<SummarizerSettingsResponse> {
   return apiPut<SummarizerSettingsResponse>("api/v1/admin/settings/summarizer", payload);
+}
+
+export interface OllamaModel {
+  name: string;
+  model: string;
+  modified_at: string;
+  size: number;
+  digest: string;
+  details?: {
+    parameter_size?: string;
+    quantization_level?: string;
+  };
+}
+
+export interface OllamaModelsResponse {
+  models: OllamaModel[];
+}
+
+export async function getAvailableOllamaModels(): Promise<OllamaModelsResponse> {
+  return apiGet<OllamaModelsResponse>("api/v1/admin/ollama/models");
 }
 
 // ============================================================================

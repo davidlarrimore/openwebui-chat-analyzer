@@ -25,10 +25,11 @@ from .config import (
 
 
 # ---------------------------------------------------------------------------
-# Runtime-configurable Ollama model settings
+# Runtime-configurable Ollama model and temperature settings
 # ---------------------------------------------------------------------------
 _SUMMARY_MODEL = (OLLAMA_SUMMARY_MODEL or "").strip()
 _SUMMARY_FALLBACK_MODEL = (OLLAMA_SUMMARY_FALLBACK_MODEL or "").strip()
+_SUMMARY_TEMPERATURE = OLLAMA_DEFAULT_TEMPERATURE
 
 
 def get_summary_model() -> str:
@@ -45,6 +46,11 @@ def get_summary_fallback_model() -> str:
     return fallback
 
 
+def get_summary_temperature() -> float:
+    """Return the active temperature used for summarization."""
+    return _SUMMARY_TEMPERATURE
+
+
 def set_summary_model(model: Optional[str]) -> None:
     """Set the primary Ollama model used for summarization at runtime."""
     global _SUMMARY_MODEL  # noqa: PLW0603 - module-level cache is intentional
@@ -57,6 +63,12 @@ def set_summary_fallback_model(model: Optional[str]) -> None:
     global _SUMMARY_FALLBACK_MODEL  # noqa: PLW0603 - module-level cache is intentional
     normalized = (model or "").strip()
     _SUMMARY_FALLBACK_MODEL = normalized
+
+
+def set_summary_temperature(temperature: float) -> None:
+    """Set the temperature used for summarization at runtime."""
+    global _SUMMARY_TEMPERATURE  # noqa: PLW0603 - module-level cache is intentional
+    _SUMMARY_TEMPERATURE = temperature
 
 
 @dataclass
@@ -582,7 +594,7 @@ def _headline_with_ollama(context: str, *, model: Optional[str] = None) -> Conve
         len(context),
     )
     options = {
-        "temperature": OLLAMA_DEFAULT_TEMPERATURE,
+        "temperature": get_summary_temperature(),
         "num_predict": 64,  # Increased for JSON response
         "num_ctx": 1024,
     }

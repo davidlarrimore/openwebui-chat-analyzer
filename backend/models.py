@@ -520,19 +520,33 @@ class SummarizerSettings(BaseModel):
         ...,
         description="Effective Ollama model identifier used for summarization tasks.",
     )
-    source: Literal["database", "environment", "default"] = Field(
+    temperature: float = Field(
+        ...,
+        description="Temperature parameter for LLM generation (0.0-2.0).",
+    )
+    model_source: Literal["database", "environment", "default"] = Field(
         ...,
         description="Origin for the summarizer model (database override, environment variable, or default).",
+    )
+    temperature_source: Literal["database", "environment", "default"] = Field(
+        ...,
+        description="Origin for the temperature setting (database override, environment variable, or default).",
     )
 
 
 class SummarizerSettingsUpdate(BaseModel):
     """Payload allowing admins to update summarizer defaults."""
 
-    model: str = Field(
-        ...,
+    model: Optional[str] = Field(
+        default=None,
         description="New Ollama model identifier to use for summarization tasks.",
         min_length=1,
+    )
+    temperature: Optional[float] = Field(
+        default=None,
+        description="Temperature parameter for LLM generation (0.0-2.0).",
+        ge=0.0,
+        le=2.0,
     )
 
 
