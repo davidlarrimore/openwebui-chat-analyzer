@@ -110,6 +110,7 @@ class OpenWebUIUser(TimestampMixin, Base):
     name = Column(String(255), nullable=False)
     email = Column(String(320), nullable=True)
     role = Column(String(64), nullable=True)
+    pseudonym = Column(String(255), nullable=True)
 
 
 class ModelRecord(TimestampMixin, Base):

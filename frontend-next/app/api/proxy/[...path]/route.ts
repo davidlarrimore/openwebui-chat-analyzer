@@ -13,8 +13,8 @@ async function handler(request: NextRequest, context: { params: { path?: string[
 
   const { BACKEND_BASE_URL } = getServerConfig();
   const url = new URL(`${BACKEND_BASE_URL.replace(/\/$/, "")}/${targetPath}`);
-  const searchParams = request.nextUrl.searchParams;
-  searchParams.forEach((value, key) => url.searchParams.set(key, value));
+  const incomingParams = request.nextUrl?.searchParams ?? new URL(request.url).searchParams;
+  incomingParams.forEach((value, key) => url.searchParams.set(key, value));
 
   const session = await getServerAuthSession();
 

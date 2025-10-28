@@ -149,6 +149,15 @@ export interface OpenWebUISettingsUpdate {
   api_key?: string;
 }
 
+export interface AnonymizationSettingsResponse {
+  enabled: boolean;
+  source: "database" | "environment" | "default";
+}
+
+export interface AnonymizationSettingsUpdate {
+  enabled: boolean;
+}
+
 /**
  * Fetch current OpenWebUI Direct Connect settings
  */
@@ -164,6 +173,21 @@ export async function updateOpenWebUISettings(
   settings: OpenWebUISettingsUpdate
 ): Promise<OpenWebUISettingsResponse> {
   return apiPut<OpenWebUISettingsResponse>("api/v1/admin/settings/direct-connect", settings);
+}
+
+
+// ============================================================================
+// Anonymization Settings API
+// ============================================================================
+
+export async function getAnonymizationSettings(): Promise<AnonymizationSettingsResponse> {
+  return apiGet<AnonymizationSettingsResponse>("api/v1/admin/settings/anonymization");
+}
+
+export async function updateAnonymizationSettings(
+  payload: AnonymizationSettingsUpdate
+): Promise<AnonymizationSettingsResponse> {
+  return apiPut<AnonymizationSettingsResponse>("api/v1/admin/settings/anonymization", payload);
 }
 
 // ============================================================================

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+import sys
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -26,7 +27,10 @@ from .db_models import (
 LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+_DATACLASS_KWARGS: Dict[str, Any] = {"slots": True} if sys.version_info >= (3, 10) else {}
+
+
+@dataclass(**_DATACLASS_KWARGS)
 class DatabaseState:
     """Container for hydrated database records."""
 
@@ -39,7 +43,7 @@ class DatabaseState:
     settings: Dict[str, Any]
 
 
-@dataclass(slots=True)
+@dataclass(**_DATACLASS_KWARGS)
 class AccessTokenState:
     """Metadata representing a stored access token."""
 
@@ -123,6 +127,7 @@ class DatabaseStorage:
             "name": record.name,
             "email": record.email,
             "role": record.role,
+            "pseudonym": record.pseudonym,
         }
 
     @staticmethod
@@ -315,6 +320,7 @@ class DatabaseStorage:
             name=str(payload.get("name") or ""),
             email=payload.get("email"),
             role=payload.get("role"),
+            pseudonym=payload.get("pseudonym"),
         )
 
     @staticmethod
@@ -373,6 +379,19 @@ class DatabaseStorage:
             LOGGER.info("Persisting %d user records", len(user_records))
             if user_records:
                 session.bulk_save_objects(user_records)
+
+    def update_user_pseudonyms(self, assignments: Dict[str, str]) -> None:
+        """Persist pseudonym updates for a subset of users."""
+        if not assignments:
+            return
+        with session_scope() as session:
+            for user_id, alias in assignments.items():
+                session.execute(
+                    update(OpenWebUIUser)
+                    .where(OpenWebUIUser.user_id == user_id)
+                    .values(pseudonym=alias)
+                )
+        LOGGER.info("Updated pseudonyms for %d users", len(assignments))
 
     def replace_models(self, models: Iterable[Dict[str, Any]]) -> None:
         with session_scope() as session:

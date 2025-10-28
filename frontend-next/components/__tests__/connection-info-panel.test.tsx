@@ -11,7 +11,8 @@
  * - Scheduler drawer functionality
  */
 
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import React from "react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { ConnectionInfoPanel } from "../connection-info-panel";
 import * as api from "@/lib/api";
 
@@ -23,6 +24,36 @@ const mockedApi = api as jest.Mocked<typeof api>;
 jest.mock("@/components/ui/use-toast", () => ({
   toast: jest.fn(),
 }));
+
+jest.mock("@/components/log-viewer", () => ({
+  LogViewer: () => <div data-testid="log-viewer" />,
+}));
+jest.mock("@/components/summarizer-progress-provider", () => ({
+  useSummarizerProgress: () => ({ updateStatus: jest.fn() }),
+  SummarizerProgressProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+const flushPromises = () => new Promise(resolve => setTimeout(resolve, 0));
+
+async function renderConnectionInfoPanel(props?: React.ComponentProps<typeof ConnectionInfoPanel>) {
+  const utils = render(<ConnectionInfoPanel {...props} />);
+  for (let i = 0; i < 3; i += 1) {
+    await act(async () => {
+      await flushPromises();
+    });
+  }
+  return utils;
+}
+
+const defaultInitialSettings = {
+  host: "http://test.com",
+  api_key: "test-key",
+  database_host: "http://test.com",
+  database_api_key: "test-key",
+  host_source: "database" as const,
+  api_key_source: "database" as const,
+};
+
 
 describe("ConnectionInfoPanel", () => {
   beforeEach(() => {
@@ -50,242 +81,231 @@ describe("ConnectionInfoPanel", () => {
       last_run_at: null,
       next_run_at: null,
     });
+
+    mockedApi.getAnonymizationSettings.mockResolvedValue({ enabled: true, source: "database" });
+    mockedApi.updateAnonymizationSettings.mockResolvedValue({ enabled: true, source: "database" });
+    mockedApi.getOpenWebUISettings.mockResolvedValue(defaultInitialSettings);
+    mockedApi.updateOpenWebUISettings.mockResolvedValue(defaultInitialSettings);
+    mockedApi.apiGet.mockImplementation(async (path: string) => {
+      if (path === "api/v1/datasets/meta") {
+        return { chat_count: 0, user_count: 0, model_count: 0, message_count: 0 };
+      }
+      return {} as never;
+    });
+    mockedApi.getSummaryStatus.mockResolvedValue(null);
+    mockedApi.getSummaryEvents.mockResolvedValue({ events: [], reset: false });
+    mockedApi.getSummarizerSettings.mockResolvedValue({
+      model: "llama3.2:3b-instruct-q4_K_M",
+      temperature: 0.2,
+      model_source: "database",
+      temperature_source: "database",
+    });
+    mockedApi.getAvailableOllamaModels.mockResolvedValue([]);
   });
 
-  describe("Edit Mode", () => {
-    it("should have fields disabled by default", async () => {
-      const initialSettings = {
-        host: "http://test.com",
-        api_key: "test-key",
-        database_host: "http://test.com",
-        database_api_key: "test-key",
-        host_source: "database" as const,
-        api_key_source: "database" as const,
-      };
+describe("Edit Mode", () => {
+  it("should have fields disabled by default", async () => {
+    await renderConnectionInfoPanel({ initialSettings: defaultInitialSettings });
 
-      render(<ConnectionInfoPanel initialSettings={initialSettings} />);
+    const hostnameInput = await screen.findByLabelText(/hostname/i);
+    const apiKeyInput = screen.getByLabelText(/api key/i);
 
-      await waitFor(() => {
-        const hostnameInput = screen.getByLabelText(/hostname/i);
-        const apiKeyInput = screen.getByLabelText(/api key/i);
+    expect(hostnameInput).toBeDisabled();
+    expect(apiKeyInput).toBeDisabled();
+  });
 
-        expect(hostnameInput).toBeDisabled();
-        expect(apiKeyInput).toBeDisabled();
-      });
+  it("should enable fields when Edit Credentials is clicked", async () => {
+    await renderConnectionInfoPanel({ initialSettings: defaultInitialSettings });
+
+    const editButton = await screen.findByRole("button", { name: /edit credentials/i });
+    fireEvent.click(editButton);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/hostname/i)).not.toBeDisabled();
+      expect(screen.getByLabelText(/api key/i)).not.toBeDisabled();
+    });
+  });
+
+  it("should show Save Changes and Cancel buttons in edit mode", async () => {
+    await renderConnectionInfoPanel({ initialSettings: defaultInitialSettings });
+
+    expect(screen.queryByRole("button", { name: /save changes/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/^cancel$/i)).not.toBeInTheDocument();
+
+    const editButton = await screen.findByRole("button", { name: /edit credentials/i });
+    fireEvent.click(editButton);
+
+    expect(await screen.findByRole("button", { name: /save changes/i })).toBeInTheDocument();
+    expect(screen.getByText(/^cancel$/i)).toBeInTheDocument();
+  });
+
+  it("should call API and exit edit mode when Save Changes is clicked", async () => {
+    mockedApi.updateOpenWebUISettings.mockResolvedValue({
+      host: "http://new-host.com",
+      api_key: "new-key",
+      database_host: "http://new-host.com",
+      database_api_key: "new-key",
+      host_source: "database",
+      api_key_source: "database",
     });
 
-    it("should enable fields when Edit Data Source is clicked", async () => {
-      const initialSettings = {
-        host: "http://test.com",
-        api_key: "test-key",
-        database_host: "http://test.com",
-        database_api_key: "test-key",
-        host_source: "database" as const,
-        api_key_source: "database" as const,
-      };
+    await renderConnectionInfoPanel({ initialSettings: defaultInitialSettings });
 
-      render(<ConnectionInfoPanel initialSettings={initialSettings} />);
+    fireEvent.click(await screen.findByRole("button", { name: /edit credentials/i }));
 
-      await waitFor(() => screen.getByText(/edit data source/i));
+    const hostnameInput = await screen.findByLabelText(/hostname/i);
+    fireEvent.change(hostnameInput, { target: { value: "http://new-host.com" } });
 
-      const editButton = screen.getByText(/edit data source/i);
-      fireEvent.click(editButton);
+    const saveButton = screen.getByRole("button", { name: /save changes/i });
+    fireEvent.click(saveButton);
 
-      await waitFor(() => {
-        const hostnameInput = screen.getByLabelText(/hostname/i);
-        const apiKeyInput = screen.getByLabelText(/api key/i);
-
-        expect(hostnameInput).not.toBeDisabled();
-        expect(apiKeyInput).not.toBeDisabled();
-      });
-    });
-
-    it("should show Save and Cancel buttons in edit mode", async () => {
-      const initialSettings = {
-        host: "http://test.com",
-        api_key: "test-key",
-        database_host: "http://test.com",
-        database_api_key: "test-key",
-        host_source: "database" as const,
-        api_key_source: "database" as const,
-      };
-
-      render(<ConnectionInfoPanel initialSettings={initialSettings} />);
-
-      // Initially, Save/Cancel should not be visible
-      expect(screen.queryByText(/^save settings$/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/^cancel$/i)).not.toBeInTheDocument();
-
-      // Click Edit Data Source
-      const editButton = screen.getByText(/edit data source/i);
-      fireEvent.click(editButton);
-
-      // Now Save/Cancel should be visible
-      await waitFor(() => {
-        expect(screen.getByText(/^save settings$/i)).toBeInTheDocument();
-        expect(screen.getByText(/^cancel$/i)).toBeInTheDocument();
-      });
-    });
-
-    it("should call API and exit edit mode when Save is clicked", async () => {
-      mockedApi.updateOpenWebUISettings.mockResolvedValue({
+    await waitFor(() => {
+      expect(mockedApi.updateOpenWebUISettings).toHaveBeenCalledWith({
         host: "http://new-host.com",
-        api_key: "new-key",
-        database_host: "http://new-host.com",
-        database_api_key: "new-key",
-        host_source: "database",
-        api_key_source: "database",
-      });
-
-      const initialSettings = {
-        host: "http://test.com",
-        api_key: "test-key",
-        database_host: "http://test.com",
-        database_api_key: "test-key",
-        host_source: "database" as const,
-        api_key_source: "database" as const,
-      };
-
-      render(<ConnectionInfoPanel initialSettings={initialSettings} />);
-
-      // Enter edit mode
-      const editButton = screen.getByText(/edit data source/i);
-      fireEvent.click(editButton);
-
-      await waitFor(() => screen.getByLabelText(/hostname/i));
-
-      // Change hostname
-      const hostnameInput = screen.getByLabelText(/hostname/i);
-      fireEvent.change(hostnameInput, { target: { value: "http://new-host.com" } });
-
-      // Click Save
-      const saveButton = screen.getByText(/^save settings$/i);
-      fireEvent.click(saveButton);
-
-      await waitFor(() => {
-        expect(mockedApi.updateOpenWebUISettings).toHaveBeenCalledWith({
-          host: "http://new-host.com",
-        });
-      });
-
-      // Should exit edit mode (Save/Cancel buttons disappear)
-      await waitFor(() => {
-        expect(screen.queryByText(/^save settings$/i)).not.toBeInTheDocument();
       });
     });
 
-    it("should revert changes when Cancel is clicked", async () => {
-      const initialSettings = {
-        host: "http://test.com",
-        api_key: "test-key",
-        database_host: "http://test.com",
-        database_api_key: "test-key",
-        host_source: "database" as const,
-        api_key_source: "database" as const,
-      };
-
-      render(<ConnectionInfoPanel initialSettings={initialSettings} />);
-
-      // Enter edit mode
-      const editButton = screen.getByText(/edit data source/i);
-      fireEvent.click(editButton);
-
-      await waitFor(() => screen.getByLabelText(/hostname/i));
-
-      // Change hostname
-      const hostnameInput = screen.getByLabelText(/hostname/i) as HTMLInputElement;
-      fireEvent.change(hostnameInput, { target: { value: "http://changed.com" } });
-      expect(hostnameInput.value).toBe("http://changed.com");
-
-      // Click Cancel
-      const cancelButton = screen.getByText(/^cancel$/i);
-      fireEvent.click(cancelButton);
-
-      // Value should revert
-      await waitFor(() => {
-        expect(hostnameInput.value).toBe("http://test.com");
-      });
-
-      // Should exit edit mode
-      expect(screen.queryByText(/^cancel$/i)).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /save changes/i })).not.toBeInTheDocument();
     });
   });
 
-  describe("Sync Status Display", () => {
-    it("should display Last Sync timestamp", async () => {
-      render(<ConnectionInfoPanel />);
+  it("should revert form values when Cancel is clicked", async () => {
+    await renderConnectionInfoPanel({ initialSettings: defaultInitialSettings });
 
-      await waitFor(() => {
-        expect(screen.getByText(/last sync:/i)).toBeInTheDocument();
-      });
+    fireEvent.click(await screen.findByRole("button", { name: /edit credentials/i }));
+
+    const hostnameInput = (await screen.findByLabelText(/hostname/i)) as HTMLInputElement;
+    fireEvent.change(hostnameInput, { target: { value: "http://changed.com" } });
+    expect(hostnameInput.value).toBe("http://changed.com");
+
+    fireEvent.click(screen.getByText(/^cancel$/i));
+
+    await waitFor(() => {
+      expect(hostnameInput.value).toBe("http://test.com");
     });
 
-    it("should display staleness pill when data is fresh", async () => {
-      mockedApi.getSyncStatus.mockResolvedValue({
-        last_sync_at: "2024-01-01T12:00:00Z",
-        last_watermark: "2024-01-01T12:00:00Z",
-        has_data: true,
-        recommended_mode: "incremental",
-        is_stale: false,
-        staleness_threshold_hours: 6,
-        local_counts: { chats: 100, messages: 500, users: 10, models: 5 },
-      });
+    expect(screen.queryByText(/^cancel$/i)).not.toBeInTheDocument();
+  });
+});
 
-      render(<ConnectionInfoPanel />);
+describe("Sync Status Display", () => {
+  it("should display Last Sync timestamp", async () => {
+    await renderConnectionInfoPanel();
 
-      await waitFor(() => {
-        expect(screen.getByText(/up to date/i)).toBeInTheDocument();
-      });
+    expect(await screen.findByText(/last sync/i)).toBeInTheDocument();
+    expect(screen.getByText(/current/i)).toBeInTheDocument();
+  });
+
+  it("should display Current pill when data is fresh", async () => {
+    mockedApi.getSyncStatus.mockResolvedValue({
+      last_sync_at: "2024-01-01T12:00:00Z",
+      last_watermark: "2024-01-01T12:00:00Z",
+      has_data: true,
+      recommended_mode: "incremental",
+      is_stale: false,
+      staleness_threshold_hours: 6,
+      local_counts: { chats: 100, messages: 500, users: 10, models: 5 },
     });
 
-    it("should display Stale pill when data is stale", async () => {
-      mockedApi.getSyncStatus.mockResolvedValue({
-        last_sync_at: "2024-01-01T00:00:00Z",
-        last_watermark: "2024-01-01T00:00:00Z",
-        has_data: true,
-        recommended_mode: "incremental",
-        is_stale: true,
-        staleness_threshold_hours: 6,
-        local_counts: { chats: 100, messages: 500, users: 10, models: 5 },
-      });
+    await renderConnectionInfoPanel();
 
-      render(<ConnectionInfoPanel />);
+    expect(await screen.findByText(/current/i)).toBeInTheDocument();
+  });
 
-      await waitFor(() => {
-        expect(screen.getByText(/stale/i)).toBeInTheDocument();
-      });
+  it("should display Stale pill when data is stale", async () => {
+    mockedApi.getSyncStatus.mockResolvedValue({
+      last_sync_at: "2024-01-01T00:00:00Z",
+      last_watermark: "2024-01-01T00:00:00Z",
+      has_data: true,
+      recommended_mode: "incremental",
+      is_stale: true,
+      staleness_threshold_hours: 6,
+      local_counts: { chats: 100, messages: 500, users: 10, models: 5 },
     });
 
-    it("should display mode toggle with current mode", async () => {
-      render(<ConnectionInfoPanel />);
+    await renderConnectionInfoPanel();
 
-      await waitFor(() => {
-        expect(screen.getByText(/mode: incremental/i)).toBeInTheDocument();
-      });
+    expect(await screen.findByText(/stale/i)).toBeInTheDocument();
+  });
+
+  it("should render data source configuration section", async () => {
+    await renderConnectionInfoPanel();
+
+    expect(await screen.findByText(/data source configuration/i)).toBeInTheDocument();
+  });
+});
+
+describe("Anonymization Settings", () => {
+  it("should prompt before disabling anonymization", async () => {
+    await renderConnectionInfoPanel();
+
+    const toggle = await screen.findByRole("switch", { name: /anonymization mode/i });
+    fireEvent.click(toggle);
+
+    expect(await screen.findByRole("heading", { name: /turn off anonymization/i })).toBeInTheDocument();
+    expect(mockedApi.updateAnonymizationSettings).not.toHaveBeenCalled();
+
+    const confirmButton = screen.getByRole("button", { name: /yes, turn off anonymization/i });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => {
+      expect(mockedApi.updateAnonymizationSettings).toHaveBeenCalledWith({ enabled: false });
     });
   });
 
-  describe("Test Connection", () => {
-    it("should show success toast on successful connection", async () => {
-      const { toast } = require("@/components/ui/use-toast");
+  it("should allow cancelling the anonymization warning", async () => {
+    await renderConnectionInfoPanel();
 
-      mockedApi.testOpenWebUIConnection.mockResolvedValue({
-        service: "openwebui",
-        status: "ok",
-        attempts: 1,
-        elapsed_seconds: 0.5,
-        meta: {
-          version: "0.1.0",
-          chat_count: 50,
-        },
-      });
+    const toggle = await screen.findByRole("switch", { name: /anonymization mode/i });
+    fireEvent.click(toggle);
 
-      render(<ConnectionInfoPanel />);
+    const cancelButton = await screen.findByRole("button", { name: /keep anonymization on/i });
+    fireEvent.click(cancelButton);
 
-      await waitFor(() => screen.getByText(/test connection/i));
+    await waitFor(() => {
+      expect(screen.queryByText(/turn off anonymization/i)).not.toBeInTheDocument();
+    });
 
-      const testButton = screen.getByText(/test connection/i);
-      fireEvent.click(testButton);
+    expect(mockedApi.updateAnonymizationSettings).not.toHaveBeenCalled();
+  });
+
+  it("should enable anonymization immediately when toggled on", async () => {
+    mockedApi.getAnonymizationSettings.mockResolvedValueOnce({ enabled: false, source: "database" });
+    mockedApi.updateAnonymizationSettings.mockResolvedValue({ enabled: true, source: "database" });
+
+    await renderConnectionInfoPanel();
+
+    const toggle = await screen.findByRole("switch", { name: /anonymization mode/i });
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(mockedApi.updateAnonymizationSettings).toHaveBeenCalledWith({ enabled: true });
+    });
+
+    expect(screen.queryByText(/turn off anonymization/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("Test Connection", () => {
+  it("should show success toast on successful connection", async () => {
+    const { toast } = require("@/components/ui/use-toast");
+
+    mockedApi.testOpenWebUIConnection.mockResolvedValue({
+      service: "openwebui",
+      status: "ok",
+      attempts: 1,
+      elapsed_seconds: 0.5,
+      meta: {
+        version: "0.1.0",
+        chat_count: 50,
+      },
+    });
+
+    await renderConnectionInfoPanel();
+
+    const testButton = await screen.findByText(/test connection/i);
+    fireEvent.click(testButton);
 
       await waitFor(() => {
         expect(toast).toHaveBeenCalledWith(
@@ -308,11 +328,9 @@ describe("ConnectionInfoPanel", () => {
         detail: "Connection timeout",
       });
 
-      render(<ConnectionInfoPanel />);
+    await renderConnectionInfoPanel();
 
-      await waitFor(() => screen.getByText(/test connection/i));
-
-      const testButton = screen.getByText(/test connection/i);
+    const testButton = await screen.findByText(/test connection/i);
       fireEvent.click(testButton);
 
       await waitFor(() => {
@@ -334,20 +352,9 @@ describe("ConnectionInfoPanel", () => {
         stats: {},
       });
 
-      const initialSettings = {
-        host: "http://test.com",
-        api_key: "test-key",
-        database_host: "http://test.com",
-        database_api_key: "test-key",
-        host_source: "database" as const,
-        api_key_source: "database" as const,
-      };
+      await renderConnectionInfoPanel({ initialSettings: defaultInitialSettings });
 
-      render(<ConnectionInfoPanel initialSettings={initialSettings} />);
-
-      await waitFor(() => screen.getByText(/load data/i));
-
-      const loadButton = screen.getByText(/load data/i);
+      const loadButton = await screen.findByText(/sync data now/i);
       fireEvent.click(loadButton);
 
       await waitFor(() => {
@@ -364,15 +371,13 @@ describe("ConnectionInfoPanel", () => {
 
   describe("Scheduler Drawer", () => {
     it("should open scheduler drawer when Scheduler button is clicked", async () => {
-      render(<ConnectionInfoPanel />);
+      await renderConnectionInfoPanel();
 
-      await waitFor(() => screen.getByText(/^scheduler$/i));
-
-      const schedulerButton = screen.getByText(/^scheduler$/i);
+      const schedulerButton = await screen.findByText(/^scheduler$/i);
       fireEvent.click(schedulerButton);
 
       await waitFor(() => {
-        expect(screen.getByText(/scheduler settings/i)).toBeInTheDocument();
+        expect(screen.getByText(/automatic scheduling/i)).toBeInTheDocument();
       });
     });
 
@@ -384,13 +389,13 @@ describe("ConnectionInfoPanel", () => {
         next_run_at: null,
       });
 
-      render(<ConnectionInfoPanel />);
+      await renderConnectionInfoPanel();
 
       // Open drawer
-      const schedulerButton = screen.getByText(/^scheduler$/i);
+      const schedulerButton = await screen.findByText(/^scheduler$/i);
       fireEvent.click(schedulerButton);
 
-      await waitFor(() => screen.getByText(/enable scheduler/i));
+      await waitFor(() => screen.getByText(/automatic scheduling/i));
 
       // Click toggle
       const toggleButton = screen.getByText(/^off$/i);

@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import app
+from backend import summarizer
 from backend.clients.ollama import (
     OllamaChatResult,
     OllamaEmbedResult,
@@ -106,6 +107,15 @@ def dummy_ollama(monkeypatch: pytest.MonkeyPatch) -> DummyOllamaClient:
     monkeypatch.setattr("backend.summarizer.get_ollama_client", lambda: client)
     monkeypatch.setattr("backend.app.data_service.load_initial_data", lambda: None)
     return client
+
+
+@pytest.fixture(autouse=True)
+def reset_summary_defaults() -> None:
+    summarizer.set_summary_model("llama3.1")
+    summarizer.set_summary_fallback_model("phi3:mini")
+    yield
+    summarizer.set_summary_model("llama3.1")
+    summarizer.set_summary_fallback_model("phi3:mini")
 
 
 @pytest.fixture(scope="function")

@@ -13,6 +13,8 @@ from .models import (
     AuthUserPublic,
     AdminDirectConnectSettings,
     AdminDirectConnectSettingsUpdate,
+    AnonymizationSettings,
+    AnonymizationSettingsUpdate,
     SummarizerSettings,
     SummarizerSettingsUpdate,
     OpenWebUIHealthTestRequest,
@@ -225,8 +227,34 @@ def list_users(
     Returns:
         List[User]: Known user records keyed by exported identifiers.
     """
+    expose_real_names = service.should_expose_real_names()
     users = service.get_users()
-    return [User(**user) for user in users]
+    response: List[User] = []
+    for user in users:
+        user_id = str(user.get("user_id") or "").strip()
+        if not user_id:
+            continue
+        real_name_raw = user.get("name")
+        real_name = str(real_name_raw).strip() if isinstance(real_name_raw, str) else (
+            str(real_name_raw).strip() if real_name_raw not in (None, "") else ""
+        )
+        pseudonym_raw = user.get("pseudonym")
+        if isinstance(pseudonym_raw, str):
+            pseudonym = pseudonym_raw.strip()
+        elif pseudonym_raw in (None, ""):
+            pseudonym = ""
+        else:
+            pseudonym = str(pseudonym_raw).strip()
+        display_name = real_name if expose_real_names else (pseudonym or real_name)
+        response.append(
+            User(
+                user_id=user_id,
+                name=display_name or user_id,
+                pseudonym=pseudonym or None,
+                real_name=real_name or None,
+            )
+        )
+    return response
 
 
 @router.get("/models", response_model=List[ModelInfo])
@@ -902,6 +930,38 @@ def update_admin_direct_connect_settings(
         api_key=payload.api_key,
     )
     return AdminDirectConnectSettings(**settings)
+
+
+@router.get(
+    "/admin/settings/anonymization",
+    response_model=AnonymizationSettings,
+    tags=["admin"],
+)
+def get_admin_anonymization_settings(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> AnonymizationSettings:
+    """Return anonymization mode preferences for authenticated admins."""
+    settings = service.get_anonymization_settings()
+    return AnonymizationSettings(**settings)
+
+
+@router.put(
+    "/admin/settings/anonymization",
+    response_model=AnonymizationSettings,
+    tags=["admin"],
+)
+def update_admin_anonymization_settings(
+    payload: AnonymizationSettingsUpdate,
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> AnonymizationSettings:
+    """Update anonymization mode preferences stored in the database."""
+    try:
+        settings = service.update_anonymization_settings(enabled=payload.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AnonymizationSettings(**settings)
 
 
 @router.get(

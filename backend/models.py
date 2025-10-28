@@ -193,6 +193,14 @@ class User(BaseModel):
 
     user_id: str = Field(..., description="Unique user identifier")
     name: str = Field(..., description="Display name")
+    pseudonym: Optional[str] = Field(
+        default=None,
+        description="Stable pseudonym assigned for privacy-preserving displays",
+    )
+    real_name: Optional[str] = Field(
+        default=None,
+        description="Original name sourced from the Open WebUI export",
+    )
 
 
 class AppMetadata(BaseModel):
@@ -510,6 +518,28 @@ class AdminDirectConnectSettingsUpdate(BaseModel):
     api_key: Optional[str] = Field(
         default=None,
         description="New API key for Open WebUI Direct Connect; omit to keep existing value.",
+    )
+
+
+class AnonymizationSettings(BaseModel):
+    """Admin-configurable privacy toggle controlling pseudonym usage."""
+
+    enabled: bool = Field(
+        ...,
+        description="Whether anonymization mode is active (pseudonyms shown instead of real names).",
+    )
+    source: Literal["database", "environment", "default"] = Field(
+        ...,
+        description="Origin for the anonymization toggle (database override, environment, or default).",
+    )
+
+
+class AnonymizationSettingsUpdate(BaseModel):
+    """Payload allowing admins to update anonymization preferences."""
+
+    enabled: Optional[bool] = Field(
+        default=None,
+        description="Set anonymization mode enabled state; omit to keep existing value.",
     )
 
 

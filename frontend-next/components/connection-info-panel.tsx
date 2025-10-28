@@ -1,16 +1,20 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import { useSummarizerProgress } from "@/components/summarizer-progress-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
   apiGet,
   getOpenWebUISettings,
   updateOpenWebUISettings,
+  getAnonymizationSettings,
+  updateAnonymizationSettings,
   testOpenWebUIConnection,
   getSyncStatus,
   getSyncScheduler,
@@ -23,6 +27,7 @@ import {
   updateSummarizerSettings,
   getAvailableOllamaModels,
   type OpenWebUISettingsResponse,
+  type OpenWebUISettingsUpdate,
   type SyncStatusResponse,
   type SyncSchedulerConfig,
   type ProcessLogEvent,
@@ -187,10 +192,11 @@ interface ConnectionInfoPanelProps {
 }
 
 export function ConnectionInfoPanel({ className, initialSettings }: ConnectionInfoPanelProps) {
+  const router = useRouter();
   const [state, setState] = React.useState<ConnectionInfoState>({
     hostname: initialSettings?.host || "",
     apiKey: initialSettings?.api_key || "",
-    mode: "full",
+    mode: "incremental",
     lastSync: null,
     datasetLoaded: false,
     isStale: false,
@@ -224,6 +230,14 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
   const [originalValues, setOriginalValues] = React.useState({
     hostname: initialSettings?.host || "",
     apiKey: initialSettings?.api_key || "",
+  });
+
+  const [anonymization, setAnonymization] = React.useState({
+    enabled: true,
+    source: "default" as "default" | "database" | "environment",
+    isSaving: false,
+    error: null as string | null,
+    confirmOpen: false,
   });
 
   const [summaryLogs, setSummaryLogs] = React.useState<ProcessLogEvent[]>([]);
@@ -411,16 +425,59 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }
   }, []);
 
+  const fetchSettings = React.useCallback(async () => {
+    setState(prev => ({ ...prev, isLoading: true, error: null }));
+    try {
+      const settings = await getOpenWebUISettings();
+      setState(prev => ({
+        ...prev,
+        hostname: settings.host,
+        apiKey: settings.api_key,
+        hostSource: settings.host_source,
+        apiKeySource: settings.api_key_source,
+        isLoading: false,
+      }));
+      setOriginalValues({
+        hostname: settings.host,
+        apiKey: settings.api_key,
+      });
+    } catch (err) {
+      setState(prev => ({
+        ...prev,
+        isLoading: false,
+        error: err instanceof Error ? err.message : "Failed to fetch settings",
+      }));
+    }
+  }, []);
+
+  const fetchAnonymizationSettings = React.useCallback(async () => {
+    try {
+      const result = await getAnonymizationSettings();
+      setAnonymization(prev => ({
+        ...prev,
+        enabled: Boolean(result.enabled),
+        source: result.source,
+        error: null,
+      }));
+    } catch (err) {
+      setAnonymization(prev => ({
+        ...prev,
+        error: err instanceof Error ? err.message : "Failed to fetch anonymization settings",
+      }));
+    }
+  }, []);
+
   // Fetch settings, sync status, scheduler config, and dataset metadata on mount
   React.useEffect(() => {
     if (!initialSettings) {
       fetchSettings();
     }
+    fetchAnonymizationSettings();
     fetchSyncStatus();
     fetchSchedulerConfig();
     fetchDatasetMeta();
     fetchSummarizerConfig();
-  }, [initialSettings, fetchSummarizerConfig]);
+  }, [initialSettings, fetchSummarizerConfig, fetchAnonymizationSettings]);
 
   const fetchDatasetMeta = async () => {
     try {
@@ -474,35 +531,58 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }
   };
 
-  const fetchSettings = async () => {
-    setState(prev => ({ ...prev, isLoading: true, error: null }));
+  const applyAnonymizationUpdate = async (enabled: boolean) => {
+    setAnonymization(prev => ({ ...prev, isSaving: true, error: null, enabled }));
     try {
-      const settings = await getOpenWebUISettings();
-      setState(prev => ({
+      const result = await updateAnonymizationSettings({ enabled });
+      setAnonymization(prev => ({
         ...prev,
-        hostname: settings.host,
-        apiKey: settings.api_key,
-        hostSource: settings.host_source,
-        apiKeySource: settings.api_key_source,
-        isLoading: false,
+        enabled: Boolean(result.enabled),
+        source: result.source,
+        isSaving: false,
       }));
-      setOriginalValues({
-        hostname: settings.host,
-        apiKey: settings.api_key,
+
+      // Refresh all pages to show updated user names
+      toast({
+        title: "Anonymization Updated",
+        description: "Refreshing dashboard data...",
+        variant: "default",
+        duration: 3000,
       });
+      router.refresh();
     } catch (err) {
-      setState(prev => ({
+      setAnonymization(prev => ({
         ...prev,
-        isLoading: false,
-        error: err instanceof Error ? err.message : "Failed to fetch settings",
+        enabled: !enabled,
+        isSaving: false,
+        error: err instanceof Error ? err.message : "Failed to update anonymization settings",
       }));
     }
+  };
+
+  const handleAnonymizationToggle = (nextValue: boolean) => {
+    if (!nextValue) {
+      setAnonymization(prev => ({ ...prev, confirmOpen: true }));
+      return;
+    }
+    if (!anonymization.enabled) {
+      void applyAnonymizationUpdate(true);
+    }
+  };
+
+  const confirmDisableAnonymization = () => {
+    setAnonymization(prev => ({ ...prev, confirmOpen: false }));
+    void applyAnonymizationUpdate(false);
+  };
+
+  const cancelDisableAnonymization = () => {
+    setAnonymization(prev => ({ ...prev, confirmOpen: false }));
   };
 
   const handleSaveSettings = async () => {
     setState(prev => ({ ...prev, isSaving: true, error: null }));
     try {
-      const updates: { host?: string; api_key?: string } = {};
+      const updates: OpenWebUISettingsUpdate = {};
 
       // Only send values that changed
       if (state.hostname !== originalValues.hostname) {
@@ -511,7 +591,6 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       if (state.apiKey !== originalValues.apiKey) {
         updates.api_key = state.apiKey;
       }
-
       if (Object.keys(updates).length > 0) {
         const updatedSettings = await updateOpenWebUISettings(updates);
         setState(prev => ({
@@ -556,7 +635,9 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     !state.isLoadingSummaryModels &&
     !state.availableSummaryModels.includes(state.summaryModel);
 
-  const hasChanges = state.hostname !== originalValues.hostname || state.apiKey !== originalValues.apiKey;
+  const hasChanges =
+    state.hostname !== originalValues.hostname ||
+    state.apiKey !== originalValues.apiKey;
 
   const handleTestConnection = async () => {
     setState(prev => ({ ...prev, isTesting: true }));
@@ -1316,6 +1397,52 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         </div>
       )}
 
+      {/* Anonymization Settings */}
+      <Card>
+        <CardHeader className="flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg">🛡️ Anonymization Settings</CardTitle>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+              {anonymization.source}
+            </span>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Control whether the dashboard displays privacy-preserving pseudonyms (recommended) or real user names pulled from Open WebUI exports.
+          </p>
+        </CardHeader>
+        <CardContent>
+          {anonymization.error && (
+            <div className="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive flex items-center gap-2">
+              <span>⚠️</span>
+              <span>{anonymization.error}</span>
+            </div>
+          )}
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between rounded-md border border-dashed p-4">
+            <div className="space-y-2 max-w-xl">
+              <p className="text-sm font-medium">Anonymization mode</p>
+              <p className="text-xs text-muted-foreground">
+                When enabled, the API returns persistent pseudonyms for every user. Disabling this exposes the actual names contained in your dataset.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">
+                {anonymization.enabled ? "On" : "Off"}
+              </span>
+              <Switch
+                id="anonymization-toggle"
+                checked={anonymization.enabled}
+                disabled={anonymization.isSaving}
+                onCheckedChange={handleAnonymizationToggle}
+                aria-label="Toggle anonymization mode"
+              />
+            </div>
+          </div>
+          {anonymization.isSaving && (
+            <p className="mt-2 text-xs text-muted-foreground">Saving anonymization preference…</p>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Data Source Configuration */}
       <Card>
         <CardHeader>
@@ -1404,6 +1531,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
                     </p>
                   )}
                 </div>
+
               </div>
 
               {/* Show Save/Cancel buttons only in edit mode */}
@@ -1443,6 +1571,29 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
           <LogViewer className="flex-1" pollInterval={2000} maxLogs={200} supplementalLogs={summaryLogs} />
         </CardContent>
       </Card>
+    {anonymization.confirmOpen && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur p-4">
+        <div className="w-full max-w-md rounded-lg border border-border bg-background shadow-lg overflow-hidden">
+          <div className="p-6 space-y-4">
+            <div className="space-y-2">
+              <h3 className="text-lg font-semibold">Turn off anonymization?</h3>
+              <p className="text-sm text-muted-foreground">
+                Disabling anonymization mode will expose real user names across the dashboard. Make sure you are comfortable sharing this information before proceeding.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button variant="outline" onClick={cancelDisableAnonymization} className="sm:w-auto w-full">
+                Keep Anonymization On
+              </Button>
+              <Button variant="destructive" onClick={confirmDisableAnonymization} className="sm:w-auto w-full">
+                Yes, Turn Off Anonymization
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
     </div>
   );
 }

@@ -119,6 +119,8 @@ def _run_migrations() -> None:
                 conn.execute(text("ALTER TABLE owui_users ADD COLUMN email VARCHAR(320)"))
             if "role" not in columns:
                 conn.execute(text("ALTER TABLE owui_users ADD COLUMN role VARCHAR(64)"))
+            if "pseudonym" not in columns:
+                conn.execute(text("ALTER TABLE owui_users ADD COLUMN pseudonym VARCHAR(255)"))
 
     # Migration 2: Strip encapsulating quotes from OpenWebUI Direct Connect settings
     if inspector.has_table("settings"):

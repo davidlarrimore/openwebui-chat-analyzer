@@ -14,6 +14,7 @@ Transform your Open WebUI chat history into actionable insights with this compre
 - **100% Local Processing** – All data stays on your machine
 - **No External Services** – Dashboard communicates only with your local backend
 - **Self-Hosted by Design** – Complete control over your conversation analytics
+- **Adaptive Alias System** – Stable pseudonyms are stored in the database with an optional real-name override
 
 ### 📊 **Comprehensive Analytics**
 - **📈 Time Analysis** – Daily trends, conversation patterns, hour-by-day heatmaps
@@ -134,6 +135,7 @@ scripts/setup.sh  # Interactive wizard for Docker or local setup
 - **Sync Settings** – Configure full vs incremental sync modes
 - **Automated Scheduler** – Set up periodic data refreshes
 - **Summarizer Settings** – Choose Ollama model for AI summaries
+- **Identity Privacy** – Toggle between pseudonyms and real names on user-facing charts
 - **Real-Time Logs** – Monitor sync and processing operations
 - **System Status** – View connection health and data freshness
 
@@ -156,6 +158,7 @@ OWUI_DATA_DIR=./data                           # Default export directory
 ```bash
 OWUI_DIRECT_HOST=http://localhost:3000         # Open WebUI base URL
 OWUI_DIRECT_API_KEY=                          # Optional prefill API key
+OWUI_EXPOSE_REAL_NAMES=false                  # Set true to expose real names by default
 ```
 
 #### AI & Summarization
@@ -186,6 +189,12 @@ GITHUB_OAUTH_ENABLED=false
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 ```
+
+### Identity Privacy
+
+- **Pseudonym Catalog** – `backend/data/pseudonyms.json` contains the canonical alias list used when ingesting users.
+- **Stable Assignments** – Pseudonyms are persisted in the database and refreshed automatically on every sync.
+- **Configurable Exposure** – Toggle between pseudonyms and real names from the ⚙️ Configuration page or set `OWUI_EXPOSE_REAL_NAMES=true` to default to real names.
 
 ---
 

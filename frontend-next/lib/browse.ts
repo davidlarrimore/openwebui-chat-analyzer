@@ -75,15 +75,15 @@ function pickSummary(record: UnknownRecord, meta: UnknownRecord): string {
     : [];
 
   const candidates: unknown[] = [
-    record.gen_chat_summary,
     record.summary_full,
     record.summary,
     record.summaryText,
     record.summary_text,
     record.full_summary,
+    ...metaSummary,
+    record.gen_chat_summary,
     record.summary_512,
     record.summary_256,
-    ...metaSummary,
     ...chatSummaryCandidates
   ];
 

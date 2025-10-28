@@ -40,6 +40,206 @@ DEFAULT_DIRECT_CONNECT_HOST = "http://localhost:4000"
 SUMMARY_EVENT_HISTORY_LIMIT = 500
 SUMMARIZER_MODEL_SETTING_KEY = "SUMMARIZER_PRIMARY_MODEL"
 SUMMARIZER_TEMPERATURE_SETTING_KEY = "SUMMARIZER_TEMPERATURE"
+ANONYMIZATION_MODE_SETTING_KEY = "ANONYMIZATION_MODE_ENABLED"
+PSEUDONYM_FILE = Path(__file__).with_name("data").joinpath("pseudonyms.json")
+
+_PSEUDONYM_CACHE: Optional[List[str]] = None
+_PSEUDONYM_CACHE_LOCK = RLock()
+_ROMAN_NUMERALS: Tuple[Tuple[int, str], ...] = (
+    (1000, "M"),
+    (900, "CM"),
+    (500, "D"),
+    (400, "CD"),
+    (100, "C"),
+    (90, "XC"),
+    (50, "L"),
+    (40, "XL"),
+    (10, "X"),
+    (9, "IX"),
+    (5, "V"),
+    (4, "IV"),
+    (1, "I"),
+)
+_ROMAN_VALUES = {numeral: value for value, numeral in (
+    (1, "I"),
+    (5, "V"),
+    (10, "X"),
+    (50, "L"),
+    (100, "C"),
+    (500, "D"),
+    (1000, "M"),
+)}
+
+
+def _load_pseudonym_pool() -> List[str]:
+    """Load the pseudonym pool from disk once and cache the result."""
+    global _PSEUDONYM_CACHE  # pylint: disable=global-statement
+    with _PSEUDONYM_CACHE_LOCK:
+        if _PSEUDONYM_CACHE is not None:
+            return list(_PSEUDONYM_CACHE)
+
+        try:
+            raw = PSEUDONYM_FILE.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except FileNotFoundError:
+            LOGGER.warning("Pseudonym resource %s not found; falling back to generated aliases", PSEUDONYM_FILE)
+            data = []
+        except json.JSONDecodeError:
+            LOGGER.exception("Failed to parse pseudonym resource %s; falling back to generated aliases", PSEUDONYM_FILE)
+            data = []
+
+        if not isinstance(data, list):
+            LOGGER.warning("Pseudonym resource %s is not a list; ignoring contents", PSEUDONYM_FILE)
+            data = []
+
+        pool: List[str] = []
+        for entry in data:
+            if isinstance(entry, str):
+                candidate = entry.strip()
+                if candidate:
+                    pool.append(candidate)
+        _PSEUDONYM_CACHE = pool
+        return list(pool)
+
+
+def _int_to_roman(value: int) -> str:
+    """Convert an integer into an uppercase Roman numeral string."""
+    if value <= 0:
+        raise ValueError("Roman numerals require a positive integer.")
+    remainder = value
+    parts: List[str] = []
+    for integer, numeral in _ROMAN_NUMERALS:
+        while remainder >= integer:
+            parts.append(numeral)
+            remainder -= integer
+        if remainder == 0:
+            break
+    return "".join(parts)
+
+
+def _roman_to_int(value: str) -> int:
+    """Parse a Roman numeral string into an integer."""
+    if not value:
+        raise ValueError("Empty string is not a valid Roman numeral.")
+    candidate = value.upper()
+    total = 0
+    prev_value = 0
+    for char in reversed(candidate):
+        current = _ROMAN_VALUES.get(char)
+        if current is None:
+            raise ValueError(f"Invalid Roman numeral character: {char}")
+        if current < prev_value:
+            total -= current
+        else:
+            total += current
+            prev_value = current
+    # Ensure the numeral was already in canonical form by round-tripping.
+    if _int_to_roman(total) != candidate:
+        raise ValueError(f"Non-canonical Roman numeral: {value}")
+    return total
+
+
+def _split_pseudonym(alias: str) -> Tuple[str, int]:
+    """Split a pseudonym into its base name and ordinal (defaulting to 1)."""
+    candidate = (alias or "").strip()
+    if not candidate:
+        return "", 0
+    if " " not in candidate:
+        return candidate, 1
+    base, maybe_suffix = candidate.rsplit(" ", 1)
+    try:
+        ordinal = _roman_to_int(maybe_suffix)
+    except ValueError:
+        return candidate, 1
+    return base.strip(), max(ordinal, 1)
+
+
+def _build_pseudonym_assignments(
+    user_ids: Iterable[str],
+    existing: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Generate stable pseudonym assignments for a collection of user identifiers."""
+    pool = _load_pseudonym_pool()
+    existing_map = existing or {}
+
+    normalized_ids: List[str] = []
+    seen_ids: Set[str] = set()
+    for raw_id in user_ids:
+        candidate = str(raw_id or "").strip()
+        if candidate and candidate not in seen_ids:
+            normalized_ids.append(candidate)
+            seen_ids.add(candidate)
+
+    if not normalized_ids:
+        return {}
+
+    base_usage: Dict[str, int] = {}
+    assignments: Dict[str, str] = {}
+    available_bases: Deque[str] = deque(pool)
+
+    # Seed usage counters based on existing assignments that still apply.
+    for user_id in normalized_ids:
+        alias = str(existing_map.get(user_id) or "").strip()
+        if not alias:
+            continue
+        base, ordinal = _split_pseudonym(alias)
+        if not base:
+            continue
+        assignments[user_id] = alias
+        base_usage[base] = max(base_usage.get(base, 0), ordinal)
+        try:
+            available_bases.remove(base)
+        except ValueError:
+            pass
+
+    fallback_counter = 1
+    for user_id in normalized_ids:
+        if user_id in assignments:
+            continue
+
+        if pool:
+            if available_bases:
+                base = available_bases.popleft()
+                base_usage[base] = max(base_usage.get(base, 0), 1)
+                assignments[user_id] = base
+                continue
+
+            digest = hashlib.sha256(user_id.encode("utf-8")).digest()
+            start_index = int.from_bytes(digest[:4], byteorder="big", signed=False) % len(pool)
+            best_base = None
+            best_usage = None
+            for offset in range(len(pool)):
+                candidate_base = pool[(start_index + offset) % len(pool)]
+                usage = base_usage.get(candidate_base, 0)
+                if best_usage is None or usage < best_usage:
+                    best_base = candidate_base
+                    best_usage = usage
+                if best_usage == 0:
+                    break
+            base = best_base if best_base is not None else pool[start_index]
+            next_count = base_usage.get(base, 0) + 1
+            base_usage[base] = next_count
+            assignments[user_id] = base if next_count == 1 else f"{base} {_int_to_roman(next_count)}"
+        else:
+            assignments[user_id] = f"User {fallback_counter:03d}"
+            fallback_counter += 1
+
+    return assignments
+
+
+def _apply_pseudonyms_to_payload(
+    payload: List[Dict[str, Any]],
+    assignments: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """Attach pseudonyms to the provided user payload list."""
+    enriched: List[Dict[str, Any]] = []
+    for record in payload:
+        user_id = str(record.get("user_id") or "").strip()
+        alias = assignments.get(user_id)
+        clone = record.copy()
+        clone["pseudonym"] = alias if alias else None
+        enriched.append(clone)
+    return enriched
 
 
 def _strip_encapsulating_quotes(value: str) -> str:
@@ -914,6 +1114,7 @@ class DataService:
             raise
         self._hydrate_from_storage()
         self._ensure_direct_connect_defaults_seeded()
+        self._ensure_anonymization_default()
         self._load_scheduler_config()
         with self._lock:
             self._refresh_app_metadata(persist=True)
@@ -1022,6 +1223,7 @@ class DataService:
                 _set_chat_summary(chat, summary_value)
             self._messages = [message.copy() for message in state.messages]
             self._users = [user.copy() for user in state.users]
+            self._apply_pseudonyms_to_cached_users(persist_updates=True)
             self._models = [model.copy() for model in state.models]
 
             self._auth_users = {}
@@ -1088,6 +1290,45 @@ class DataService:
         self._log_dataset_summary("Dataset hydration complete")
         self._apply_summarizer_setting_from_state()
 
+    def _snapshot_pseudonym_map(self) -> Dict[str, str]:
+        """Capture the current pseudonym assignments for reuse when reloading data."""
+        with self._lock:
+            return {
+                str(user.get("user_id") or "").strip(): str(user.get("pseudonym") or "").strip()
+                for user in self._users
+                if str(user.get("user_id") or "").strip() and str(user.get("pseudonym") or "").strip()
+            }
+
+    def _apply_pseudonyms_to_cached_users(
+        self,
+        previous_map: Optional[Dict[str, str]] = None,
+        persist_updates: bool = False,
+    ) -> None:
+        """Ensure cached users have pseudonyms, optionally persisting new assignments."""
+        assignments = _build_pseudonym_assignments(
+            [user.get("user_id") for user in self._users],
+            existing=previous_map,
+        )
+        if not assignments:
+            return
+
+        dirty: Dict[str, str] = {}
+        for user in self._users:
+            user_id = str(user.get("user_id") or "").strip()
+            if not user_id:
+                continue
+            alias = assignments.get(user_id)
+            if alias is None:
+                continue
+            if user.get("pseudonym") != alias:
+                user["pseudonym"] = alias
+                dirty[user_id] = alias
+            else:
+                user["pseudonym"] = alias
+
+        if persist_updates and dirty:
+            self._storage.update_user_pseudonyms(dirty)
+
     def _ensure_direct_connect_defaults_seeded(self) -> None:
         """Ensure the settings table stores Direct Connect defaults."""
         env_host = os.getenv("OWUI_DIRECT_HOST", "").strip()
@@ -1117,6 +1358,18 @@ class DataService:
                 updates.get("OWUI_DIRECT_HOST"),
                 bool(updates.get("OWUI_DIRECT_API_KEY")),
             )
+
+    def _ensure_anonymization_default(self) -> None:
+        """Ensure anonymization setting has a default value."""
+        with self._lock:
+            existing = self._settings.get(ANONYMIZATION_MODE_SETTING_KEY)
+        if existing is None:
+            updates = {ANONYMIZATION_MODE_SETTING_KEY: True}
+            self._storage.write_settings(updates)
+            with self._lock:
+                self._settings.update(updates)
+            LOGGER.info("Seeded anonymization setting with default enabled state")
+
 
     def _apply_summarizer_setting_from_state(self) -> None:
         """Ensure the summarizer module reflects stored or environment defaults."""
@@ -1901,6 +2154,11 @@ class DataService:
         models_changed = False
 
         with self._lock:
+            previous_pseudonyms = {
+                str(user.get("user_id") or "").strip(): str(user.get("pseudonym") or "").strip()
+                for user in self._users
+                if str(user.get("user_id") or "").strip() and str(user.get("pseudonym") or "").strip()
+            }
             existing_chat_ids: Set[str] = set()
             existing_chats_index: Dict[str, int] = {}
             for idx, chat in enumerate(self._chats):
@@ -1975,6 +2233,8 @@ class DataService:
                 self._users.append({"user_id": user_id, "name": name})
                 existing_user_ids.add(user_id)
                 new_user_ids.append(user_id)
+
+            self._apply_pseudonyms_to_cached_users(previous_map=previous_pseudonyms)
 
             existing_models_index: Dict[str, int] = {}
             updated_models: List[Dict[str, Any]] = list(self._models)
@@ -2100,9 +2360,16 @@ class DataService:
     ) -> None:
         """Replace the current user metadata dataset."""
         users = _parse_users_csv(raw_bytes)
-        self._storage.replace_users(users)
+        previous_assignments = self._snapshot_pseudonym_map()
+        assignments = _build_pseudonym_assignments(
+            (user.get("user_id") for user in users),
+            existing=previous_assignments,
+        )
+        enriched_users = _apply_pseudonyms_to_payload(users, assignments)
+        self._storage.replace_users(enriched_users)
         with self._lock:
-            self._users = users
+            self._users = [user.copy() for user in enriched_users]
+            self._apply_pseudonyms_to_cached_users(previous_map=previous_assignments)
             self._source = source_label or "users upload"
             if bump_version:
                 self._bump_version()
@@ -2334,7 +2601,7 @@ class DataService:
                     normalized_models,
                 )
                 self._storage.replace_dataset(self._chats, self._messages)
-                self._storage.replace_users(self._users)
+                self._storage.replace_users([user.copy() for user in self._users])
                 self._storage.replace_models(self._models)
                 self._storage.record_ingest(
                     operation="openwebui_incremental",
@@ -2404,14 +2671,21 @@ class DataService:
 
             self._emit_log("info", "persist", "Performing full sync (different source or first sync)", job_id=job_id)
             self._storage.replace_dataset(chats, messages)
-            self._storage.replace_users(normalized_users)
+            previous_assignments = self._snapshot_pseudonym_map()
+            assignments = _build_pseudonym_assignments(
+                (user.get("user_id") for user in normalized_users),
+                existing=previous_assignments,
+            )
+            enriched_users = _apply_pseudonyms_to_payload(normalized_users, assignments)
+            self._storage.replace_users(enriched_users)
             self._storage.replace_models(normalized_models)
 
             with self._lock:
                 self._dataset_source_override = None
                 self._chats = chats
                 self._messages = messages
-                self._users = normalized_users
+                self._users = [user.copy() for user in enriched_users]
+                self._apply_pseudonyms_to_cached_users(previous_map=previous_assignments)
                 self._models = normalized_models
                 missing_summary_chat_ids = [
                     str(chat.get("chat_id") or "").strip()
@@ -2515,6 +2789,43 @@ class DataService:
             "api_key_source": api_key_source,
         }
 
+    def get_anonymization_settings(self) -> Dict[str, Any]:
+        """Return the anonymization toggle state with origin metadata."""
+        env_value_raw = os.getenv("OWUI_ANONYMIZATION_MODE", "").strip()
+        env_value = _normalize_bool(env_value_raw) if env_value_raw else None
+
+        with self._lock:
+            stored_raw = self._settings.get(ANONYMIZATION_MODE_SETTING_KEY)
+
+        stored_bool = _normalize_bool(stored_raw)
+        if stored_bool is not None:
+            return {
+                "enabled": stored_bool,
+                "source": "database",
+            }
+        if env_value is not None:
+            return {
+                "enabled": env_value,
+                "source": "environment",
+            }
+        return {
+            "enabled": True,
+            "source": "default",
+        }
+
+    def update_anonymization_settings(self, *, enabled: Optional[bool] = None) -> Dict[str, Any]:
+        """Persist anonymization preferences and return the effective state."""
+        if enabled is None:
+            raise ValueError("enabled must be provided when updating anonymization settings.")
+
+        updates = {ANONYMIZATION_MODE_SETTING_KEY: bool(enabled)}
+        self._storage.write_settings(updates)
+        with self._lock:
+            self._settings.update(updates)
+        return self.get_anonymization_settings()
+
+
+
     def get_summarizer_settings(self) -> Dict[str, Any]:
         """Return the active summarizer configuration with its origin metadata."""
         env_model = _strip_encapsulating_quotes(os.getenv("OLLAMA_SUMMARY_MODEL", "").strip())
@@ -2566,7 +2877,12 @@ class DataService:
             "temperature_source": temperature_source,
         }
 
-    def update_direct_connect_settings(self, *, host: Optional[str], api_key: Optional[str]) -> Dict[str, Any]:
+    def update_direct_connect_settings(
+        self,
+        *,
+        host: Optional[str],
+        api_key: Optional[str],
+    ) -> Dict[str, Any]:
         """Persist updated Direct Connect defaults and return the effective values.
 
         If the hostname changes, this triggers a transactional wipe and full reload:
@@ -2861,6 +3177,12 @@ class DataService:
     def get_users(self) -> List[Dict[str, str]]:
         with self._lock:
             return [user.copy() for user in self._users]
+
+    def should_expose_real_names(self) -> bool:
+        """Return whether API responses should reveal real user names."""
+        settings = self.get_anonymization_settings()
+        enabled = bool(settings.get("enabled", True))
+        return not enabled
 
     def get_models(self) -> List[Dict[str, Any]]:
         with self._lock:
