@@ -1,0 +1,16 @@
+{
+  "models": {
+    "llama3.2:3b-instruct-q4_k_m": {
+      "supports_completions": true,
+      "tested_at": "2025-10-28T19:00:00Z"
+    },
+    "phi3:mini": {
+      "supports_completions": true,
+      "tested_at": "2025-10-28T19:00:00Z"
+    },
+    "nomic-embed-text:latest": {
+      "supports_completions": false,
+      "tested_at": "2025-10-28T19:00:00Z"
+    }
+  }
+}

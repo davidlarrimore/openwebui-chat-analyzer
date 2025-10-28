@@ -116,9 +116,17 @@ def resolve_optional_authenticated_user(
 
 
 @router.get("/health/ollama", tags=["health"])
-def health_ollama() -> Dict[str, Any]:
-    """Return the health status for the Ollama service."""
+def health_ollama(service: DataService = Depends(resolve_data_service)) -> Dict[str, Any]:
+    """Return the health status for the Ollama service and sync models."""
     result = check_ollama_health()
+
+    # If Ollama is healthy, sync models
+    if result.status == "ok":
+        try:
+            service.sync_ollama_models()
+        except Exception as exc:
+            LOGGER.warning("Failed to sync Ollama models during health check: %s", exc)
+
     return result.to_dict()
 
 
@@ -990,7 +998,7 @@ def update_admin_summarizer_settings(
 ) -> SummarizerSettings:
     """Persist summarizer configuration updates."""
     try:
-        settings = service.update_summarizer_settings(model=payload.model, temperature=payload.temperature)
+        settings = service.update_summarizer_settings(model=payload.model, temperature=payload.temperature, enabled=payload.enabled)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SummarizerSettings(**settings)
@@ -1001,13 +1009,24 @@ def update_admin_summarizer_settings(
     tags=["admin"],
 )
 def get_available_ollama_models(
+    service: DataService = Depends(resolve_data_service),
     _: AuthUserPublic = Depends(resolve_authenticated_user),
 ) -> Dict[str, Any]:
-    """Return a list of available Ollama models."""
-    from .clients import get_ollama_client
+    """Return a list of available Ollama models with capability metadata.
+
+    This endpoint syncs models from Ollama, tests their completion support,
+    and returns the enriched model list.
+    """
     try:
-        client = get_ollama_client()
-        models = client.list_models()
-        return {"models": models}
+        # Sync models with database and registry
+        sync_stats = service.sync_ollama_models()
+
+        # Get models with capability metadata
+        models = service.get_ollama_models_with_capabilities()
+
+        return {
+            "models": models,
+            "sync_stats": sync_stats
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch Ollama models: {str(exc)}") from exc

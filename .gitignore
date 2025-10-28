@@ -38,6 +38,8 @@ streamlit_app.log
 
 # Chat Data Files (IMPORTANT: Keep your data private!)
 data/
+!backend/data/
+!backend/data/**
 exports/
 chat_exports/
 chat_data/

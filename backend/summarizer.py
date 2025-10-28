@@ -30,6 +30,7 @@ from .config import (
 _SUMMARY_MODEL = (OLLAMA_SUMMARY_MODEL or "").strip()
 _SUMMARY_FALLBACK_MODEL = (OLLAMA_SUMMARY_FALLBACK_MODEL or "").strip()
 _SUMMARY_TEMPERATURE = OLLAMA_DEFAULT_TEMPERATURE
+_SUMMARIZER_ENABLED = True  # Summarizer enabled by default
 
 
 def get_summary_model() -> str:
@@ -51,6 +52,11 @@ def get_summary_temperature() -> float:
     return _SUMMARY_TEMPERATURE
 
 
+def is_summarizer_enabled() -> bool:
+    """Return whether the summarizer is enabled."""
+    return _SUMMARIZER_ENABLED
+
+
 def set_summary_model(model: Optional[str]) -> None:
     """Set the primary Ollama model used for summarization at runtime."""
     global _SUMMARY_MODEL  # noqa: PLW0603 - module-level cache is intentional
@@ -69,6 +75,12 @@ def set_summary_temperature(temperature: float) -> None:
     """Set the temperature used for summarization at runtime."""
     global _SUMMARY_TEMPERATURE  # noqa: PLW0603 - module-level cache is intentional
     _SUMMARY_TEMPERATURE = temperature
+
+
+def set_summarizer_enabled(enabled: bool) -> None:
+    """Enable or disable the summarizer at runtime."""
+    global _SUMMARIZER_ENABLED  # noqa: PLW0603 - module-level cache is intentional
+    _SUMMARIZER_ENABLED = bool(enabled)
 
 
 @dataclass
@@ -324,18 +336,30 @@ _HEADLINE_SYS = (
     "You analyze conversations and return structured data as valid JSON. "
     "You provide a summary and assess conversation outcome."
 )
+
 _HEADLINE_USER_TMPL = (
-    "Analyze this chat interaction and return ONLY a valid JSON object with two fields:\n\n"
-    "1. \"summary\": A single-line summary describing the topic and key points (no quotes, no trailing punctuation)\n"
+    "Analyze this chat interaction and return ONLY a valid JSON object with three fields:\n\n"
+    "1. \"summary\": A single-line summary describing the conversation topic, what the user wanted, and what the assistant provided (no quotes, no trailing punctuation)\n"
     "2. \"outcome\": A numeric score (1-5) rating conversation success:\n"
-    "   - 1 = Not Successful (failed to understand, irrelevant response, user left unsatisfied)\n"
-    "   - 2 = Partially Successful (incomplete, incorrect, or generic responses)\n"
-    "   - 3 = Moderately Successful (relevant but limited/general answer)\n"
-    "   - 4 = Mostly Successful (clear, correct answer with minor limitations)\n"
-    "   - 5 = Fully Successful (completely satisfied user intent, accurate and helpful)\n\n"
+    "   - 1 = Not Successful\n"
+    "       * Irrelevant, incoherent, hallucinated, or fails to understand user intent\n"
+    "       * Serious factual errors; no meaningful progress toward user goal\n"
+    "   - 2 = Partially Successful\n"
+    "       * Intent recognized but response incomplete, incorrect, or overly generic\n"
+    "       * Noticeable factual errors; requires significant follow-up to be useful\n"
+    "   - 3 = Moderately Successful\n"
+    "       * Relevant and helpful but lacks depth, detail, or completeness\n"
+    "       * Provides minimal value; user intent addressed only at a basic level\n"
+    "   - 4 = Mostly Successful\n"
+    "       * Clear, correct, helpful answer with minor omissions or limitations\n"
+    "       * Actionable and well-structured; largely fulfills user intent\n"
+    "   - 5 = Fully Successful\n"
+    "       * Fully satisfies user intent with accurate, complete, contextual, and actionable response\n"
+    "       * No follow-up needed; provides strong clarity and value\n"
+    "3. \"topics\": A comma-separated list of short topical keywords describing what was discussed (e.g. \"HR, customer service, debugging, pandas\")\n\n"
     "Context:\n{ctx}\n\n"
     "Return ONLY valid JSON in this exact format:\n"
-    "{{\"summary\": \"your summary here\", \"outcome\": 4}}"
+    "{{\"summary\": \"your summary here\", \"outcome\": 4, \"topics\": \"topic1, topic2\"}}"
 )
 
 def _clean(text: str) -> str:

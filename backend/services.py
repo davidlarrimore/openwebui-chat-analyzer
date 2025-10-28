@@ -24,7 +24,7 @@ from urllib.parse import urlparse, urlunparse
 
 from .config import AUTH_TOKEN_HASH_SECRET, AUTH_TOKEN_TTL_SECONDS, DATA_DIR
 from .models import AppMetadata, DatasetMeta, DatasetSyncStats
-from .summarizer import summarize_chats, set_summary_model, get_summary_model, set_summary_temperature, get_summary_temperature
+from .summarizer import summarize_chats, set_summary_model, get_summary_model, set_summary_temperature, get_summary_temperature, is_summarizer_enabled, set_summarizer_enabled
 from .storage import DatabaseState, DatabaseStorage
 
 LOGGER = logging.getLogger(__name__)
@@ -40,8 +40,10 @@ DEFAULT_DIRECT_CONNECT_HOST = "http://localhost:4000"
 SUMMARY_EVENT_HISTORY_LIMIT = 500
 SUMMARIZER_MODEL_SETTING_KEY = "SUMMARIZER_PRIMARY_MODEL"
 SUMMARIZER_TEMPERATURE_SETTING_KEY = "SUMMARIZER_TEMPERATURE"
+SUMMARIZER_ENABLED_SETTING_KEY = "SUMMARIZER_ENABLED"
 ANONYMIZATION_MODE_SETTING_KEY = "ANONYMIZATION_MODE_ENABLED"
 PSEUDONYM_FILE = Path(__file__).with_name("data").joinpath("pseudonyms.json")
+MODELS_REGISTRY_FILE = Path(__file__).with_name("data").joinpath("models_registry.json")
 
 _PSEUDONYM_CACHE: Optional[List[str]] = None
 _PSEUDONYM_CACHE_LOCK = RLock()
@@ -2346,7 +2348,7 @@ class DataService:
             },
         )
 
-        if run_summarizer and missing_summary_chat_ids:
+        if run_summarizer and missing_summary_chat_ids and is_summarizer_enabled():
             self._enqueue_summary_job("chat export upload", chat_ids=missing_summary_chat_ids)
 
     def update_users(
@@ -2616,7 +2618,7 @@ class DataService:
                     },
                 )
                 summarizer_enqueued = False
-                if chats_missing_summary:
+                if chats_missing_summary and is_summarizer_enabled():
                     self._enqueue_summary_job(
                         f"Open WebUI sync (+{len(new_chat_ids)} new chats)",
                         chat_ids=chats_missing_summary,
@@ -2700,7 +2702,7 @@ class DataService:
 
             dataset_meta = self.get_meta()
             summarizer_enqueued = False
-            if missing_summary_chat_ids:
+            if missing_summary_chat_ids and is_summarizer_enabled():
                 self._enqueue_summary_job("Open WebUI sync", chat_ids=missing_summary_chat_ids)
                 summarizer_enqueued = True
             self._storage.record_ingest(
@@ -2739,6 +2741,8 @@ class DataService:
 
     def rebuild_summaries(self) -> Dict[str, Any]:
         """Trigger asynchronous summarization on the current dataset."""
+        if not is_summarizer_enabled():
+            raise ValueError("Cannot rebuild summaries: summarizer is disabled")
         return self._enqueue_summary_job("manual rebuild", force_resummarize=True)
 
     # ------------------------------------------------------------------
@@ -2870,11 +2874,37 @@ class DataService:
             temperature = get_summary_temperature()
             temperature_source = "default"
 
+        # Handle enabled setting
+        env_enabled_str = os.getenv("SUMMARIZER_ENABLED", "").strip().lower()
+        env_enabled = None
+        if env_enabled_str in ("true", "1", "yes"):
+            env_enabled = True
+        elif env_enabled_str in ("false", "0", "no"):
+            env_enabled = False
+
+        with self._lock:
+            stored_enabled_raw = self._settings.get(SUMMARIZER_ENABLED_SETTING_KEY)
+        stored_enabled = None
+        if isinstance(stored_enabled_raw, bool):
+            stored_enabled = stored_enabled_raw
+
+        if stored_enabled is not None:
+            enabled = stored_enabled
+            enabled_source = "database"
+        elif env_enabled is not None:
+            enabled = env_enabled
+            enabled_source = "environment"
+        else:
+            enabled = is_summarizer_enabled()
+            enabled_source = "default"
+
         return {
             "model": model,
             "temperature": temperature,
+            "enabled": enabled,
             "model_source": model_source,
             "temperature_source": temperature_source,
+            "enabled_source": enabled_source,
         }
 
     def update_direct_connect_settings(
@@ -2968,9 +2998,13 @@ class DataService:
 
         return self.get_direct_connect_settings()
 
-    def update_summarizer_settings(self, *, model: Optional[str] = None, temperature: Optional[float] = None) -> Dict[str, Any]:
-        """Persist the summarizer model and/or temperature preference and return the effective values."""
+    def update_summarizer_settings(self, *, model: Optional[str] = None, temperature: Optional[float] = None, enabled: Optional[bool] = None) -> Dict[str, Any]:
+        """Persist the summarizer model, temperature, and/or enabled preference and return the effective values.
+
+        If the summarizer is being re-enabled after being disabled, this will check for and generate missing summaries.
+        """
         updates: Dict[str, Any] = {}
+        was_enabled = is_summarizer_enabled()
 
         if model is not None:
             normalized_model = _strip_encapsulating_quotes((model or "").strip())
@@ -2983,8 +3017,11 @@ class DataService:
                 raise ValueError("Temperature must be between 0.0 and 2.0.")
             updates[SUMMARIZER_TEMPERATURE_SETTING_KEY] = temperature
 
+        if enabled is not None:
+            updates[SUMMARIZER_ENABLED_SETTING_KEY] = bool(enabled)
+
         if not updates:
-            raise ValueError("At least one of model or temperature must be provided.")
+            raise ValueError("At least one of model, temperature, or enabled must be provided.")
 
         self._storage.write_settings(updates)
         with self._lock:
@@ -2998,7 +3035,186 @@ class DataService:
             set_summary_temperature(updates[SUMMARIZER_TEMPERATURE_SETTING_KEY])
             LOGGER.info("Updated summarizer temperature (temperature=%s)", updates[SUMMARIZER_TEMPERATURE_SETTING_KEY])
 
+        if enabled is not None:
+            set_summarizer_enabled(updates[SUMMARIZER_ENABLED_SETTING_KEY])
+            LOGGER.info("Updated summarizer enabled state (enabled=%s)", updates[SUMMARIZER_ENABLED_SETTING_KEY])
+
+            # If summarizer is being re-enabled, check for missing summaries and generate them
+            if not was_enabled and enabled:
+                LOGGER.info("Summarizer re-enabled, checking for missing summaries")
+                with self._lock:
+                    chats_without_summaries = [
+                        chat for chat in self._chats
+                        if not self._get_chat_summary(chat) or not chat.get(SUMMARY_FIELD)
+                    ]
+
+                if chats_without_summaries:
+                    missing_chat_ids = [chat.get("id") for chat in chats_without_summaries if chat.get("id")]
+                    LOGGER.info("Found %d chats without summaries, enqueuing summarizer", len(missing_chat_ids))
+                    self._enqueue_summary_job(
+                        chat_ids=missing_chat_ids,
+                        reason="summarizer_reenabled",
+                        force=False
+                    )
+                else:
+                    LOGGER.info("No chats found without summaries")
+
         return self.get_summarizer_settings()
+
+    def sync_ollama_models(self) -> Dict[str, Any]:
+        """Sync Ollama models with database and test completion support.
+
+        Returns:
+            Dict with sync statistics (added, removed, tested)
+        """
+        from .clients import get_ollama_client
+        from .db_models import OllamaModel
+        from .db import session_scope
+
+        stats = {"added": 0, "removed": 0, "tested": 0, "errors": []}
+
+        try:
+            # Get current models from Ollama
+            ollama_client = get_ollama_client()
+            ollama_models_response = ollama_client.list_models()
+            ollama_model_names = set()
+
+            if isinstance(ollama_models_response, dict) and "models" in ollama_models_response:
+                ollama_model_names = {m["name"] for m in ollama_models_response["models"] if "name" in m}
+            elif isinstance(ollama_models_response, list):
+                ollama_model_names = {m["name"] for m in ollama_models_response if "name" in m}
+
+            # Load models registry
+            registry = self._load_models_registry()
+
+            with session_scope() as session:
+                # Get existing models from database
+                existing_models = session.query(OllamaModel).all()
+                existing_model_names = {m.model_name for m in existing_models}
+
+                # Add new models
+                for model_name in ollama_model_names:
+                    if model_name not in existing_model_names:
+                        # Check registry for known completion support
+                        supports_completions = registry.get(model_name, {}).get("supports_completions", False)
+
+                        # If not in registry or not tested, test the model
+                        if model_name not in registry or registry[model_name].get("tested_at") is None:
+                            supports_completions = self._test_model_completion(ollama_client, model_name)
+                            registry[model_name] = {
+                                "supports_completions": supports_completions,
+                                "tested_at": datetime.now(timezone.utc).isoformat()
+                            }
+                            stats["tested"] += 1
+
+                        new_model = OllamaModel(
+                            model_name=model_name,
+                            supports_completions=supports_completions
+                        )
+                        session.add(new_model)
+                        stats["added"] += 1
+                        LOGGER.info("Added Ollama model: %s (supports_completions=%s)", model_name, supports_completions)
+
+                # Remove models no longer available
+                for model_name in existing_model_names:
+                    if model_name not in ollama_model_names:
+                        session.query(OllamaModel).filter(OllamaModel.model_name == model_name).delete()
+                        stats["removed"] += 1
+                        LOGGER.info("Removed Ollama model: %s", model_name)
+
+                # Update completion support for existing models that haven't been tested
+                for model in existing_models:
+                    if model.model_name in ollama_model_names:
+                        if model.model_name not in registry or registry[model.model_name].get("tested_at") is None:
+                            supports_completions = self._test_model_completion(ollama_client, model.model_name)
+                            model.supports_completions = supports_completions
+                            registry[model.model_name] = {
+                                "supports_completions": supports_completions,
+                                "tested_at": datetime.now(timezone.utc).isoformat()
+                            }
+                            stats["tested"] += 1
+                            LOGGER.info("Tested Ollama model: %s (supports_completions=%s)", model.model_name, supports_completions)
+
+                session.commit()
+
+            # Save updated registry
+            self._save_models_registry(registry)
+
+        except Exception as exc:
+            error_msg = f"Failed to sync Ollama models: {str(exc)}"
+            LOGGER.exception(error_msg)
+            stats["errors"].append(error_msg)
+
+        return stats
+
+    def _load_models_registry(self) -> Dict[str, Dict[str, Any]]:
+        """Load the models registry from disk."""
+        try:
+            if MODELS_REGISTRY_FILE.exists():
+                with open(MODELS_REGISTRY_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return data.get("models", {})
+            return {}
+        except Exception as exc:
+            LOGGER.warning("Failed to load models registry: %s", exc)
+            return {}
+
+    def _save_models_registry(self, registry: Dict[str, Dict[str, Any]]) -> None:
+        """Save the models registry to disk."""
+        try:
+            MODELS_REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(MODELS_REGISTRY_FILE, "w", encoding="utf-8") as f:
+                json.dump({"models": registry}, f, indent=2)
+        except Exception as exc:
+            LOGGER.error("Failed to save models registry: %s", exc)
+
+    def _test_model_completion(self, ollama_client: Any, model_name: str) -> bool:
+        """Test if a model supports completion requests.
+
+        Args:
+            ollama_client: The Ollama client instance
+            model_name: Name of the model to test
+
+        Returns:
+            True if model supports completions, False otherwise
+        """
+        try:
+            # Send a minimal completion request
+            response = ollama_client.generate(
+                model=model_name,
+                prompt="Hello",
+                options={"num_predict": 5}
+            )
+            # If we get a response without error, the model supports completions
+            return response is not None and "response" in response
+        except Exception as exc:
+            LOGGER.debug("Model %s does not support completions: %s", model_name, exc)
+            return False
+
+    def get_ollama_models_with_capabilities(self) -> List[Dict[str, Any]]:
+        """Get all Ollama models with their capability metadata.
+
+        Returns:
+            List of model dictionaries with name and supports_completions fields
+        """
+        from .db_models import OllamaModel
+        from .db import session_scope
+
+        try:
+            with session_scope() as session:
+                models = session.query(OllamaModel).all()
+                return [
+                    {
+                        "name": model.model_name,
+                        "supports_completions": model.supports_completions,
+                        "created_at": model.created_at.isoformat() if model.created_at else None,
+                        "updated_at": model.updated_at.isoformat() if model.updated_at else None,
+                    }
+                    for model in models
+                ]
+        except Exception as exc:
+            LOGGER.exception("Failed to get Ollama models: %s", exc)
+            return []
 
     def _build_public_user(self, record: Dict[str, Any]) -> Dict[str, str]:
         return {

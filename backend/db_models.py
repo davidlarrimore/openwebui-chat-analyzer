@@ -127,6 +127,16 @@ class ModelRecord(TimestampMixin, Base):
     raw = Column(JSON, nullable=False, default=dict)
 
 
+class OllamaModel(TimestampMixin, Base):
+    """Ollama models available locally with capability metadata."""
+
+    __tablename__ = "ollama_models"
+
+    id = Column(Integer, primary_key=True)
+    model_name = Column(String(255), unique=True, nullable=False, index=True)
+    supports_completions = Column(Boolean, nullable=False, server_default="false")
+
+
 class Account(TimestampMixin, Base):
     """Analyzer application users that can authenticate with the backend."""
 

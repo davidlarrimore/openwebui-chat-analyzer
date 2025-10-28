@@ -179,11 +179,14 @@ interface ConnectionInfoState {
   summaryModelSource?: "database" | "environment" | "default";
   summaryTemperature: number;
   summaryTemperatureSource?: "database" | "environment" | "default";
+  summarizerEnabled: boolean;
+  summarizerEnabledSource?: "database" | "environment" | "default";
   availableSummaryModels: string[];
   summaryModelError: string | null;
   isLoadingSummaryModels: boolean;
   isUpdatingSummaryModel: boolean;
   isUpdatingSummaryTemperature: boolean;
+  isUpdatingSummarizerEnabled: boolean;
 }
 
 interface ConnectionInfoPanelProps {
@@ -219,11 +222,14 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     summaryModelSource: undefined,
     summaryTemperature: 0.2,
     summaryTemperatureSource: undefined,
+    summarizerEnabled: true,
+    summarizerEnabledSource: undefined,
     availableSummaryModels: [],
     summaryModelError: null,
     isLoadingSummaryModels: false,
     isUpdatingSummaryModel: false,
     isUpdatingSummaryTemperature: false,
+    isUpdatingSummarizerEnabled: false,
   });
 
   // Track original values to detect changes
@@ -389,6 +395,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       const modelNames = Array.from(
         new Set(
           modelsResponse.models
+            .filter((model) => model.supports_completions === true)
             .map((model) => (typeof model?.name === "string" ? model.name.trim() : ""))
             .filter((name): name is string => Boolean(name)),
         ),
@@ -411,6 +418,8 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         summaryModelSource: summarizerSettings.model_source,
         summaryTemperature: summarizerSettings.temperature,
         summaryTemperatureSource: summarizerSettings.temperature_source,
+        summarizerEnabled: summarizerSettings.enabled,
+        summarizerEnabledSource: summarizerSettings.enabled_source,
         isLoadingSummaryModels: false,
         summaryModelError: null,
       }));
@@ -827,6 +836,51 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }
   };
 
+  const handleSummarizerEnabledChange = async (newEnabled: boolean) => {
+    if (state.isUpdatingSummarizerEnabled) {
+      return;
+    }
+
+    const previousEnabled = state.summarizerEnabled;
+    setState(prev => ({
+      ...prev,
+      summarizerEnabled: newEnabled,
+      isUpdatingSummarizerEnabled: true,
+    }));
+
+    try {
+      const updated = await updateSummarizerSettings({ enabled: newEnabled });
+      setState(prev => ({
+        ...prev,
+        summarizerEnabled: updated.enabled,
+        summarizerEnabledSource: updated.enabled_source,
+        isUpdatingSummarizerEnabled: false,
+      }));
+
+      toast({
+        title: newEnabled ? "Summarizer enabled" : "Summarizer disabled",
+        description: newEnabled
+          ? "Chat summaries will be generated for new uploads"
+          : "Chat summaries will not be generated until re-enabled",
+        variant: "default",
+        duration: 3000,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to update summarizer enabled state";
+      setState(prev => ({
+        ...prev,
+        summarizerEnabled: previousEnabled,
+        isUpdatingSummarizerEnabled: false,
+      }));
+      toast({
+        title: "Update failed",
+        description: message,
+        variant: "destructive",
+        duration: 5000,
+      });
+    }
+  };
+
   const handleRerunSummaries = React.useCallback(async () => {
     if (state.isRebuildingSummaries) {
       return;
@@ -1061,7 +1115,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
               variant="outline"
               className="h-auto flex-col items-start p-4 gap-2"
               onClick={handleRerunSummaries}
-              disabled={state.isRebuildingSummaries || state.isLoading || state.isSaving || state.isTesting}
+              disabled={!state.summarizerEnabled || state.isRebuildingSummaries || state.isLoading || state.isSaving || state.isTesting}
             >
               <div className="text-lg">🧠</div>
               <div className="text-left">
@@ -1069,7 +1123,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
                   {state.isRebuildingSummaries ? "Rebuilding..." : "Rebuild Summaries"}
                 </div>
                 <div className="text-xs text-muted-foreground font-normal">
-                  Regenerate all AI summaries
+                  {!state.summarizerEnabled ? "Summarizer is disabled" : "Regenerate all AI summaries"}
                 </div>
               </div>
             </Button>
@@ -1115,6 +1169,31 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Summarizer Enable/Disable Toggle */}
+          <div className="flex items-center justify-between rounded-lg border p-3">
+            <div className="flex-1 space-y-1">
+              <Label htmlFor="summarizer-enabled" className="font-medium">
+                Enable Summarizer
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Generate summaries for chats during data loading
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {state.summarizerEnabledSource && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                  {state.summarizerEnabledSource}
+                </span>
+              )}
+              <Switch
+                id="summarizer-enabled"
+                checked={state.summarizerEnabled}
+                onCheckedChange={handleSummarizerEnabledChange}
+                disabled={state.isUpdatingSummarizerEnabled}
+              />
+            </div>
+          </div>
+
           {state.summaryModelError ? (
             <div className="flex items-start justify-between gap-3 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
               <div className="flex-1">

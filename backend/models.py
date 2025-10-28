@@ -554,6 +554,10 @@ class SummarizerSettings(BaseModel):
         ...,
         description="Temperature parameter for LLM generation (0.0-2.0).",
     )
+    enabled: bool = Field(
+        ...,
+        description="Whether the summarizer is enabled.",
+    )
     model_source: Literal["database", "environment", "default"] = Field(
         ...,
         description="Origin for the summarizer model (database override, environment variable, or default).",
@@ -561,6 +565,10 @@ class SummarizerSettings(BaseModel):
     temperature_source: Literal["database", "environment", "default"] = Field(
         ...,
         description="Origin for the temperature setting (database override, environment variable, or default).",
+    )
+    enabled_source: Literal["database", "environment", "default"] = Field(
+        ...,
+        description="Origin for the enabled setting (database override, environment variable, or default).",
     )
 
 
@@ -577,6 +585,10 @@ class SummarizerSettingsUpdate(BaseModel):
         description="Temperature parameter for LLM generation (0.0-2.0).",
         ge=0.0,
         le=2.0,
+    )
+    enabled: Optional[bool] = Field(
+        default=None,
+        description="Whether the summarizer is enabled.",
     )
 
 

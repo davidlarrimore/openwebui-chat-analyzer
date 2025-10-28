@@ -10,6 +10,7 @@ import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 interface SearchClientProps {
   chats: BrowseChat[];
   messages: BrowseMessage[];
+  summarizerEnabled: boolean;
 }
 
 interface SearchResultEntry {
@@ -108,7 +109,7 @@ function highlightContent(content: string, query: string): (string | JSX.Element
   return result;
 }
 
-export default function SearchClient({ chats, messages }: SearchClientProps) {
+export default function SearchClient({ chats, messages, summarizerEnabled }: SearchClientProps) {
   const [selectedUser, setSelectedUser] = useState<string>(ALL_USERS_OPTION);
   const [selectedModel, setSelectedModel] = useState<string>(ALL_MODELS_OPTION);
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -398,16 +399,18 @@ export default function SearchClient({ chats, messages }: SearchClientProps) {
                 </button>
                 {isOpen && (
                   <div className="space-y-4 border-t border-muted bg-background px-4 py-4">
-                    <div className="rounded-md border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-slate-800">
-                      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium uppercase tracking-wide text-indigo-700">
-                        <span>🧠 Summary</span>
-                        {chat.userDisplay && <span>👤 {chat.userDisplay}</span>}
-                        {chat.models.length > 0 && <span>🤖 {chat.models[0]}</span>}
+                    {summarizerEnabled && (
+                      <div className="rounded-md border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-slate-800">
+                        <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium uppercase tracking-wide text-indigo-700">
+                          <span>🧠 Summary</span>
+                          {chat.userDisplay && <span>👤 {chat.userDisplay}</span>}
+                          {chat.models.length > 0 && <span>🤖 {chat.models[0]}</span>}
+                        </div>
+                        <p className="whitespace-pre-wrap leading-relaxed">
+                          {chat.summary?.trim() ? chat.summary.trim() : "No summary available."}
+                        </p>
                       </div>
-                      <p className="whitespace-pre-wrap leading-relaxed">
-                        {chat.summary?.trim() ? chat.summary.trim() : "No summary available."}
-                      </p>
-                    </div>
+                    )}
 
                     <div className="space-y-3">
                       {threadMessages.map((message) => {

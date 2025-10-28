@@ -19,6 +19,7 @@ import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 interface BrowseClientProps {
   chats: BrowseChat[];
   messages: BrowseMessage[];
+  summarizerEnabled: boolean;
 }
 
 interface ThreadEntry {
@@ -81,7 +82,7 @@ function getFileLabel(value: unknown): string | null {
   return name;
 }
 
-export default function BrowseClient({ chats, messages }: BrowseClientProps) {
+export default function BrowseClient({ chats, messages, summarizerEnabled }: BrowseClientProps) {
   const [selectedUser, setSelectedUser] = useState<string>(ALL_USERS_OPTION);
   const [selectedModel, setSelectedModel] = useState<string>(ALL_MODELS_OPTION);
   const [threadsPerPage, setThreadsPerPage] = useState<number>(10);
@@ -324,17 +325,19 @@ export default function BrowseClient({ chats, messages }: BrowseClientProps) {
               </button>
               {isOpen && (
                 <div className="space-y-4 border-t border-muted bg-background px-4 py-4">
-                  <div className="rounded-md border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-slate-800">
-                    <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium uppercase tracking-wide text-indigo-700">
-                      <span>🧠 Summary</span>
-                      {chat.userDisplay && <span>👤 {chat.userDisplay}</span>}
-                      {chat.models.length > 0 && <span>🤖 {chat.models[0]}</span>}
-                      {formatOutcome(chat.outcome) && <span>{formatOutcome(chat.outcome)}</span>}
+                  {summarizerEnabled && (
+                    <div className="rounded-md border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-slate-800">
+                      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium uppercase tracking-wide text-indigo-700">
+                        <span>🧠 Summary</span>
+                        {chat.userDisplay && <span>👤 {chat.userDisplay}</span>}
+                        {chat.models.length > 0 && <span>🤖 {chat.models[0]}</span>}
+                        {formatOutcome(chat.outcome) && <span>{formatOutcome(chat.outcome)}</span>}
+                      </div>
+                      <p className="whitespace-pre-wrap leading-relaxed">
+                        {chat.summary?.trim() ? chat.summary.trim() : "No summary available."}
+                      </p>
                     </div>
-                    <p className="whitespace-pre-wrap leading-relaxed">
-                      {chat.summary?.trim() ? chat.summary.trim() : "No summary available."}
-                    </p>
-                  </div>
+                  )}
 
                   <div className="space-y-3">
                     {threadMessages.map((message) => {

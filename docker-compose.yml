@@ -10,6 +10,7 @@ services:
       - "8502:8502"
     volumes:
       - ./backend:/app/backend:ro
+      - ./backend/data:/app/backend/data:rw
       - ./data:/app/data:rw
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434

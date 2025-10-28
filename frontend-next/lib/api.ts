@@ -197,13 +197,16 @@ export async function updateAnonymizationSettings(
 export interface SummarizerSettingsResponse {
   model: string;
   temperature: number;
+  enabled: boolean;
   model_source: "database" | "environment" | "default";
   temperature_source: "database" | "environment" | "default";
+  enabled_source: "database" | "environment" | "default";
 }
 
 export interface SummarizerSettingsUpdate {
   model?: string;
   temperature?: number;
+  enabled?: boolean;
 }
 
 export async function getSummarizerSettings(): Promise<SummarizerSettingsResponse> {
@@ -218,10 +221,13 @@ export async function updateSummarizerSettings(
 
 export interface OllamaModel {
   name: string;
-  model: string;
-  modified_at: string;
-  size: number;
-  digest: string;
+  supports_completions: boolean;
+  created_at?: string;
+  updated_at?: string;
+  model?: string;
+  modified_at?: string;
+  size?: number;
+  digest?: string;
   details?: {
     parameter_size?: string;
     quantization_level?: string;
@@ -230,6 +236,12 @@ export interface OllamaModel {
 
 export interface OllamaModelsResponse {
   models: OllamaModel[];
+  sync_stats?: {
+    added: number;
+    removed: number;
+    tested: number;
+    errors: string[];
+  };
 }
 
 export async function getAvailableOllamaModels(): Promise<OllamaModelsResponse> {
