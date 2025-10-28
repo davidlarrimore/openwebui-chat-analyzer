@@ -24,6 +24,7 @@ export function LogViewer({
   const [error, setError] = React.useState<string | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const lastLogCountRef = React.useRef(0);
+  const bottomRef = React.useRef<HTMLDivElement>(null);
 
   // Fetch logs on mount and at regular intervals
   React.useEffect(() => {
@@ -48,14 +49,12 @@ export function LogViewer({
   }, [jobId, maxLogs, pollInterval]);
 
   const combinedLogs = React.useMemo(() => {
-    if (!supplementalLogs.length) {
-      return logs;
-    }
+    // Combine all logs and always sort in ascending order (oldest first, newest last)
     const merged = [...logs, ...supplementalLogs];
     merged.sort((a, b) => {
       const timeA = new Date(a.timestamp).getTime();
       const timeB = new Date(b.timestamp).getTime();
-      return timeA - timeB;
+      return timeA - timeB; // Ascending: oldest first, newest last
     });
     return merged;
   }, [logs, supplementalLogs]);
@@ -63,9 +62,9 @@ export function LogViewer({
   // Auto-scroll to bottom when new logs arrive
   React.useEffect(() => {
     if (isAutoScroll && combinedLogs.length > lastLogCountRef.current) {
-      scrollRef.current?.scrollTo({
-        top: scrollRef.current.scrollHeight,
-        behavior: "smooth",
+      // Use requestAnimationFrame to ensure DOM has updated before scrolling
+      requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       });
     }
     lastLogCountRef.current = combinedLogs.length;
@@ -201,6 +200,8 @@ export function LogViewer({
             )}
           </div>
         ))}
+        {/* Scroll anchor for auto-scroll */}
+        <div ref={bottomRef} />
       </div>
     </div>
   );
