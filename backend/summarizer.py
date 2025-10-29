@@ -90,6 +90,7 @@ class ConversationAnalysis:
     This dataclass represents the extracted insights from analyzing a chat conversation.
     The summary field is ALWAYS plain text (never JSON or structured data).
     The outcome field is an optional integer score from 1-5 rating conversation success.
+    The topics field is an optional comma-separated string of topical keywords.
 
     Attributes:
         summary: Plain text summary describing the conversation topic and key points.
@@ -97,14 +98,17 @@ class ConversationAnalysis:
         outcome: Optional integer from 1-5 rating conversation success:
                  1 = Not Successful, 2 = Partially Successful, 3 = Moderately Successful,
                  4 = Mostly Successful, 5 = Fully Successful
+        topics: Optional comma-separated list of short topical keywords describing what was discussed
     """
     summary: str
     outcome: Optional[int] = None
+    topics: Optional[str] = None
 
 SALIENT_K = int(os.getenv("SALIENT_K", "10"))
 EMB_MODEL_NAME = os.getenv("EMB_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 SUMMARY_FIELD = "gen_chat_summary"
 OUTCOME_FIELD = "gen_chat_outcome"
+TOPICS_FIELD = "gen_topics"
 CHUNK_CHAR_LIMIT = max(64, int(os.getenv("SUMMARY_CHUNK_CHAR_LIMIT", "2048")))
 CHUNK_OVERLAP_LINES = max(0, int(os.getenv("SUMMARY_CHUNK_OVERLAP_LINES", "2")))
 
@@ -494,26 +498,26 @@ def _trim_one_line(text: str) -> str:
 def _parse_structured_response(response_text: str) -> ConversationAnalysis:
     """Parse and extract summary text from LLM response, handling various formats.
 
-    The LLM is instructed to return JSON like: {"summary": "...", "outcome": 4}
+    The LLM is instructed to return JSON like: {"summary": "...", "outcome": 4, "topics": "..."}
     However, LLMs may wrap this in explanatory text, markdown code fences, or
-    return it in unexpected formats. This function robustly extracts the summary
-    and outcome, ensuring the summary is always plain text, never JSON.
+    return it in unexpected formats. This function robustly extracts the summary,
+    outcome, and topics, ensuring the summary is always plain text, never JSON.
 
     Parsing strategy:
     1. Remove markdown code fences if present
     2. Try parsing the entire response as JSON
     3. If that fails, search for JSON objects within the text
-    4. Extract the "summary" field and validate it's plain text
+    4. Extract the "summary", "outcome", and "topics" fields
     5. Fall back to using the response text directly if no JSON is found
 
     Args:
         response_text: Raw response text from the LLM, ideally JSON but possibly wrapped.
 
     Returns:
-        ConversationAnalysis with plain text summary (never JSON) and optional outcome score.
+        ConversationAnalysis with plain text summary (never JSON), optional outcome score, and optional topics.
     """
     if not response_text:
-        return ConversationAnalysis(summary="", outcome=None)
+        return ConversationAnalysis(summary="", outcome=None, topics=None)
 
     original_text = response_text.strip()
 
@@ -544,11 +548,13 @@ def _parse_structured_response(response_text: str) -> ConversationAnalysis:
             except (json.JSONDecodeError, ValueError):
                 _logger.debug("Found JSON-like structure but failed to parse it")
 
-    # Step 4: Extract summary and outcome from parsed JSON
+    # Step 4: Extract summary, outcome, and topics from parsed JSON
     if parsed_data and isinstance(parsed_data, dict):
         summary_raw = parsed_data.get("summary", "")
         summary = str(summary_raw).strip() if summary_raw else ""
         outcome = parsed_data.get("outcome")
+        topics_raw = parsed_data.get("topics", "")
+        topics = str(topics_raw).strip() if topics_raw else None
 
         # Validate outcome is in range 1-5
         if outcome is not None:
@@ -582,12 +588,12 @@ def _parse_structured_response(response_text: str) -> ConversationAnalysis:
             summary = _trim_one_line(summary)
 
             if summary:
-                return ConversationAnalysis(summary=summary, outcome=outcome)
+                return ConversationAnalysis(summary=summary, outcome=outcome, topics=topics)
 
     # Step 5: Fall back to using the original response text as summary
     _logger.debug("No valid JSON structure found in LLM response, using text directly")
     summary = _trim_one_line(original_text)
-    return ConversationAnalysis(summary=summary, outcome=None)
+    return ConversationAnalysis(summary=summary, outcome=None, topics=None)
 
 
 def _build_context(messages: Sequence[Mapping[str, object]]) -> str:
@@ -619,7 +625,7 @@ def _headline_with_ollama(context: str, *, model: Optional[str] = None) -> Conve
     )
     options = {
         "temperature": get_summary_temperature(),
-        "num_predict": 64,  # Increased for JSON response
+        "num_predict": 256,  # Allow sufficient tokens for complete JSON response with summary text
         "num_ctx": 1024,
     }
     result = client.generate(
@@ -631,11 +637,12 @@ def _headline_with_ollama(context: str, *, model: Optional[str] = None) -> Conve
     )
     analysis = _parse_structured_response(result.response)
     _logger.debug(
-        "Ollama analysis response model=%s chars=%d summary=%r outcome=%s",
+        "Ollama analysis response model=%s chars=%d summary=%r outcome=%s topics=%r",
         result.model,
         len(result.response or ""),
         analysis.summary[:120],
         analysis.outcome,
+        analysis.topics,
     )
     return analysis
 
@@ -651,7 +658,7 @@ def _headline_with_openwebui(context: str) -> ConversationAnalysis:
     payload = {
         "model": OWUI_COMPLETIONS_MODEL,
         "temperature": 0.1,
-        "max_tokens": 128,  # Increased for JSON response
+        "max_tokens": 256,  # Allow sufficient tokens for complete JSON response with summary text
         "messages": [
             {"role": "system", "content": _HEADLINE_SYS},
             {"role": "user", "content": _HEADLINE_USER_TMPL.format(ctx=context)},
@@ -703,10 +710,11 @@ def _headline_with_openwebui(context: str) -> ConversationAnalysis:
 
     analysis = _parse_structured_response(text)
     _logger.debug(
-        "OpenWebUI analysis response chars=%d summary=%r outcome=%s",
+        "OpenWebUI analysis response chars=%d summary=%r outcome=%s topics=%r",
         len(text),
         analysis.summary[:120],
         analysis.outcome,
+        analysis.topics,
     )
     return analysis
 
@@ -791,22 +799,22 @@ def _summarize_context(context: str) -> ConversationAnalysis:
     Args:
         context (str): Concatenated salient conversation lines.
     Returns:
-        ConversationAnalysis: Analysis with summary and outcome, or fallback summary with no outcome.
+        ConversationAnalysis: Analysis with summary, outcome, and topics, or fallback with no outcome/topics.
     """
     if not context:
-        return ConversationAnalysis(summary="", outcome=None)
+        return ConversationAnalysis(summary="", outcome=None, topics=None)
     _logger.debug("Analyzing single chat context_chars=%d", len(context))
     try:
         analysis = _headline_with_llm(context)
         if analysis.summary:
-            _logger.debug("Analysis obtained via LLM summary=%r outcome=%s", analysis.summary[:120], analysis.outcome)
+            _logger.debug("Analysis obtained via LLM summary=%r outcome=%s topics=%r", analysis.summary[:120], analysis.outcome, analysis.topics)
             return analysis
         _logger.warning("LLM returned an empty summary; using fallback snippet.")
     except Exception as exc:
         _logger.warning("LLM analysis request failed; falling back to snippet: %s", exc, exc_info=True)
     fallback_summary = _trim_one_line(context)
     _logger.debug("Using fallback snippet preview=%r", fallback_summary[:120])
-    return ConversationAnalysis(summary=fallback_summary, outcome=None)
+    return ConversationAnalysis(summary=fallback_summary, outcome=None, topics=None)
 
 
 def summarize_chat(messages: Sequence[Mapping[str, object]]) -> ConversationAnalysis:
@@ -815,11 +823,11 @@ def summarize_chat(messages: Sequence[Mapping[str, object]]) -> ConversationAnal
     Args:
         messages (Sequence[Mapping[str, object]]): Exported messages for a single chat.
     Returns:
-        ConversationAnalysis: Structured analysis with summary and outcome score.
+        ConversationAnalysis: Structured analysis with summary, outcome score, and topics.
     """
     context = _build_context(messages)
     if not context:
-        return ConversationAnalysis(summary="", outcome=None)
+        return ConversationAnalysis(summary="", outcome=None, topics=None)
 
     return _summarize_context(context)
 
@@ -843,7 +851,7 @@ def _summarize_with_chunks(
         joined_lines = " ".join(str(line).strip() for line in lines if str(line).strip())
         context = joined_lines
     if not context:
-        return ConversationAnalysis(summary="", outcome=None)
+        return ConversationAnalysis(summary="", outcome=None, topics=None)
 
     _logger.debug(
         "Analyzing chat %s without chunking (context_chars=%d)",
@@ -854,13 +862,14 @@ def _summarize_with_chunks(
     analysis = _summarize_context(context)
     if analysis.summary:
         _logger.debug(
-            "Analysis generated for chat %s summary=%r outcome=%s",
+            "Analysis generated for chat %s summary=%r outcome=%s topics=%r",
             chat_id or "<unknown>",
             analysis.summary[:120],
             analysis.outcome,
+            analysis.topics,
         )
         return analysis
-    return ConversationAnalysis(summary="", outcome=None)
+    return ConversationAnalysis(summary="", outcome=None, topics=None)
 
 
 def summarize_chats(
@@ -991,18 +1000,21 @@ def summarize_chats(
 
         if analysis.summary:
             generated += 1
-            # Store both summary and outcome in the chat dict
+            # Store summary, outcome, and topics in the chat dict
             summary_map[chat_id] = analysis.summary
             _set_chat_summary(chat, analysis.summary)
             if analysis.outcome is not None:
                 chat[OUTCOME_FIELD] = analysis.outcome
+            if analysis.topics is not None:
+                chat[TOPICS_FIELD] = analysis.topics
             outcome = "generated"
             if on_chat_complete:
                 try:
-                    # Pass both summary and outcome to callback for persistence
+                    # Pass summary, outcome, and topics to callback for persistence
                     outcome_map = {chat_id: analysis.outcome} if analysis.outcome is not None else {}
-                    on_chat_complete({chat_id: analysis.summary}, outcome_map)
-                    _logger.info("Persisted summary and outcome for chat %s", chat_id)
+                    topics_map = {chat_id: analysis.topics} if analysis.topics is not None else {}
+                    on_chat_complete({chat_id: analysis.summary}, outcome_map, topics_map)
+                    _logger.info("Persisted summary, outcome, and topics for chat %s", chat_id)
                 except Exception as exc:  # pragma: no cover
                     _logger.warning("Failed to persist metrics for chat %s: %s", chat_id, exc, exc_info=True)
         else:

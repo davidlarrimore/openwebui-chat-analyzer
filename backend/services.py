@@ -14,7 +14,7 @@ from collections import deque
 from datetime import datetime, timezone, date, timedelta
 from io import BytesIO
 from pathlib import Path
-from threading import Lock, Thread, RLock
+from threading import Lock, Thread, RLock, Event
 from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 
@@ -1109,6 +1109,8 @@ class DataService:
         self._scheduler_enabled: bool = False
         self._scheduler_interval_minutes: int = 60  # Default 1 hour
         self._scheduler_last_run_at: Optional[datetime] = None
+        self._scheduler_thread: Optional[Thread] = None
+        self._scheduler_stop_event: Event = Event()
         try:
             self._storage = DatabaseStorage()
         except Exception:  # pylint: disable=broad-except
@@ -1118,6 +1120,7 @@ class DataService:
         self._ensure_direct_connect_defaults_seeded()
         self._ensure_anonymization_default()
         self._load_scheduler_config()
+        self._start_scheduler_thread()
         with self._lock:
             self._refresh_app_metadata(persist=True)
         self._log_dataset_summary("DataService ready")
@@ -2018,17 +2021,18 @@ class DataService:
             reason,
         )
 
-        def chat_persist_callback(chat_summary: Dict[str, str], chat_outcomes: Dict[str, int]) -> None:
-            """Immediately persist individual chat summary and outcome to database and update in-memory records.
+        def chat_persist_callback(chat_summary: Dict[str, str], chat_outcomes: Dict[str, int], chat_topics: Dict[str, str] = None) -> None:
+            """Immediately persist individual chat summary, outcome, and topics to database and update in-memory records.
 
             Args:
                 chat_summary: Dict mapping chat_id to summary text
                 chat_outcomes: Dict mapping chat_id to outcome score (1-5)
+                chat_topics: Dict mapping chat_id to topics string
             """
             if not chat_summary:
                 return
 
-            # Update in-memory chat records with both summary and outcome
+            # Update in-memory chat records with summary, outcome, and topics
             with self._lock:
                 for chat in self._chats:
                     chat_id = str(chat.get("chat_id") or "")
@@ -2037,9 +2041,12 @@ class DataService:
                         # Update outcome if present
                         if chat_id in chat_outcomes:
                             chat["gen_chat_outcome"] = chat_outcomes[chat_id]
+                        # Update topics if present
+                        if chat_topics and chat_id in chat_topics:
+                            chat["gen_topics"] = chat_topics[chat_id]
 
-            # Persist to database immediately with both summary and outcome
-            self._storage.update_chat_summaries(chat_summary, chat_outcomes)
+            # Persist to database immediately with summary, outcome, and topics
+            self._storage.update_chat_summaries(chat_summary, chat_outcomes, chat_topics)
 
         try:
             summary_map, stats = summarize_chats(
@@ -2069,8 +2076,9 @@ class DataService:
 
             summary_map = {chat_id: summary for chat_id, summary in summary_map.items() if summary}
 
-            # Collect outcomes from the chats that were just summarized
+            # Collect outcomes and topics from the chats that were just summarized
             outcome_map: Dict[str, int] = {}
+            topics_map: Dict[str, str] = {}
             with self._lock:
                 for chat in self._chats:
                     chat_id = str(chat.get("chat_id") or "")
@@ -2080,10 +2088,14 @@ class DataService:
                         outcome_value = chat.get("gen_chat_outcome")
                         if isinstance(outcome_value, int) and 1 <= outcome_value <= 5:
                             outcome_map[chat_id] = outcome_value
+                        # Collect topics if present
+                        topics_value = chat.get("gen_topics")
+                        if isinstance(topics_value, str) and topics_value.strip():
+                            topics_map[chat_id] = topics_value.strip()
                 self._bump_version()
                 self._refresh_app_metadata(persist=False)
 
-            self._storage.update_chat_summaries(summary_map, outcome_map)
+            self._storage.update_chat_summaries(summary_map, outcome_map, topics_map)
 
             logger.info("Summary job %s finished successfully.", job_id)
             completed_at = self._summary_now_iso()
@@ -2491,8 +2503,15 @@ class DataService:
 
         return self.get_meta()
 
-    def sync_from_openwebui(self, hostname: str, api_key: Optional[str]) -> Tuple[DatasetMeta, DatasetSyncStats]:
-        """Pull chats, users, and models directly from an Open WebUI instance."""
+    def sync_from_openwebui(self, hostname: str, api_key: Optional[str], mode: Optional[str] = None) -> Tuple[DatasetMeta, DatasetSyncStats]:
+        """Pull chats, users, and models directly from an Open WebUI instance.
+
+        Args:
+            hostname: OpenWebUI hostname
+            api_key: Optional API key for authentication
+            mode: Optional sync mode - "full" to force full chat sync while preserving users/models,
+                  None to auto-detect based on source matching
+        """
         # Generate job ID for this sync operation
         job_id = uuid4().hex[:12]
 
@@ -2580,13 +2599,17 @@ class DataService:
                 current_origin = self._source_origin
                 current_source_display = self._get_dataset_source_host()
 
+            # If mode is explicitly "full", force full sync behavior for chats
+            # but still merge users/models incrementally
+            force_full_sync = mode == "full"
+
             same_source = False
             if requested_origin is not None and current_origin is not None:
                 requested_netloc, _ = requested_origin
                 current_netloc, _ = current_origin
                 same_source = requested_netloc == current_netloc
 
-            if same_source:
+            if same_source and not force_full_sync:
                 self._emit_log("info", "persist", "Performing incremental sync (same source)", job_id=job_id)
                 (
                     new_chat_ids,
@@ -2671,24 +2694,42 @@ class DataService:
                 self._emit_log("info", "done", f"Incremental sync complete: {len(new_chat_ids)} new chats, {new_message_count} new messages", job_id=job_id)
                 return dataset_meta, stats
 
-            self._emit_log("info", "persist", "Performing full sync (different source or first sync)", job_id=job_id)
-            self._storage.replace_dataset(chats, messages)
-            previous_assignments = self._snapshot_pseudonym_map()
-            assignments = _build_pseudonym_assignments(
-                (user.get("user_id") for user in normalized_users),
-                existing=previous_assignments,
-            )
-            enriched_users = _apply_pseudonyms_to_payload(normalized_users, assignments)
-            self._storage.replace_users(enriched_users)
-            self._storage.replace_models(normalized_models)
+            # Full sync requested - replace chats/messages but merge users/models
+            if force_full_sync:
+                self._emit_log("info", "persist", "Performing full chat sync (users and models merged incrementally)", job_id=job_id)
+                # Chats/messages were already wiped in the route handler
+                # Just insert the new data
+                self._storage.replace_dataset(chats, messages)
+
+                # For users and models, do incremental merge like in incremental sync
+                previous_assignments = self._snapshot_pseudonym_map()
+                new_user_ids = self._merge_users(normalized_users, previous_assignments)
+                new_model_ids, models_changed = self._merge_models(normalized_models)
+            else:
+                # Traditional full sync - different source, replace everything
+                self._emit_log("info", "persist", "Performing full sync (different source or first sync)", job_id=job_id)
+                self._storage.replace_dataset(chats, messages)
+                previous_assignments = self._snapshot_pseudonym_map()
+                assignments = _build_pseudonym_assignments(
+                    (user.get("user_id") for user in normalized_users),
+                    existing=previous_assignments,
+                )
+                enriched_users = _apply_pseudonyms_to_payload(normalized_users, assignments)
+                self._storage.replace_users(enriched_users)
+                self._storage.replace_models(normalized_models)
+                new_user_ids = []
+                models_changed = False
 
             with self._lock:
                 self._dataset_source_override = None
                 self._chats = chats
                 self._messages = messages
-                self._users = [user.copy() for user in enriched_users]
-                self._apply_pseudonyms_to_cached_users(previous_map=previous_assignments)
-                self._models = normalized_models
+                if not force_full_sync:
+                    # Traditional full sync - replace everything
+                    self._users = [user.copy() for user in enriched_users]
+                    self._apply_pseudonyms_to_cached_users(previous_map=previous_assignments)
+                    self._models = normalized_models
+                # For force_full_sync, users and models were already merged incrementally
                 missing_summary_chat_ids = [
                     str(chat.get("chat_id") or "").strip()
                     for chat in self._chats
@@ -3186,7 +3227,8 @@ class DataService:
                 options={"num_predict": 5}
             )
             # If we get a response without error, the model supports completions
-            return response is not None and "response" in response
+            # Check for the 'response' attribute (OllamaGenerateResult is a dataclass)
+            return response is not None and hasattr(response, 'response') and response.response is not None
         except Exception as exc:
             LOGGER.debug("Model %s does not support completions: %s", model_name, exc)
             return False
@@ -3489,6 +3531,101 @@ class DataService:
             self._scheduler_enabled,
             self._scheduler_interval_minutes,
         )
+
+    def _start_scheduler_thread(self) -> None:
+        """Start the background scheduler thread if not already running."""
+        if self._scheduler_thread is None or not self._scheduler_thread.is_alive():
+            self._scheduler_stop_event.clear()
+            worker = Thread(target=self._scheduler_worker, daemon=True)
+            self._scheduler_thread = worker
+            worker.start()
+            LOGGER.info("Scheduler background thread started")
+
+    def _scheduler_worker(self) -> None:
+        """Background worker that checks scheduler config and triggers syncs when due."""
+        LOGGER.info("Scheduler worker started")
+
+        while not self._scheduler_stop_event.is_set():
+            try:
+                # Check every 30 seconds if we need to run a sync
+                self._scheduler_stop_event.wait(30)
+
+                if self._scheduler_stop_event.is_set():
+                    break
+
+                # Check if scheduler is enabled and if it's time to run
+                with self._lock:
+                    enabled = self._scheduler_enabled
+                    interval_minutes = self._scheduler_interval_minutes
+                    last_run_at = self._scheduler_last_run_at
+
+                if not enabled:
+                    continue
+
+                # Determine if it's time to run
+                now = datetime.now(timezone.utc)
+                should_run = False
+
+                if last_run_at is None:
+                    # Never run before - run now
+                    should_run = True
+                    LOGGER.info("Scheduler triggered: first run")
+                else:
+                    # Ensure last_run_at is timezone-aware
+                    if last_run_at.tzinfo is None:
+                        last_run_at = last_run_at.replace(tzinfo=timezone.utc)
+
+                    elapsed = now - last_run_at
+                    if elapsed.total_seconds() >= (interval_minutes * 60):
+                        should_run = True
+                        LOGGER.info("Scheduler triggered: %d minutes elapsed since last run", interval_minutes)
+
+                if should_run:
+                    # Get direct connect settings and trigger sync
+                    try:
+                        settings = self.get_direct_connect_settings()
+                        hostname = settings.get("host", "")
+                        api_key = settings.get("api_key", "")
+
+                        if not hostname:
+                            LOGGER.warning("Scheduler sync skipped: no hostname configured")
+                            continue
+
+                        LOGGER.info("Scheduler starting automatic sync from %s", hostname)
+
+                        # Emit log to process logs for UI visibility
+                        job_id = uuid4().hex[:12]
+                        self._emit_log("info", "connect", f"Automatic sync triggered by scheduler", job_id=job_id)
+
+                        # Run the sync
+                        meta, stats = self.sync_from_openwebui(hostname, api_key)
+
+                        # Update last run timestamp
+                        now_for_storage = datetime.now(timezone.utc)
+                        with self._lock:
+                            self._scheduler_last_run_at = now_for_storage
+
+                        # Persist to database
+                        self._storage.write_settings({
+                            "SYNC_SCHEDULER_LAST_RUN_AT": now_for_storage.isoformat()
+                        })
+
+                        LOGGER.info(
+                            "Scheduler sync completed: %d chats, %d messages, %d users",
+                            stats.total_chats,
+                            stats.total_messages,
+                            stats.total_users,
+                        )
+                        self._emit_log("info", "done", f"Automatic sync completed successfully", job_id=job_id)
+
+                    except Exception as e:  # pylint: disable=broad-except
+                        LOGGER.exception("Scheduler sync failed: %s", str(e))
+                        self._emit_log("error", "error", f"Automatic sync failed: {str(e)}", job_id=job_id)
+
+            except Exception as e:  # pylint: disable=broad-except
+                LOGGER.exception("Error in scheduler worker: %s", str(e))
+
+        LOGGER.info("Scheduler worker stopped")
 
     def get_scheduler_config(self) -> Dict[str, Any]:
         """Get current scheduler configuration and state."""

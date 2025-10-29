@@ -175,6 +175,9 @@ interface ConnectionInfoState {
   schedulerDrawerOpen: boolean;
   schedulerEnabled: boolean;
   schedulerInterval: number;
+  schedulerNextRunAt: string | null;
+  schedulerLastRunAt: string | null;
+  schedulerCountdown: string;
   summaryModel: string;
   summaryModelSource?: "database" | "environment" | "default";
   summaryTemperature: number;
@@ -218,6 +221,9 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     schedulerDrawerOpen: false,
     schedulerEnabled: false,
     schedulerInterval: 60,
+    schedulerNextRunAt: null,
+    schedulerLastRunAt: null,
+    schedulerCountdown: "",
     summaryModel: "",
     summaryModelSource: undefined,
     summaryTemperature: 0.2,
@@ -488,6 +494,78 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     fetchSummarizerConfig();
   }, [initialSettings, fetchSummarizerConfig, fetchAnonymizationSettings]);
 
+  // Poll scheduler config every 10 seconds to update next_run_at
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      void fetchSchedulerConfig();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Update countdown timer every second
+  React.useEffect(() => {
+    const updateCountdown = () => {
+      if (!state.schedulerEnabled || !state.schedulerNextRunAt) {
+        setState(prev => ({ ...prev, schedulerCountdown: "" }));
+        return;
+      }
+
+      const now = new Date();
+      const nextRun = new Date(state.schedulerNextRunAt);
+      const diffMs = nextRun.getTime() - now.getTime();
+
+      if (diffMs <= 0) {
+        setState(prev => ({ ...prev, schedulerCountdown: "Running soon..." }));
+        return;
+      }
+
+      const minutes = Math.floor(diffMs / 60000);
+      const seconds = Math.floor((diffMs % 60000) / 1000);
+
+      if (minutes > 0) {
+        setState(prev => ({ ...prev, schedulerCountdown: `${minutes}m ${seconds}s` }));
+      } else {
+        setState(prev => ({ ...prev, schedulerCountdown: `${seconds}s` }));
+      }
+    };
+
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
+    return () => clearInterval(interval);
+  }, [state.schedulerEnabled, state.schedulerNextRunAt]);
+
+  // Monitor for auto-sync starts via process logs
+  React.useEffect(() => {
+    let lastCheckTime = Date.now();
+
+    const checkForAutoSync = async () => {
+      try {
+        const logs = await apiGet<ProcessLogEvent[]>("api/v1/sync/logs");
+
+        // Look for recent "Automatic sync triggered" messages
+        const recentAutoSyncLog = logs.find(log =>
+          log.message?.includes("Automatic sync triggered by scheduler") &&
+          new Date(log.timestamp).getTime() > lastCheckTime
+        );
+
+        if (recentAutoSyncLog) {
+          toast({
+            title: "Auto-Sync Started",
+            description: `Scheduled data sync is now running`,
+            variant: "default",
+            duration: 4000,
+          });
+          lastCheckTime = Date.now();
+        }
+      } catch (err) {
+        console.error("Failed to check process logs:", err);
+      }
+    };
+
+    const interval = setInterval(checkForAutoSync, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   const fetchDatasetMeta = async () => {
     try {
       const meta = await apiGet<DatasetMeta>("api/v1/datasets/meta");
@@ -534,6 +612,8 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         ...prev,
         schedulerEnabled: config.enabled,
         schedulerInterval: config.interval_minutes,
+        schedulerNextRunAt: config.next_run_at,
+        schedulerLastRunAt: config.last_run_at,
       }));
     } catch (err) {
       console.error("Failed to fetch scheduler config:", err);
@@ -1138,7 +1218,15 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
               <div className="text-left">
                 <div className="font-semibold">Scheduler</div>
                 <div className="text-xs text-muted-foreground font-normal">
-                  {state.schedulerEnabled ? `Active (${state.schedulerInterval}m)` : "Disabled"}
+                  {state.schedulerEnabled ? (
+                    state.schedulerCountdown ? (
+                      `Next: ${state.schedulerCountdown}`
+                    ) : (
+                      `Active (${state.schedulerInterval}m)`
+                    )
+                  ) : (
+                    "Disabled"
+                  )}
                 </div>
               </div>
             </Button>
@@ -1384,6 +1472,23 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
               </div>
 
               <div className="h-px bg-border" />
+
+              {/* Countdown Timer Display */}
+              {state.schedulerEnabled && state.schedulerCountdown && (
+                <div className="p-4 bg-muted/50 rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium">Next Sync In</div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Automatic sync countdown
+                      </p>
+                    </div>
+                    <div className="text-2xl font-mono font-bold text-primary">
+                      {state.schedulerCountdown}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Enable/Disable Toggle */}
               <div className="flex items-center justify-between">

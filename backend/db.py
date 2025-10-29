@@ -103,6 +103,11 @@ def _run_migrations() -> None:
                 conn.execute(text("ALTER TABLE chats ADD COLUMN gen_chat_outcome INTEGER"))
                 LOGGER.info("Added gen_chat_outcome column to chats table")
 
+            # Add gen_topics column if it doesn't exist
+            if "gen_topics" not in chat_columns:
+                conn.execute(text("ALTER TABLE chats ADD COLUMN gen_topics VARCHAR(1000)"))
+                LOGGER.info("Added gen_topics column to chats table")
+
         if engine.dialect.name != "sqlite":
             try:
                 with engine.begin() as conn:

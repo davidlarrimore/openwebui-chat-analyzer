@@ -110,19 +110,19 @@ export default async function DashboardOverviewPage() {
       description: "Conversation length per chat."
     },
     {
-      title: "Avg Input Tokens/Chat",
+      title: "Avg Input Characters/Chat",
       value: metrics ? metrics.avgInputTokensPerChat.toLocaleString(undefined, avgFormat) : "0.0",
-      description: "Approximate user characters per chat."
+      description: "Average user input characters per chat."
     },
     {
-      title: "Avg Output Tokens/Chat",
+      title: "Avg Output Characters/Chat",
       value: metrics ? metrics.avgOutputTokensPerChat.toLocaleString(undefined, avgFormat) : "0.0",
-      description: "Approximate assistant characters per chat."
+      description: "Average assistant response characters per chat."
     },
     {
-      title: "Total Tokens",
+      title: "Total Characters",
       value: metrics?.totalTokens.toLocaleString() ?? "0",
-      description: "Approximate total characters exchanged."
+      description: "Total input and output characters exchanged."
     }
   ];
 
@@ -143,15 +143,15 @@ export default async function DashboardOverviewPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Daily Token Consumption</CardTitle>
-          <CardDescription>Approximate characters generated over time.</CardDescription>
+          <CardTitle>Daily Character Consumption</CardTitle>
+          <CardDescription>Total characters generated over time.</CardDescription>
         </CardHeader>
         <CardContent>
           {tokenSeries.length ? (
             <TokenConsumptionChart data={tokenSeries} />
           ) : (
             <p className="text-sm text-muted-foreground">
-              Token consumption chart unavailable — insufficient timestamped data.
+              Character consumption chart unavailable — insufficient timestamped data.
             </p>
           )}
         </CardContent>

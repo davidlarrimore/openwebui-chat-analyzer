@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AverageMessageLengthChart, MessageLengthHistogram } from "@/components/charts/content-charts";
 import { WordCloud } from "@/components/charts/word-cloud";
+import { TopicHeatmap } from "@/components/charts/topic-heatmap";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import {
@@ -19,6 +20,7 @@ import {
   type ContentChat,
   type ContentMessage
 } from "@/lib/content-analysis";
+import { apiGet } from "@/lib/api";
 
 interface ContentAnalysisClientProps {
   chats: ContentChat[];
@@ -41,9 +43,24 @@ function AlertMessage({ children }: { children: React.ReactNode }) {
 export function ContentAnalysisClient({ chats, messages, userDisplayMap }: ContentAnalysisClientProps) {
   const [selectedUser, setSelectedUser] = useState<string>(ALL_USERS_OPTION);
   const [selectedModel, setSelectedModel] = useState<string>(ALL_MODELS_OPTION);
+  const [summarizerEnabled, setSummarizerEnabled] = useState<boolean | null>(null);
 
   const userOptions = useMemo(() => buildUserOptions(chats, userDisplayMap), [chats, userDisplayMap]);
   const modelOptions = useMemo(() => buildModelOptions(messages), [messages]);
+
+  // Fetch summarizer settings on mount
+  useEffect(() => {
+    const fetchSummarizerSettings = async () => {
+      try {
+        const settings = await apiGet<{ enabled: boolean }>("api/v1/admin/settings/summarizer");
+        setSummarizerEnabled(settings?.enabled ?? false);
+      } catch (error) {
+        console.error("Failed to fetch summarizer settings:", error);
+        setSummarizerEnabled(false);
+      }
+    };
+    fetchSummarizerSettings();
+  }, []);
 
   useEffect(() => {
     if (!userOptions.find((option) => option.value === selectedUser)) {
@@ -148,6 +165,28 @@ export function ContentAnalysisClient({ chats, messages, userDisplayMap }: Conte
         </CardHeader>
         <CardContent>
           {wordFrequencies.length ? <WordCloud words={wordFrequencies} /> : <AlertMessage>{wordCloudMessage}</AlertMessage>}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Topic Heatmap</CardTitle>
+          <CardDescription>
+            Visualize topic distribution across conversations based on AI-generated topic tags.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {summarizerEnabled === null ? (
+            <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
+              Loading summarizer status...
+            </div>
+          ) : !summarizerEnabled ? (
+            <AlertMessage>
+              Please enable and run Summarizer to see this visualization. Visit the Admin settings to enable the summarizer.
+            </AlertMessage>
+          ) : (
+            <TopicHeatmap chats={chats} />
+          )}
         </CardContent>
       </Card>
 

@@ -47,6 +47,7 @@ class ChatRecord(TimestampMixin, Base):
     title = Column(String(512), nullable=True)
     gen_chat_summary = Column(String(2500), nullable=True)
     gen_chat_outcome = Column(Integer, nullable=True)
+    gen_topics = Column(String(1000), nullable=True)
     created_ts = Column(DateTime(timezone=True), nullable=True)
     updated_ts = Column(DateTime(timezone=True), nullable=True)
     timestamp = Column(DateTime(timezone=True), nullable=True)

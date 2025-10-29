@@ -88,6 +88,7 @@ export interface OverviewChat {
   filesUploaded: number;
   createdAt: Date | null;
   updatedAt: Date | null;
+  genTopics?: string;
 }
 
 export interface OverviewMessage {
@@ -180,13 +181,15 @@ export function normaliseChats(raw: unknown): OverviewChat[] {
 
       const createdAt = parseTimestamp(record.created_at ?? record.timestamp);
       const updatedAt = parseTimestamp(record.updated_at ?? record.timestamp);
+      const genTopics = toStringOrNull(record.gen_topics);
 
       return {
         chatId,
         userId: userId ?? undefined,
         filesUploaded: Number.isFinite(filesUploaded) ? Number(filesUploaded) : 0,
         createdAt: createdAt ? cloneDateOnly(createdAt) : null,
-        updatedAt: updatedAt ? cloneDateOnly(updatedAt) : null
+        updatedAt: updatedAt ? cloneDateOnly(updatedAt) : null,
+        genTopics: genTopics ?? undefined
       } satisfies OverviewChat;
     })
     .filter(Boolean) as OverviewChat[];

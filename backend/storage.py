@@ -78,6 +78,7 @@ class DatabaseStorage:
             "title": record.title,
             "gen_chat_summary": record.gen_chat_summary,
             "gen_chat_outcome": record.gen_chat_outcome,
+            "gen_topics": record.gen_topics,
             "created_at": record.created_ts,
             "updated_at": record.updated_ts,
             "timestamp": record.timestamp,
@@ -230,6 +231,7 @@ class DatabaseStorage:
             Plain text summary string, or None if not present/invalid.
         """
         import json as json_lib
+        import re
 
         summary = payload.get("gen_chat_summary")
         if not summary:
@@ -258,7 +260,23 @@ class DatabaseStorage:
                     )
                     return None
             except json_lib.JSONDecodeError:
-                # Not actually JSON, allow it
+                # JSON parsing failed - try to extract text from incomplete JSON
+                # This handles cases where the LLM output was truncated
+                match = re.search(r'\{\s*"summary"\s*:\s*"(.+)', summary_str, re.DOTALL)
+                if match:
+                    extracted = match.group(1).strip()
+                    # Remove trailing quote if present
+                    if extracted.endswith('"'):
+                        extracted = extracted[:-1].strip()
+                    # Remove trailing incomplete JSON markers
+                    extracted = extracted.rstrip(', }\n\r\t\\').strip()
+                    if extracted:
+                        LOGGER.info(
+                            "Successfully extracted plain text from incomplete JSON for chat %s",
+                            payload.get("chat_id", "unknown")
+                        )
+                        return extracted
+                # Not valid JSON and couldn't extract - allow it as-is
                 pass
 
         return summary_str
@@ -579,22 +597,29 @@ class DatabaseStorage:
     def update_chat_summaries(
         self,
         summaries: Dict[str, str],
-        outcomes: Optional[Dict[str, int]] = None
+        outcomes: Optional[Dict[str, int]] = None,
+        topics: Optional[Dict[str, str]] = None
     ) -> None:
-        """Update chat summaries and optionally outcomes in the database.
+        """Update chat summaries, optionally outcomes, and optionally topics in the database.
 
         Args:
             summaries: Dictionary mapping chat_id to summary text
             outcomes: Optional dictionary mapping chat_id to outcome score (1-5)
+            topics: Optional dictionary mapping chat_id to topics string
         """
         if not summaries:
             return
         with session_scope() as session:
             for chat_id, summary in summaries.items():
-                values = {"gen_chat_summary": summary}
+                # Validate and extract plain text from summary (防御 against JSON strings)
+                validated_summary = self._extract_summary({"gen_chat_summary": summary, "chat_id": chat_id})
+                values = {"gen_chat_summary": validated_summary}
                 # Include outcome if provided for this chat
                 if outcomes and chat_id in outcomes:
                     values["gen_chat_outcome"] = outcomes[chat_id]
+                # Include topics if provided for this chat
+                if topics and chat_id in topics:
+                    values["gen_topics"] = topics[chat_id]
 
                 session.execute(
                     update(ChatRecord)
@@ -602,14 +627,36 @@ class DatabaseStorage:
                     .values(**values)
                 )
 
+        log_parts = [f"{len(summaries)} chats"]
         if outcomes:
+            log_parts.append(f"{len(outcomes)} with outcomes")
+        if topics:
+            log_parts.append(f"{len(topics)} with topics")
+        LOGGER.info("Updated summaries for %s", ", ".join(log_parts))
+
+    def wipe_chats_and_messages(self) -> None:
+        """Transactionally wipe only chats and messages (for full sync).
+
+        This performs a clean wipe of chats and messages only, preserving users and models.
+        Messages are deleted first (or cascade from chats), then chats.
+        """
+        LOGGER.info("Starting transactional wipe of chats and messages")
+        with session_scope() as session:
+            # Enable FK enforcement for SQLite (no-op for other DBs)
+            if engine.dialect.name == "sqlite":
+                session.execute(text("PRAGMA foreign_keys = ON"))
+
+            # Delete in FK-safe order: messages first, then chats
+            # Messages have FK to chats with CASCADE, so they'll be auto-deleted,
+            # but we delete explicitly for clarity and to support non-CASCADE scenarios
+            msg_count = session.execute(delete(MessageRecord)).rowcount
+            chat_count = session.execute(delete(ChatRecord)).rowcount
+
             LOGGER.info(
-                "Updated summaries and outcomes for %d chats (%d with outcomes)",
-                len(summaries),
-                len(outcomes)
+                "Wipe complete: deleted %d messages, %d chats (users and models preserved)",
+                msg_count,
+                chat_count,
             )
-        else:
-            LOGGER.info("Updated summaries for %d chats", len(summaries))
 
     def wipe_openwebui_data(self) -> None:
         """Transactionally wipe all OpenWebUI-sourced data (chats, messages, users, models).

@@ -544,12 +544,30 @@ def sync_openwebui(
             sync_status = service.get_sync_status()
             mode = sync_status.recommended_mode
 
-        # TODO: If mode == "full", consider clearing existing data before sync
-        # For now, sync_from_openwebui handles this via source matching logic
+        # If mode == "full", wipe existing chats and messages before syncing
+        # Users and models are preserved and updated incrementally
+        if mode == "full":
+            LOGGER.info("Full sync requested - wiping existing chats and messages")
+            service._storage.wipe_chats_and_messages()
+
+            # Clear in-memory state for chats and messages only
+            # IMPORTANT: Clear _source_origin to force the sync logic to treat this as a new/full sync
+            with service._lock:
+                service._chats = []
+                service._messages = []
+                service._source_origin = None  # Critical: clears source matching to force full sync behavior
+                service._dataset_source_override = None
+                # Preserve users and models
+                service._dataset_pulled_at = None
+                service._chats_uploaded_at = None
+                service._bump_version()
+
+            LOGGER.info("Chats and messages wiped successfully (users and models preserved)")
 
         dataset, stats = service.sync_from_openwebui(
             payload.hostname,
             payload.api_key,
+            mode=mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
