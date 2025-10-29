@@ -15,7 +15,7 @@ import {
   Line,
   LineChart
 } from "recharts";
-import type { AdoptionSeriesPoint, ModelUsageDatum, PieDatum, TokenSeriesPoint } from "@/lib/overview";
+import type { AdoptionSeriesPoint, DailyActiveUsersPoint, ModelUsageDatum, PieDatum, TokenSeriesPoint } from "@/lib/overview";
 
 const DISPLAY_TIMEZONE = "America/New_York";
 const palette = ["#6366f1", "#38bdf8", "#f97316", "#22c55e", "#c084fc", "#f43f5e", "#14b8a6", "#facc15"];
@@ -141,6 +141,42 @@ export function UserAdoptionChart({ data }: UserAdoptionChartProps) {
             dataKey="value"
             name="Cumulative Users"
             stroke="#10b981"
+            strokeWidth={2}
+            type="monotone"
+            dot={{ r: 2 }}
+            activeDot={{ r: 4 }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+export interface DailyActiveUsersChartProps {
+  data: DailyActiveUsersPoint[];
+}
+
+export function DailyActiveUsersChart({ data }: DailyActiveUsersChartProps) {
+  const chartData = data.map((point) => ({
+    ...point,
+    label: formatDateLabel(point.date)
+  }));
+
+  return (
+    <div className="h-72 w-full">
+      <ResponsiveContainer height="100%" width="100%">
+        <LineChart data={chartData}>
+          <CartesianGrid strokeDasharray="4 4" stroke="#e4e4e7" />
+          <XAxis dataKey="label" stroke="#71717a" />
+          <YAxis stroke="#71717a" />
+          <Tooltip
+            formatter={(value: number) => [`${value.toLocaleString()} users`, "Active Users"]}
+            labelFormatter={(label: string) => `Date: ${label}`}
+          />
+          <Line
+            dataKey="activeUsers"
+            name="Daily Active Users"
+            stroke="#f97316"
             strokeWidth={2}
             type="monotone"
             dot={{ r: 2 }}

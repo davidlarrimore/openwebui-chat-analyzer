@@ -351,6 +351,32 @@ def _normalize_bool(value: Any) -> Optional[bool]:
     return None
 
 
+def _extract_actions_from_status_history(status_history: List[Dict[str, Any]]) -> List[str]:
+    """Extract unique action names from a message's status_history.
+
+    Args:
+        status_history: List of status history entries from a message
+
+    Returns:
+        List of unique action names found in the status history
+    """
+    actions: List[str] = []
+    seen = set()
+
+    for entry in status_history:
+        if not isinstance(entry, dict):
+            continue
+
+        action = entry.get("action")
+        if action and isinstance(action, str):
+            action_str = action.strip()
+            if action_str and action_str not in seen:
+                actions.append(action_str)
+                seen.add(action_str)
+
+    return actions
+
+
 def _parse_chat_export(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Parse the Open WebUI chat export JSON into chat/message payloads."""
     if not raw_bytes:
@@ -585,9 +611,11 @@ def _parse_chat_export(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[Dic
         if isinstance(chat_summary_value, str):
             _set_chat_summary(chat_info, str(chat_summary_value))
 
-        chats.append(chat_info)
-
+        # Process messages and collect actions
         processed_ids: Set[str] = set()
+        chat_actions: List[str] = []
+        chat_actions_seen = set()
+
         chat_messages = chat_meta.get("messages", [])
         if isinstance(chat_messages, list):
             for msg in chat_messages:
@@ -604,6 +632,12 @@ def _parse_chat_export(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[Dic
                     messages.append(message_info)
                     if msg_id:
                         processed_ids.add(msg_id)
+                    # Extract actions from this message
+                    msg_actions = _extract_actions_from_status_history(message_info.get("status_history", []))
+                    for action in msg_actions:
+                        if action not in chat_actions_seen:
+                            chat_actions.append(action)
+                            chat_actions_seen.add(action)
 
         for msg_id, payload in history_messages.items():
             if msg_id in processed_ids:
@@ -611,6 +645,18 @@ def _parse_chat_export(raw_bytes: bytes) -> Tuple[List[Dict[str, Any]], List[Dic
             message_info = _build_message(chat_id, payload)
             if message_info:
                 messages.append(message_info)
+                # Extract actions from this message
+                msg_actions = _extract_actions_from_status_history(message_info.get("status_history", []))
+                for action in msg_actions:
+                    if action not in chat_actions_seen:
+                        chat_actions.append(action)
+                        chat_actions_seen.add(action)
+
+        # Add collected actions to chat metadata
+        if chat_actions:
+            chat_info["meta"]["actions"] = chat_actions
+
+        chats.append(chat_info)
 
     return chats, messages
 
@@ -888,6 +934,12 @@ def _normalize_messages(messages_raw: Any) -> List[Dict[str, Any]]:
         raw_models = _ensure_list(msg.get("models"))
         models = [str(model) for model in raw_models if model not in (None, "")]
 
+        # Extract status_history for action extraction
+        status_history = []
+        status_history_raw = msg.get("statusHistory") or msg.get("status_history") or []
+        if isinstance(status_history_raw, list):
+            status_history = [entry for entry in status_history_raw if isinstance(entry, dict)]
+
         normalized_messages.append(
             {
                 "id": str(message_id),
@@ -899,6 +951,7 @@ def _normalize_messages(messages_raw: Any) -> List[Dict[str, Any]]:
                 "timestamp": msg.get("timestamp") or msg.get("created_at") or msg.get("updated_at"),
                 "model": str(msg.get("model") or msg.get("model_id") or msg.get("assistant") or ""),
                 "models": models,
+                "statusHistory": status_history,
             }
         )
     return normalized_messages
@@ -1342,6 +1395,85 @@ class DataService:
 
         if persist_updates and dirty:
             self._storage.update_user_pseudonyms(dirty)
+
+    def _merge_users(self, normalized_users: List[Dict[str, str]], previous_assignments: Dict[str, str]) -> List[str]:
+        """Incrementally merge new users into the cached user list.
+
+        Args:
+            normalized_users: List of user dictionaries from the sync
+            previous_assignments: Previous pseudonym assignments
+
+        Returns:
+            List of new user IDs that were added
+        """
+        new_user_ids: List[str] = []
+
+        with self._lock:
+            existing_user_ids: Set[str] = set()
+            for user in self._users:
+                user_id_raw = user.get("user_id")
+                user_id = str(user_id_raw) if user_id_raw not in (None, "", []) else ""
+                if user_id:
+                    existing_user_ids.add(user_id)
+
+            for user in normalized_users:
+                user_id_raw = user.get("user_id")
+                user_id = str(user_id_raw) if user_id_raw not in (None, "", []) else ""
+                if not user_id or user_id in existing_user_ids:
+                    continue
+                name = str(user.get("name") or "")
+                self._users.append({"user_id": user_id, "name": name})
+                existing_user_ids.add(user_id)
+                new_user_ids.append(user_id)
+
+            self._apply_pseudonyms_to_cached_users(previous_map=previous_assignments)
+
+        return new_user_ids
+
+    def _merge_models(self, normalized_models: List[Dict[str, Any]]) -> Tuple[List[str], bool]:
+        """Incrementally merge new models into the cached model list.
+
+        Args:
+            normalized_models: List of model dictionaries from the sync
+
+        Returns:
+            Tuple of (list of new model IDs, boolean indicating if any models changed)
+        """
+        new_model_ids: List[str] = []
+        models_changed = False
+
+        with self._lock:
+            existing_models_index: Dict[str, int] = {}
+            updated_models: List[Dict[str, Any]] = list(self._models)
+            for idx, model in enumerate(updated_models):
+                model_id_raw = model.get("model_id")
+                model_id = str(model_id_raw) if model_id_raw not in (None, "", []) else ""
+                if model_id:
+                    existing_models_index[model_id] = idx
+
+            new_model_id_set: Set[str] = set()
+            for model in normalized_models:
+                model_id_raw = model.get("model_id")
+                model_id = str(model_id_raw) if model_id_raw not in (None, "", []) else ""
+                if not model_id:
+                    continue
+                existing_idx = existing_models_index.get(model_id)
+                if existing_idx is None:
+                    updated_models.append(model)
+                    existing_models_index[model_id] = len(updated_models) - 1
+                    if model_id not in new_model_id_set:
+                        new_model_ids.append(model_id)
+                        new_model_id_set.add(model_id)
+                    models_changed = True
+                else:
+                    if updated_models[existing_idx] != model:
+                        updated_models[existing_idx] = model
+                        models_changed = True
+
+            if models_changed:
+                self._models = updated_models
+
+        return new_model_ids, models_changed
 
     def _ensure_direct_connect_defaults_seeded(self) -> None:
         """Ensure the settings table stores Direct Connect defaults."""

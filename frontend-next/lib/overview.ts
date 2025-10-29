@@ -109,6 +109,7 @@ export interface OverviewChat {
   createdAt: Date | null;
   updatedAt: Date | null;
   tags: string[];
+  meta?: Record<string, unknown>;
 }
 
 export interface OverviewMessage {
@@ -124,11 +125,14 @@ export interface EngagementMetrics {
   totalChats: number;
   totalMessages: number;
   uniqueUsers: number;
+  avgDailyActiveUsers: number;
   avgMessagesPerChat: number;
   avgInputTokensPerChat: number;
   avgOutputTokensPerChat: number;
   totalTokens: number;
   filesUploaded: number;
+  webSearchesUsed: number;
+  knowledgeBaseUsed: number;
 }
 
 export interface DateSummary {
@@ -217,6 +221,7 @@ export function normaliseChats(raw: unknown): OverviewChat[] {
       const createdAt = parseTimestamp(record.created_at ?? record.timestamp);
       const updatedAt = parseTimestamp(record.updated_at ?? record.timestamp);
       const tags = toStringArray(record.tags);
+      const meta = record.meta && typeof record.meta === "object" ? record.meta as Record<string, unknown> : undefined;
 
       return {
         chatId,
@@ -224,7 +229,8 @@ export function normaliseChats(raw: unknown): OverviewChat[] {
         filesUploaded: Number.isFinite(filesUploaded) ? Number(filesUploaded) : 0,
         createdAt: createdAt ? cloneDateOnly(createdAt) : null,
         updatedAt: updatedAt ? cloneDateOnly(updatedAt) : null,
-        tags
+        tags,
+        meta
       } satisfies OverviewChat;
     })
     .filter(Boolean) as OverviewChat[];
@@ -363,6 +369,23 @@ export function calculateEngagementMetrics(chats: OverviewChat[], messages: Over
 
   const filesUploaded = chats.reduce((acc, chat) => acc + (Number.isFinite(chat.filesUploaded) ? chat.filesUploaded : 0), 0);
 
+  // Count chats with web search and knowledge base usage
+  let webSearchesUsed = 0;
+  let knowledgeBaseUsed = 0;
+  for (const chat of chats) {
+    if (chat.meta && typeof chat.meta === "object") {
+      const actions = chat.meta.actions;
+      if (Array.isArray(actions)) {
+        if (actions.includes("web_search")) {
+          webSearchesUsed++;
+        }
+        if (actions.includes("knowledge_search")) {
+          knowledgeBaseUsed++;
+        }
+      }
+    }
+  }
+
   const messagesPerChat = new Map<string, number>();
   for (const message of messages) {
     messagesPerChat.set(message.chatId, (messagesPerChat.get(message.chatId) ?? 0) + 1);
@@ -398,15 +421,85 @@ export function calculateEngagementMetrics(chats: OverviewChat[], messages: Over
   const avgOutputTokensPerChat =
     outputTokensPerChat.size > 0 ? totalOutputTokens / outputTokensPerChat.size : 0;
 
+  // Calculate average daily active users over the past 30 days
+  const chatUserMap = new Map<string, string>();
+  for (const chat of chats) {
+    if (chat.userId) {
+      chatUserMap.set(chat.chatId, chat.userId);
+    }
+  }
+
+  // Find the most recent activity date
+  const allTimestamps = [
+    ...messages.map((msg) => msg.timestamp).filter((ts): ts is Date => ts instanceof Date),
+    ...chats.map((chat) => chat.createdAt).filter((ts): ts is Date => ts instanceof Date)
+  ];
+
+  let avgDailyActiveUsers = 0;
+  if (allTimestamps.length > 0) {
+    const sortedTimestamps = allTimestamps.sort((a, b) => b.getTime() - a.getTime());
+    const mostRecentDate = cloneDateOnly(sortedTimestamps[0]);
+    const thirtyDaysAgo = new Date(mostRecentDate.getTime() - 30 * MS_PER_DAY);
+
+    // Track active users by day for the past 30 days
+    const activeUsersByDate = new Map<string, Set<string>>();
+
+    // Count users who sent messages in the past 30 days
+    for (const message of messages) {
+      if (message.role !== "user" || !message.timestamp) {
+        continue;
+      }
+      if (message.timestamp.getTime() < thirtyDaysAgo.getTime()) {
+        continue;
+      }
+      const userId = chatUserMap.get(message.chatId);
+      if (!userId) {
+        continue;
+      }
+      const dateKey = toDateKey(message.timestamp);
+      if (!activeUsersByDate.has(dateKey)) {
+        activeUsersByDate.set(dateKey, new Set());
+      }
+      activeUsersByDate.get(dateKey)!.add(userId);
+    }
+
+    // Count users who created chats in the past 30 days
+    for (const chat of chats) {
+      if (!chat.createdAt || !chat.userId) {
+        continue;
+      }
+      if (chat.createdAt.getTime() < thirtyDaysAgo.getTime()) {
+        continue;
+      }
+      const dateKey = toDateKey(chat.createdAt);
+      if (!activeUsersByDate.has(dateKey)) {
+        activeUsersByDate.set(dateKey, new Set());
+      }
+      activeUsersByDate.get(dateKey)!.add(chat.userId);
+    }
+
+    // Calculate average across all days with activity
+    if (activeUsersByDate.size > 0) {
+      const totalActiveUsers = Array.from(activeUsersByDate.values()).reduce(
+        (sum, userSet) => sum + userSet.size,
+        0
+      );
+      avgDailyActiveUsers = totalActiveUsers / activeUsersByDate.size;
+    }
+  }
+
   return {
     totalChats,
     totalMessages,
     uniqueUsers,
+    avgDailyActiveUsers,
     avgMessagesPerChat,
     avgInputTokensPerChat,
     avgOutputTokensPerChat,
     totalTokens: totalInputTokens + totalOutputTokens,
-    filesUploaded
+    filesUploaded,
+    webSearchesUsed,
+    knowledgeBaseUsed
   };
 }
 
@@ -557,6 +650,79 @@ export function buildUserAdoptionSeries(
     points.push({
       date: key,
       value: cumulative
+    });
+  }
+
+  return points;
+}
+
+export interface DailyActiveUsersPoint {
+  date: string;
+  activeUsers: number;
+}
+
+export function buildDailyActiveUsersSeries(
+  messages: OverviewMessage[],
+  chats: OverviewChat[],
+  chatUserMap: Map<string, string>,
+  dateMin?: Date | null,
+  dateMax?: Date | null
+): DailyActiveUsersPoint[] {
+  // Track which users were active on which days
+  const activeUsersByDate = new Map<string, Set<string>>();
+
+  // Track users who sent messages
+  for (const message of messages) {
+    if (message.role !== "user" || !message.timestamp) {
+      continue;
+    }
+    const userDisplay = chatUserMap.get(message.chatId) ?? "User";
+    const key = toDateKey(message.timestamp);
+
+    if (!activeUsersByDate.has(key)) {
+      activeUsersByDate.set(key, new Set());
+    }
+    activeUsersByDate.get(key)!.add(userDisplay);
+  }
+
+  // Track users who created chats
+  for (const chat of chats) {
+    if (!chat.createdAt || !chat.userId) {
+      continue;
+    }
+    const userDisplay = chatUserMap.get(chat.chatId) ?? "User";
+    const key = toDateKey(chat.createdAt);
+
+    if (!activeUsersByDate.has(key)) {
+      activeUsersByDate.set(key, new Set());
+    }
+    activeUsersByDate.get(key)!.add(userDisplay);
+  }
+
+  if (!activeUsersByDate.size) {
+    return [];
+  }
+
+  // Determine date range
+  const sortedDates = Array.from(activeUsersByDate.keys()).sort();
+  const firstDate = new Date(`${sortedDates[0]}T00:00:00Z`);
+  const lastDate = new Date(`${sortedDates[sortedDates.length - 1]}T00:00:00Z`);
+
+  const rangeStartCandidate = new Date(firstDate.getTime() - MS_PER_DAY);
+  const rangeStart =
+    dateMin && dateMin.getTime() < rangeStartCandidate.getTime() ? cloneDateOnly(dateMin) : rangeStartCandidate;
+  const rangeEnd =
+    dateMax && dateMax.getTime() > lastDate.getTime() ? cloneDateOnly(dateMax) : lastDate;
+
+  // Build the series
+  const points: DailyActiveUsersPoint[] = [];
+  for (let time = rangeStart.getTime(); time <= rangeEnd.getTime(); time += MS_PER_DAY) {
+    const date = new Date(time);
+    const key = toDateKey(date);
+    const activeUsers = activeUsersByDate.get(key)?.size ?? 0;
+    points.push({
+      date: key,
+      activeUsers
     });
   }
 

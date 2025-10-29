@@ -8,11 +8,15 @@ export interface KpiItem {
 
 interface KpiCardsProps {
   items: KpiItem[];
+  gridClassName?: string;
 }
 
-export function KpiCards({ items }: KpiCardsProps) {
+export function KpiCards({ items, gridClassName }: KpiCardsProps) {
+  const defaultGridClassName = "grid gap-4 sm:grid-cols-2 xl:grid-cols-4";
+  const gridClass = gridClassName || defaultGridClassName;
+
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <div className={gridClass}>
       {items.map((item) => (
         <Card key={item.title}>
           <CardHeader className="space-y-1">

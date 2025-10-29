@@ -75,6 +75,34 @@ function getFileLabel(value: unknown): string | null {
   return name;
 }
 
+function hasAction(chat: BrowseChat, actionName: string): boolean {
+  if (!chat.meta || typeof chat.meta !== "object") {
+    return false;
+  }
+
+  const actions = chat.meta.actions;
+  if (!Array.isArray(actions)) {
+    return false;
+  }
+
+  return actions.includes(actionName);
+}
+
+function getModelDisplayName(chat: BrowseChat, messages: BrowseMessage[]): string | null {
+  // First try to get from the first assistant message (has display name)
+  const firstAssistant = messages.find((msg) => msg.role === "assistant" && msg.model);
+  if (firstAssistant?.model) {
+    return firstAssistant.model;
+  }
+
+  // Fallback to chat.models if available
+  if (chat.models.length > 0) {
+    return chat.models[0];
+  }
+
+  return null;
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -371,11 +399,14 @@ export default function SearchClient({ chats, messages, summarizerEnabled }: Sea
             const attachmentNames = chat.files
               .map((file) => getFileLabel(file))
               .filter((name): name is string => Boolean(name));
+            const modelName = getModelDisplayName(chat, threadMessages);
             const headerMeta = [
               formatTimestamp(threadMessages[0]?.timestamp),
               chat.userDisplay || null,
-              chat.models.length > 0 ? chat.models[0] : null,
-              chat.filesUploaded > 0 ? `📎 ${chat.filesUploaded} attachment${chat.filesUploaded === 1 ? "" : "s"}` : null
+              modelName,
+              chat.filesUploaded > 0 ? `📎 ${chat.filesUploaded} attachment${chat.filesUploaded === 1 ? "" : "s"}` : null,
+              hasAction(chat, "web_search") ? "🔗 Web search" : null,
+              hasAction(chat, "knowledge_search") ? "📄 Knowledge" : null
             ]
               .filter(Boolean)
               .join(" • ");

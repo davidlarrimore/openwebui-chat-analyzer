@@ -1,6 +1,7 @@
 import { KpiCards } from "@/components/kpi-cards";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  DailyActiveUsersChart,
   ModelUsageBarChart,
   ModelUsagePieChart,
   TokenConsumptionChart,
@@ -9,6 +10,7 @@ import {
 import { apiGet } from "@/lib/api";
 import {
   buildChatUserMap,
+  buildDailyActiveUsersSeries,
   buildModelUsageBreakdown,
   buildTokenConsumptionSeries,
   buildUserAdoptionSeries,
@@ -77,6 +79,7 @@ export default async function DashboardOverviewPage() {
   const modelBreakdown = buildModelUsageBreakdown(messages);
   const modelPie = modelBreakdown.map(({ model, count }) => ({ name: model, value: count }));
   const adoptionSeries = buildUserAdoptionSeries(messages, chatUserMap, dateSummary.dateMin, dateSummary.dateMax);
+  const dailyActiveUsersSeries = buildDailyActiveUsersSeries(messages, chats, chatUserMap, dateSummary.dateMin, dateSummary.dateMax);
 
   const avgFormat: Intl.NumberFormatOptions = { minimumFractionDigits: 1, maximumFractionDigits: 1 };
 
@@ -97,9 +100,27 @@ export default async function DashboardOverviewPage() {
       description: "Users contributing to chats."
     },
     {
-      title: "User Files Uploaded",
+      title: "Daily Active Users",
+      value: metrics ? metrics.avgDailyActiveUsers.toLocaleString(undefined, avgFormat) : "0.0",
+      description: "Average users active per day over the past 30 days."
+    }
+  ];
+
+  const featureUsageKpis = [
+    {
+      title: "Files Uploaded",
       value: metrics?.filesUploaded.toLocaleString() ?? "0",
       description: "Attachments captured across chats."
+    },
+    {
+      title: "Web Searches",
+      value: metrics?.webSearchesUsed.toLocaleString() ?? "0",
+      description: "Chats that used web search functionality."
+    },
+    {
+      title: "Knowledge Base",
+      value: metrics?.knowledgeBaseUsed.toLocaleString() ?? "0",
+      description: "Chats that used knowledge base retrieval."
     }
   ];
 
@@ -139,6 +160,16 @@ export default async function DashboardOverviewPage() {
         </div>
         <KpiCards items={primaryKpis} />
         <KpiCards items={secondaryKpis} />
+      </section>
+
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight text-foreground">Feature Usage Overview</h2>
+          <p className="text-sm text-muted-foreground">
+            Advanced features utilized across conversations.
+          </p>
+        </div>
+        <KpiCards items={featureUsageKpis} gridClassName="grid gap-4 md:grid-cols-3" />
       </section>
 
       <Card>
@@ -200,6 +231,22 @@ export default async function DashboardOverviewPage() {
           ) : (
             <p className="text-sm text-muted-foreground">
               Need user-authored messages with timestamps to plot adoption over time.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Daily Active Users</CardTitle>
+          <CardDescription>Number of users who created a conversation or sent a message each day.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {dailyActiveUsersSeries.length ? (
+            <DailyActiveUsersChart data={dailyActiveUsersSeries} />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Need user activity data with timestamps to plot daily active users over time.
             </p>
           )}
         </CardContent>
