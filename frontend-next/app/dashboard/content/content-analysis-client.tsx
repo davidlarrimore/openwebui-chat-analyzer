@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AverageMessageLengthChart, MessageLengthHistogram } from "@/components/charts/content-charts";
 import { WordCloud } from "@/components/charts/word-cloud";
-import { TopicHeatmap } from "@/components/charts/topic-heatmap";
+import { TopicTreemap } from "@/components/charts/topic-treemap";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import {
@@ -78,6 +78,19 @@ export function ContentAnalysisClient({ chats, messages, userDisplayMap }: Conte
     () => filterMessagesByUserAndModel(chats, messages, selectedUser, selectedModel),
     [chats, messages, selectedModel, selectedUser]
   );
+
+  const filteredChats = useMemo(() => {
+    if (selectedUser === ALL_USERS_OPTION && selectedModel === ALL_MODELS_OPTION) {
+      return chats;
+    }
+
+    if (!matchingChatIds.length) {
+      return [];
+    }
+
+    const chatIdSet = new Set(matchingChatIds);
+    return chats.filter((chat) => chatIdSet.has(chat.chatId));
+  }, [chats, matchingChatIds, selectedModel, selectedUser]);
 
   const averageLengthData = useMemo(() => calculateAverageMessageLength(filteredMessages), [filteredMessages]);
   const histogramData = useMemo(() => buildMessageLengthHistogram(filteredMessages), [filteredMessages]);
@@ -170,9 +183,9 @@ export function ContentAnalysisClient({ chats, messages, userDisplayMap }: Conte
 
       <Card>
         <CardHeader>
-          <CardTitle>Topic Heatmap</CardTitle>
+          <CardTitle>Topic Treemap</CardTitle>
           <CardDescription>
-            Visualize topic distribution across conversations based on AI-generated topic tags.
+            Compare how frequently summarizer-generated topics appear across your conversations.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -185,7 +198,7 @@ export function ContentAnalysisClient({ chats, messages, userDisplayMap }: Conte
               Please enable and run Summarizer to see this visualization. Visit the Admin settings to enable the summarizer.
             </AlertMessage>
           ) : (
-            <TopicHeatmap chats={chats} />
+            <TopicTreemap chats={filteredChats} />
           )}
         </CardContent>
       </Card>
@@ -214,4 +227,3 @@ export function ContentAnalysisClient({ chats, messages, userDisplayMap }: Conte
     </div>
   );
 }
-
