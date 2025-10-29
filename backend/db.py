@@ -103,10 +103,16 @@ def _run_migrations() -> None:
                 conn.execute(text("ALTER TABLE chats ADD COLUMN gen_chat_outcome INTEGER"))
                 LOGGER.info("Added gen_chat_outcome column to chats table")
 
-            # Add gen_topics column if it doesn't exist
-            if "gen_topics" not in chat_columns:
-                conn.execute(text("ALTER TABLE chats ADD COLUMN gen_topics VARCHAR(1000)"))
-                LOGGER.info("Added gen_topics column to chats table")
+            # Remove deprecated gen_topics column if present
+            if "gen_topics" in chat_columns:
+                try:
+                    conn.execute(text("ALTER TABLE chats DROP COLUMN gen_topics"))
+                    LOGGER.info("Removed gen_topics column from chats table")
+                except Exception:  # pragma: no cover - best-effort cleanup
+                    LOGGER.warning(
+                        "Failed to drop gen_topics column; manual migration may be required.",
+                        exc_info=True,
+                    )
 
         if engine.dialect.name != "sqlite":
             try:

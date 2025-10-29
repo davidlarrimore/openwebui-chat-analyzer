@@ -26,3 +26,14 @@ if (globalAny.Response && typeof globalAny.Response.json !== "function") {
     return new Response(payload, { ...init, headers });
   };
 }
+
+jest.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: jest.fn(),
+    replace: jest.fn(),
+    refresh: jest.fn(),
+    back: jest.fn(),
+    forward: jest.fn(),
+    prefetch: jest.fn()
+  })
+}));

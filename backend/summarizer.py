@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -35,13 +36,19 @@ _SUMMARIZER_ENABLED = True  # Summarizer enabled by default
 
 def get_summary_model() -> str:
     """Return the active Ollama model used for summarization."""
-    return _SUMMARY_MODEL or OLLAMA_SUMMARY_MODEL
+    candidate = (_SUMMARY_MODEL or "").strip() or (OLLAMA_SUMMARY_MODEL or "").strip()
+    if not candidate:
+        raise RuntimeError("No Ollama summary model is configured. Set a model before generating summaries.")
+    return candidate
 
 
 def get_summary_fallback_model() -> str:
     """Return the configured fallback model, ensuring it differs from the primary."""
-    fallback = _SUMMARY_FALLBACK_MODEL or OLLAMA_SUMMARY_FALLBACK_MODEL or ""
-    primary = get_summary_model()
+    fallback = (_SUMMARY_FALLBACK_MODEL or "").strip() or (OLLAMA_SUMMARY_FALLBACK_MODEL or "").strip()
+    try:
+        primary = get_summary_model()
+    except RuntimeError:
+        primary = ""
     if fallback and fallback == primary:
         return ""
     return fallback
@@ -90,27 +97,59 @@ class ConversationAnalysis:
     This dataclass represents the extracted insights from analyzing a chat conversation.
     The summary field is ALWAYS plain text (never JSON or structured data).
     The outcome field is an optional integer score from 1-5 rating conversation success.
-    The topics field is an optional comma-separated string of topical keywords.
-
     Attributes:
         summary: Plain text summary describing the conversation topic and key points.
                  Guaranteed to be a single-line string, never JSON.
         outcome: Optional integer from 1-5 rating conversation success:
                  1 = Not Successful, 2 = Partially Successful, 3 = Moderately Successful,
-                 4 = Mostly Successful, 5 = Fully Successful
-        topics: Optional comma-separated list of short topical keywords describing what was discussed
+                 4 = Mostly Successful, 5 = Fully Successful.
+        failure_reason: Textual description of why summarization failed, when applicable.
+        provider: Identifier for the generator that produced the response (e.g. "ollama").
+        prompt: Exact prompt that was sent to the provider, truncated only in logs.
+        raw_response: Raw provider response text captured when a failure occurs.
     """
     summary: str
     outcome: Optional[int] = None
-    topics: Optional[str] = None
+    failure_reason: Optional[str] = None
+    provider: Optional[str] = None
+    prompt: Optional[str] = None
+    raw_response: Optional[str] = None
+
+
+class StructuredResponseError(RuntimeError):
+    """Raised when a provider response cannot be parsed into the expected structure."""
+
+    def __init__(self, message: str, response_text: str = ""):
+        super().__init__(message)
+        self.response_text = response_text or ""
+
+
+class SummarizerProviderUnavailableError(RuntimeError):
+    """Raised when a summarization provider is unreachable after retries."""
+
+    def __init__(
+        self,
+        provider: str,
+        message: str,
+        *,
+        attempts: int,
+        delay_seconds: float,
+        last_error: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.attempts = attempts
+        self.delay_seconds = delay_seconds
+        self.last_error = last_error or ""
 
 SALIENT_K = int(os.getenv("SALIENT_K", "10"))
 EMB_MODEL_NAME = os.getenv("EMB_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 SUMMARY_FIELD = "gen_chat_summary"
 OUTCOME_FIELD = "gen_chat_outcome"
-TOPICS_FIELD = "gen_topics"
 CHUNK_CHAR_LIMIT = max(64, int(os.getenv("SUMMARY_CHUNK_CHAR_LIMIT", "2048")))
 CHUNK_OVERLAP_LINES = max(0, int(os.getenv("SUMMARY_CHUNK_OVERLAP_LINES", "2")))
+OLLAMA_RETRY_ATTEMPTS = max(1, int(os.getenv("SUMMARIZER_OLLAMA_RETRY_ATTEMPTS", "3")))
+OLLAMA_RETRY_DELAY_SECONDS = max(0.0, float(os.getenv("SUMMARIZER_OLLAMA_RETRY_DELAY_SECONDS", "3.0")))
 
 def _normalize_base_url(value: str) -> str:
     """Normalize a host string into a usable HTTP base URL."""
@@ -146,6 +185,113 @@ def _format_debug_text(text: str) -> str:
     if len(text) > _DEBUG_JSON_LIMIT:
         return f"{text[:_DEBUG_JSON_LIMIT]}…(truncated)"
     return text
+
+
+def _log_generation_failure(
+    provider: str,
+    prompt: str,
+    reason: str,
+    response: Optional[str] = None,
+    exc: Optional[BaseException] = None,
+) -> None:
+    """Emit a structured error log with prompt/response previews for failed generations."""
+    prompt_preview = _format_debug_text(prompt)
+    response_preview = _format_debug_text(response) if response is not None else "<none>"
+    _logger.error(
+        "Summarizer %s failure: %s\nPrompt: %s\nResponse: %s",
+        provider,
+        reason,
+        prompt_preview,
+        response_preview,
+        exc_info=exc,
+    )
+
+
+def _iter_exception_chain(exc: BaseException) -> Iterable[BaseException]:
+    """Yield the exception and its causes without cycles."""
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__  # type: ignore[assignment]
+
+
+def _is_transient_ollama_error(exc: BaseException) -> bool:
+    """Return True when the exception indicates a connectivity issue worth retrying."""
+    keywords = (
+        "failed to establish a new connection",
+        "connection refused",
+        "connection reset",
+        "network is unreachable",
+        "name or service not known",
+        "temporarily unavailable",
+        "connection aborted",
+        "timed out",
+        "timeout",
+    )
+    for candidate in _iter_exception_chain(exc):
+        if isinstance(candidate, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+            return True
+        text = str(candidate).lower()
+        if any(keyword in text for keyword in keywords):
+            return True
+    return False
+
+
+def _call_ollama_with_retry(
+    context: str,
+    *,
+    model: str,
+    prompt: str,
+) -> ConversationAnalysis:
+    """Call Ollama with retry logic to handle transient connectivity failures."""
+    attempts = max(1, OLLAMA_RETRY_ATTEMPTS)
+    delay = max(0.0, OLLAMA_RETRY_DELAY_SECONDS)
+    last_error: Optional[BaseException] = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return _headline_with_ollama(context, model=model, prompt=prompt)
+        except (StructuredResponseError, OllamaOutOfMemoryError):
+            raise
+        except OllamaClientError as exc:
+            last_error = exc
+            if _is_transient_ollama_error(exc) and attempt < attempts:
+                wait_seconds = delay
+                if wait_seconds > 0:
+                    _logger.warning(
+                        "Ollama attempt %d/%d failed due to connectivity issue; retrying in %.1fs",
+                        attempt,
+                        attempts,
+                        wait_seconds,
+                        exc_info=True,
+                    )
+                    time.sleep(wait_seconds)
+                else:
+                    _logger.warning(
+                        "Ollama attempt %d/%d failed due to connectivity issue; retrying immediately",
+                        attempt,
+                        attempts,
+                        exc_info=True,
+                    )
+                continue
+            if _is_transient_ollama_error(exc):
+                message = (
+                    f"Ollama became unreachable after {attempts} attempts. "
+                    "Verify the service is running and accessible."
+                )
+                raise SummarizerProviderUnavailableError(
+                    "ollama",
+                    message,
+                    attempts=attempts,
+                    delay_seconds=delay,
+                    last_error=str(exc),
+                ) from exc
+            raise
+
+    assert last_error is not None  # for type checkers
+    raise last_error
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -341,29 +487,65 @@ _HEADLINE_SYS = (
     "You provide a summary and assess conversation outcome."
 )
 
+#template for small sized models (2.5b and below)
 _HEADLINE_USER_TMPL = (
-    "Analyze this chat interaction and return ONLY a valid JSON object with three fields:\n\n"
-    "1. \"summary\": A single-line summary describing the conversation topic, what the user wanted, and what the assistant provided (no quotes, no trailing punctuation)\n"
-    "2. \"outcome\": A numeric score (1-5) rating conversation success:\n"
-    "   - 1 = Not Successful\n"
-    "       * Irrelevant, incoherent, hallucinated, or fails to understand user intent\n"
-    "       * Serious factual errors; no meaningful progress toward user goal\n"
-    "   - 2 = Partially Successful\n"
-    "       * Intent recognized but response incomplete, incorrect, or overly generic\n"
-    "       * Noticeable factual errors; requires significant follow-up to be useful\n"
-    "   - 3 = Moderately Successful\n"
-    "       * Relevant and helpful but lacks depth, detail, or completeness\n"
-    "       * Provides minimal value; user intent addressed only at a basic level\n"
-    "   - 4 = Mostly Successful\n"
-    "       * Clear, correct, helpful answer with minor omissions or limitations\n"
-    "       * Actionable and well-structured; largely fulfills user intent\n"
-    "   - 5 = Fully Successful\n"
-    "       * Fully satisfies user intent with accurate, complete, contextual, and actionable response\n"
-    "       * No follow-up needed; provides strong clarity and value\n"
-    "3. \"topics\": A comma-separated list of short topical keywords describing what was discussed (e.g. \"HR, customer service, debugging, pandas\")\n\n"
+    "Analyze this chat interaction and return ONLY valid JSON with two fields:\n"
+    "1. summary – one sentence: what the user wanted, what the assistant did, and the outcome type\n"
+    "2. outcome – integer 1-5 scoring how well the assistant fulfilled the MOST RECENT user request\n\n"
+    "SCORING RULES (objective, simple):\n"
+    "1 = Not Successful\n"
+    "    • User request not fulfilled\n"
+    "    • Assistant refused without helpful alternative OR abandoned task\n\n"
+    "2 = Partially Successful\n"
+    "    • Some relevant info, but missing major requested elements\n"
+    "    • Needed follow-up not completed\n\n"
+    "3 = Moderately Successful\n"
+    "    • Useful but incomplete\n"
+    "    • Missing detail or depth, but partially fulfills request\n\n"
+    "4 = Mostly Successful\n"
+    "    • Fulfilled most requested elements; small non-blocking gaps\n"
+    "    • No required follow-up needed\n\n"
+    "5 = Fully Successful\n"
+    "    • Complete fulfillment; nothing missing\n"
+    "    • No necessary follow-up; task is done\n\n"
+    "Notes:\n"
+    "• If assistant requested follow-up info, count it ONLY if necessary for the task\n"
+    "• Evaluate based on the user's latest goal\n"
+    "• User sentiment is supportive signal only\n\n"
     "Context:\n{ctx}\n\n"
-    "Return ONLY valid JSON in this exact format:\n"
-    "{{\"summary\": \"your summary here\", \"outcome\": 4, \"topics\": \"topic1, topic2\"}}"
+"Return ONLY this JSON format:\n"
+"{{\"summary\": \"your summary here\", \"outcome\": 4}}"
+)
+
+#Template for moderate sized models (7b-14b)
+_HEADLINE_USER_MOD_TMPL = (
+    "Analyze the chat interaction below and return ONLY valid JSON with two fields:\n"
+    "1. summary – One sentence describing: what the user wanted, what the assistant did, and the resulting outcome type (no quotes, no trailing punctuation)\n"
+    "2. outcome – Integer 1–5 scoring how well the assistant fulfilled the MOST RECENT user request\n\n"
+    "SCORING RULES (objective; use transcript only):\n"
+    "1 = Not Successful\n"
+    "    • User request NOT fulfilled\n"
+    "    • Assistant refused without helpful alternative OR abandoned task\n\n"
+    "2 = Partially Successful\n"
+    "    • Response relevant but missing major requested elements\n"
+    "    • Necessary follow-up not completed\n\n"
+    "3 = Moderately Successful\n"
+    "    • Some usable fulfillment but incomplete or limited\n"
+    "    • Lacks key detail, accuracy, or actionability\n\n"
+    "4 = Mostly Successful\n"
+    "    • Fulfilled most of the request; small non-blocking gaps\n"
+    "    • No required follow-up needed\n\n"
+    "5 = Fully Successful\n"
+    "    • Complete fulfillment of the request\n"
+    "    • No necessary follow-up; task done\n\n"
+    "Additional Guidance:\n"
+    " • Evaluate based on the user's MOST RECENT explicit request.\n"
+    " • If assistant asked for user input, count it ONLY if essential to complete the task.\n"
+    " • Appropriate safety refusals may still score 3–4 if well-explained and helpful.\n"
+    " • User sentiment (thanks / complaints) may support the score but should not override objective fulfillment.\n\n"
+    "Context:\n{ctx}\n\n"
+"Return ONLY valid JSON in this exact format:\n"
+"{{\"summary\": \"your summary here\", \"outcome\": 4}}"
 )
 
 def _clean(text: str) -> str:
@@ -498,26 +680,28 @@ def _trim_one_line(text: str) -> str:
 def _parse_structured_response(response_text: str) -> ConversationAnalysis:
     """Parse and extract summary text from LLM response, handling various formats.
 
-    The LLM is instructed to return JSON like: {"summary": "...", "outcome": 4, "topics": "..."}
+    The LLM is instructed to return JSON like: {"summary": "...", "outcome": 4}
     However, LLMs may wrap this in explanatory text, markdown code fences, or
-    return it in unexpected formats. This function robustly extracts the summary,
-    outcome, and topics, ensuring the summary is always plain text, never JSON.
+    return it in unexpected formats. This function robustly extracts the summary
+    and outcome, ensuring the summary is always plain text, never JSON.
 
     Parsing strategy:
     1. Remove markdown code fences if present
     2. Try parsing the entire response as JSON
     3. If that fails, search for JSON objects within the text
-    4. Extract the "summary", "outcome", and "topics" fields
-    5. Fall back to using the response text directly if no JSON is found
+    4. Extract the "summary" and "outcome" fields; raise if missing
 
     Args:
         response_text: Raw response text from the LLM, ideally JSON but possibly wrapped.
 
     Returns:
-        ConversationAnalysis with plain text summary (never JSON), optional outcome score, and optional topics.
+        ConversationAnalysis with plain text summary (never JSON) and optional outcome score.
+
+    Raises:
+        StructuredResponseError: When the response cannot be parsed into a valid summary.
     """
     if not response_text:
-        return ConversationAnalysis(summary="", outcome=None, topics=None)
+        raise StructuredResponseError("LLM response was empty", "")
 
     original_text = response_text.strip()
 
@@ -548,13 +732,11 @@ def _parse_structured_response(response_text: str) -> ConversationAnalysis:
             except (json.JSONDecodeError, ValueError):
                 _logger.debug("Found JSON-like structure but failed to parse it")
 
-    # Step 4: Extract summary, outcome, and topics from parsed JSON
+    # Step 4: Extract summary and outcome from parsed JSON
     if parsed_data and isinstance(parsed_data, dict):
         summary_raw = parsed_data.get("summary", "")
         summary = str(summary_raw).strip() if summary_raw else ""
         outcome = parsed_data.get("outcome")
-        topics_raw = parsed_data.get("topics", "")
-        topics = str(topics_raw).strip() if topics_raw else None
 
         # Validate outcome is in range 1-5
         if outcome is not None:
@@ -588,12 +770,12 @@ def _parse_structured_response(response_text: str) -> ConversationAnalysis:
             summary = _trim_one_line(summary)
 
             if summary:
-                return ConversationAnalysis(summary=summary, outcome=outcome, topics=topics)
+                return ConversationAnalysis(summary=summary, outcome=outcome)
+            raise StructuredResponseError("LLM response summary field was empty after cleaning.", original_text)
 
-    # Step 5: Fall back to using the original response text as summary
-    _logger.debug("No valid JSON structure found in LLM response, using text directly")
-    summary = _trim_one_line(original_text)
-    return ConversationAnalysis(summary=summary, outcome=None, topics=None)
+        raise StructuredResponseError("LLM response JSON missing 'summary' field.", original_text)
+
+    raise StructuredResponseError("LLM response did not contain valid summary JSON.", original_text)
 
 
 def _build_context(messages: Sequence[Mapping[str, object]]) -> str:
@@ -602,7 +784,12 @@ def _build_context(messages: Sequence[Mapping[str, object]]) -> str:
     return _build_context_from_lines(lines)
 
 
-def _headline_with_ollama(context: str, *, model: Optional[str] = None) -> ConversationAnalysis:
+def _headline_with_ollama(
+    context: str,
+    *,
+    model: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> ConversationAnalysis:
     """Generate structured conversation analysis using the local Ollama service.
 
     Sends a prompt to Ollama requesting JSON output with summary and outcome fields.
@@ -617,7 +804,7 @@ def _headline_with_ollama(context: str, *, model: Optional[str] = None) -> Conve
     """
     active_model = (model or "").strip() or get_summary_model()
     client = get_ollama_client()
-    prompt = _HEADLINE_USER_TMPL.format(ctx=context)
+    prompt_text = prompt or _HEADLINE_USER_TMPL.format(ctx=context)
     _logger.debug(
         "Requesting Ollama analysis model=%s context_chars=%d",
         active_model,
@@ -629,25 +816,27 @@ def _headline_with_ollama(context: str, *, model: Optional[str] = None) -> Conve
         "num_ctx": 1024,
     }
     result = client.generate(
-        prompt=prompt,
+        prompt=prompt_text,
         model=active_model,
         system=_HEADLINE_SYS,
         options=options,
         keep_alive=OLLAMA_KEEP_ALIVE,
     )
     analysis = _parse_structured_response(result.response)
+    analysis.provider = "ollama"
+    analysis.prompt = prompt_text
+    analysis.raw_response = result.response or ""
     _logger.debug(
-        "Ollama analysis response model=%s chars=%d summary=%r outcome=%s topics=%r",
+        "Ollama analysis response model=%s chars=%d summary=%r outcome=%s",
         result.model,
         len(result.response or ""),
         analysis.summary[:120],
         analysis.outcome,
-        analysis.topics,
     )
     return analysis
 
 
-def _headline_with_openwebui(context: str) -> ConversationAnalysis:
+def _headline_with_openwebui(context: str, *, prompt: Optional[str] = None) -> ConversationAnalysis:
     """Call the legacy Open WebUI completion endpoint to obtain structured analysis.
 
     Args:
@@ -655,13 +844,14 @@ def _headline_with_openwebui(context: str) -> ConversationAnalysis:
     Returns:
         ConversationAnalysis: Structured analysis with summary and outcome.
     """
+    prompt_text = prompt or _HEADLINE_USER_TMPL.format(ctx=context)
     payload = {
         "model": OWUI_COMPLETIONS_MODEL,
         "temperature": 0.1,
         "max_tokens": 256,  # Allow sufficient tokens for complete JSON response with summary text
         "messages": [
             {"role": "system", "content": _HEADLINE_SYS},
-            {"role": "user", "content": _HEADLINE_USER_TMPL.format(ctx=context)},
+            {"role": "user", "content": prompt_text},
         ],
     }
 
@@ -709,12 +899,14 @@ def _headline_with_openwebui(context: str) -> ConversationAnalysis:
         _logger.debug("OpenWebUI analysis parsed JSON: %s", _format_debug_json(data))
 
     analysis = _parse_structured_response(text)
+    analysis.provider = "openwebui"
+    analysis.prompt = prompt_text
+    analysis.raw_response = text or ""
     _logger.debug(
-        "OpenWebUI analysis response chars=%d summary=%r outcome=%s topics=%r",
+        "OpenWebUI analysis response chars=%d summary=%r outcome=%s",
         len(text),
         analysis.summary[:120],
         analysis.outcome,
-        analysis.topics,
     )
     return analysis
 
@@ -722,14 +914,44 @@ def _headline_with_openwebui(context: str) -> ConversationAnalysis:
 def _headline_with_llm(context: str) -> ConversationAnalysis:
     """Attempt structured conversation analysis via Ollama, falling back to Open WebUI if needed."""
     _logger.debug("Analyzing conversation via LLM for context_chars=%d", len(context))
-    primary_model = get_summary_model()
-    fallback_candidate = get_summary_fallback_model()
+    prompt = _HEADLINE_USER_TMPL.format(ctx=context)
     try:
-        analysis = _headline_with_ollama(context)
+        primary_model = get_summary_model()
+    except Exception as exc:
+        reason = f"Unable to determine summary model: {exc}"
+        _log_generation_failure("ollama", prompt, reason, None, exc)
+        return ConversationAnalysis(summary="", outcome=None, failure_reason=reason, provider="ollama", prompt=prompt)
+
+    fallback_candidate = get_summary_fallback_model()
+    failure_details: Optional[Dict[str, Optional[str]]] = None
+
+    def remember_failure(
+        provider: str,
+        reason: str,
+        response: Optional[str],
+        exc: Optional[BaseException] = None,
+    ) -> None:
+        nonlocal failure_details
+        failure_details = {
+            "provider": provider,
+            "reason": reason,
+            "response": response,
+        }
+        _log_generation_failure(provider, prompt, reason, response, exc)
+
+    try:
+        analysis = _call_ollama_with_retry(context, model=primary_model, prompt=prompt)
         if analysis.summary:
             _logger.debug("Analysis obtained via Ollama")
             return analysis
+        remember_failure("ollama", "Ollama returned an empty summary response.", analysis.raw_response or "", None)
+    except SummarizerProviderUnavailableError as exc:
+        remember_failure("ollama", str(exc), exc.last_error or "", exc)
+        raise
+    except StructuredResponseError as exc:
+        remember_failure("ollama", f"Ollama response parsing failed: {exc}", exc.response_text, exc)
     except OllamaOutOfMemoryError as exc:  # pragma: no cover - depends on runtime model.
+        remember_failure("ollama", f"Ollama model {primary_model} ran out of memory.", "", exc)
         fallback_model = fallback_candidate
         if fallback_model:
             _logger.warning(
@@ -739,16 +961,39 @@ def _headline_with_llm(context: str) -> ConversationAnalysis:
                 exc_info=True,
             )
             try:
-                analysis = _headline_with_ollama(context, model=fallback_model)
+                analysis = _headline_with_ollama(context, model=fallback_model, prompt=prompt)
                 if analysis.summary:
                     _logger.debug("Analysis obtained via Ollama fallback model %s", fallback_model)
                     return analysis
-            except OllamaClientError as fallback_exc:
-                _logger.warning(
-                    "Ollama fallback model %s failed: %s",
-                    fallback_model,
+                remember_failure(
+                    "ollama",
+                    f"Ollama fallback model {fallback_model} returned an empty summary response.",
+                    analysis.raw_response or "",
+                    None,
+                )
+            except StructuredResponseError as fallback_exc:
+                remember_failure(
+                    "ollama",
+                    f"Ollama fallback model {fallback_model} response parsing failed: {fallback_exc}",
+                    fallback_exc.response_text,
                     fallback_exc,
-                    exc_info=True,
+                )
+            except OllamaClientError as fallback_exc:
+                remember_failure(
+                    "ollama",
+                    f"Ollama fallback model {fallback_model} failed: {fallback_exc}",
+                    "",
+                    fallback_exc,
+                )
+            except SummarizerProviderUnavailableError as fallback_exc:
+                remember_failure("ollama", str(fallback_exc), fallback_exc.last_error or "", fallback_exc)
+                raise
+            except Exception as fallback_exc:  # pragma: no cover - logged for observability.
+                remember_failure(
+                    "ollama",
+                    f"Ollama fallback model {fallback_model} encountered an unexpected error: {fallback_exc}",
+                    "",
+                    fallback_exc,
                 )
         else:
             _logger.warning(
@@ -756,31 +1001,41 @@ def _headline_with_llm(context: str) -> ConversationAnalysis:
                 exc_info=True,
             )
     except OllamaClientError as exc:  # pragma: no cover - logged for observability.
-        _logger.warning(
-            "Ollama summarization failed; attempting Open WebUI fallback: %s",
-            exc,
-            exc_info=True,
-        )
+        remember_failure("ollama", f"Ollama summarization failed: {exc}", "", exc)
     except Exception as exc:  # pragma: no cover - logged for observability.
-        _logger.warning(
-            "Unexpected error during Ollama summarization; attempting Open WebUI fallback: %s",
-            exc,
-            exc_info=True,
-        )
+        remember_failure("ollama", f"Unexpected error during Ollama summarization: {exc}", "", exc)
 
-    if not OWUI_FALLBACK_ENABLED:
-        _logger.debug("Open WebUI fallback disabled; returning empty analysis")
-        return ConversationAnalysis(summary="", outcome=None)
+    if OWUI_FALLBACK_ENABLED:
+        try:
+            analysis = _headline_with_openwebui(context, prompt=prompt)
+            if analysis.summary:
+                _logger.debug("Analysis obtained via Open WebUI fallback")
+                return analysis
+            remember_failure(
+                "openwebui",
+                "Open WebUI returned an empty summary response.",
+                analysis.raw_response or "",
+                None,
+            )
+        except StructuredResponseError as exc:  # pragma: no cover - logged for observability.
+            remember_failure("openwebui", f"Open WebUI response parsing failed: {exc}", exc.response_text, exc)
+        except Exception as exc:  # pragma: no cover - logged for observability.
+            remember_failure("openwebui", f"Open WebUI fallback failed: {exc}", "", exc)
+            _disable_openwebui_fallback(str(exc))
+    else:
+        _logger.debug("Open WebUI fallback disabled; summarizer will return failure if Ollama fails.")
 
-    try:
-        analysis = _headline_with_openwebui(context)
-        if analysis.summary:
-            _logger.debug("Analysis obtained via Open WebUI fallback")
-        return analysis
-    except Exception as exc:  # pragma: no cover - logged for observability.
-        _logger.warning("Open WebUI fallback failed: %s", exc, exc_info=True)
-        _disable_openwebui_fallback(str(exc))
-        return ConversationAnalysis(summary="", outcome=None)
+    failure_reason = failure_details["reason"] if failure_details else "Summarizer failed without a reported reason."
+    provider = failure_details["provider"] if failure_details else "ollama"
+    raw_response = failure_details["response"] if failure_details else None
+    return ConversationAnalysis(
+        summary="",
+        outcome=None,
+        failure_reason=failure_reason,
+        provider=provider,
+        prompt=prompt,
+        raw_response=raw_response,
+    )
 
 
 def _estimate_token_length(text: str) -> int:
@@ -799,22 +1054,33 @@ def _summarize_context(context: str) -> ConversationAnalysis:
     Args:
         context (str): Concatenated salient conversation lines.
     Returns:
-        ConversationAnalysis: Analysis with summary, outcome, and topics, or fallback with no outcome/topics.
+        ConversationAnalysis: Analysis with summary and optional outcome, or fallback with no outcome.
     """
     if not context:
-        return ConversationAnalysis(summary="", outcome=None, topics=None)
+        return ConversationAnalysis(summary="", outcome=None)
     _logger.debug("Analyzing single chat context_chars=%d", len(context))
     try:
         analysis = _headline_with_llm(context)
-        if analysis.summary:
-            _logger.debug("Analysis obtained via LLM summary=%r outcome=%s topics=%r", analysis.summary[:120], analysis.outcome, analysis.topics)
-            return analysis
-        _logger.warning("LLM returned an empty summary; using fallback snippet.")
-    except Exception as exc:
-        _logger.warning("LLM analysis request failed; falling back to snippet: %s", exc, exc_info=True)
-    fallback_summary = _trim_one_line(context)
-    _logger.debug("Using fallback snippet preview=%r", fallback_summary[:120])
-    return ConversationAnalysis(summary=fallback_summary, outcome=None, topics=None)
+    except SummarizerProviderUnavailableError:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive guard.
+        prompt = _HEADLINE_USER_TMPL.format(ctx=context)
+        reason = f"Summarizer pipeline exception: {exc}"
+        _log_generation_failure("pipeline", prompt, reason, None, exc)
+        return ConversationAnalysis(summary="", outcome=None, failure_reason=reason, provider="pipeline", prompt=prompt)
+
+    if analysis.summary:
+        _logger.debug("Analysis obtained via LLM summary=%r outcome=%s", analysis.summary[:120], analysis.outcome)
+        return analysis
+
+    failure_reason = analysis.failure_reason or "Summarizer did not return a summary."
+    _logger.error(
+        "Summarizer failed for context chars=%d provider=%s reason=%s",
+        len(context),
+        analysis.provider or "<unknown>",
+        failure_reason,
+    )
+    return analysis
 
 
 def summarize_chat(messages: Sequence[Mapping[str, object]]) -> ConversationAnalysis:
@@ -823,11 +1089,11 @@ def summarize_chat(messages: Sequence[Mapping[str, object]]) -> ConversationAnal
     Args:
         messages (Sequence[Mapping[str, object]]): Exported messages for a single chat.
     Returns:
-        ConversationAnalysis: Structured analysis with summary, outcome score, and topics.
+        ConversationAnalysis: Structured analysis with summary and optional outcome score.
     """
     context = _build_context(messages)
     if not context:
-        return ConversationAnalysis(summary="", outcome=None, topics=None)
+        return ConversationAnalysis(summary="", outcome=None)
 
     return _summarize_context(context)
 
@@ -851,7 +1117,7 @@ def _summarize_with_chunks(
         joined_lines = " ".join(str(line).strip() for line in lines if str(line).strip())
         context = joined_lines
     if not context:
-        return ConversationAnalysis(summary="", outcome=None, topics=None)
+        return ConversationAnalysis(summary="", outcome=None)
 
     _logger.debug(
         "Analyzing chat %s without chunking (context_chars=%d)",
@@ -862,14 +1128,13 @@ def _summarize_with_chunks(
     analysis = _summarize_context(context)
     if analysis.summary:
         _logger.debug(
-            "Analysis generated for chat %s summary=%r outcome=%s topics=%r",
+            "Analysis generated for chat %s summary=%r outcome=%s",
             chat_id or "<unknown>",
             analysis.summary[:120],
             analysis.outcome,
-            analysis.topics,
         )
         return analysis
-    return ConversationAnalysis(summary="", outcome=None, topics=None)
+    return ConversationAnalysis(summary="", outcome=None)
 
 
 def summarize_chats(
@@ -878,14 +1143,14 @@ def summarize_chats(
     on_progress: ProgressCallback = None,
     *,
     replace_existing: bool = False,
-    on_chat_complete: Optional[Callable[[Dict[str, str], Dict[str, int]], None]] = None,
+    on_chat_complete: Optional[Callable[[Dict[str, str], Dict[str, Optional[int]]], None]] = None,
 ) -> tuple[Dict[str, str], Dict[str, int]]:
     """Summarize chats individually and return a map of chat_id -> summary plus stats.
 
     This function processes each chat conversation, generates a plain text summary and
-    outcome score using an LLM, and ensures all summaries are validated to be plain text
-    (never JSON or structured data). Summaries and outcomes are persisted both in-memory
-    and optionally via callback for immediate database storage.
+        outcome score using an LLM, and ensures all summaries are validated to be plain text
+        (never JSON or structured data). Summaries and outcomes are persisted both in-memory
+        and optionally via callback for immediate database storage.
 
     Args:
         chats: Chat metadata dictionaries to summarize.
@@ -893,8 +1158,8 @@ def summarize_chats(
         on_progress: Optional callback invoked after each chat with progress info.
         replace_existing: When True, regenerate summaries even if one already exists.
         on_chat_complete: Optional callback invoked after each chat is processed with
-                          two dicts: {chat_id: summary} and {chat_id: outcome} for
-                          immediate persistence.
+                          two dicts: {chat_id: summary} and {chat_id: outcome|None}
+                          for immediate persistence or clearing.
 
     Returns:
         A tuple of (summary_map, stats) where:
@@ -989,38 +1254,62 @@ def summarize_chats(
         if not context:
             context = " ".join(lines[: SALIENT_K])
 
-        analysis = _summarize_with_chunks(
-            lines,
-            fallback_context=context,
-            on_progress=on_progress,
-            progress_index=idx,
-            total=total,
-            chat_id=chat_id,
-        )
+        try:
+            analysis = _summarize_with_chunks(
+                lines,
+                fallback_context=context,
+                on_progress=on_progress,
+                progress_index=idx,
+                total=total,
+                chat_id=chat_id,
+            )
+        except SummarizerProviderUnavailableError:
+            raise
+        failure_reason: Optional[str] = None
+        prompt_snapshot: Optional[str] = analysis.prompt
+        response_snapshot: Optional[str] = analysis.raw_response
+        failure_provider: Optional[str] = analysis.provider
 
         if analysis.summary:
             generated += 1
-            # Store summary, outcome, and topics in the chat dict
+            # Store summary and outcome in the chat dict
             summary_map[chat_id] = analysis.summary
             _set_chat_summary(chat, analysis.summary)
             if analysis.outcome is not None:
                 chat[OUTCOME_FIELD] = analysis.outcome
-            if analysis.topics is not None:
-                chat[TOPICS_FIELD] = analysis.topics
             outcome = "generated"
+            failure_provider = None
             if on_chat_complete:
                 try:
-                    # Pass summary, outcome, and topics to callback for persistence
+                    # Pass summary and outcome to callback for persistence
                     outcome_map = {chat_id: analysis.outcome} if analysis.outcome is not None else {}
-                    topics_map = {chat_id: analysis.topics} if analysis.topics is not None else {}
-                    on_chat_complete({chat_id: analysis.summary}, outcome_map, topics_map)
-                    _logger.info("Persisted summary, outcome, and topics for chat %s", chat_id)
+                    on_chat_complete({chat_id: analysis.summary}, outcome_map)
+                    _logger.info("Persisted summary and outcome for chat %s", chat_id)
                 except Exception as exc:  # pragma: no cover
                     _logger.warning("Failed to persist metrics for chat %s: %s", chat_id, exc, exc_info=True)
         else:
             failures += 1
-            _set_chat_summary(chat, previous_summary if previous_summary else "")
+            _set_chat_summary(chat, "")
+            chat.pop(OUTCOME_FIELD, None)
             outcome = "failed"
+            failure_reason = analysis.failure_reason or "Summarizer returned no summary."
+            if on_chat_complete:
+                try:
+                    on_chat_complete({chat_id: ""}, {chat_id: None})
+                    _logger.info("Cleared summary and outcome for chat %s after failure", chat_id)
+                except Exception as exc:  # pragma: no cover
+                    _logger.warning(
+                        "Failed to clear metrics for chat %s after summarizer failure: %s",
+                        chat_id,
+                        exc,
+                        exc_info=True,
+                    )
+            _logger.error(
+                "Summarizer failure persisted for chat %s: %s (provider=%s)",
+                chat_id,
+                failure_reason,
+                failure_provider or "<unknown>",
+            )
 
         if on_progress:
             details = {
@@ -1031,6 +1320,17 @@ def summarize_chats(
                 "outcome": outcome,
                 "event_id": f"chat-{chat_id or 'unknown'}-{idx}",
             }
+            if failure_reason:
+                details["failure_reason"] = failure_reason
+                if failure_provider:
+                    details["failure_provider"] = failure_provider
+                if prompt_snapshot:
+                    details["prompt_preview"] = _format_debug_text(prompt_snapshot)
+                if response_snapshot is not None:
+                    details["response_preview"] = _format_debug_text(response_snapshot)
+                details["message_override"] = (
+                    f"Summarizer failed for chat {chat_id or 'unknown'}: {failure_reason}"
+                )
             try:
                 on_progress(idx, total, chat_id, outcome, details)
             except Exception:  # pragma: no cover

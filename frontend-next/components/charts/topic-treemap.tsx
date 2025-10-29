@@ -42,7 +42,7 @@ const COLOR_PALETTE = [
   "#10b981"
 ];
 
-function formatTopicLabel(value: string): string {
+function formatTagLabel(value: string): string {
   const trimmed = value.trim();
   if (!trimmed.length) {
     return "Unknown";
@@ -64,25 +64,27 @@ function buildTreemapData(chats: ContentChat[]): TreemapDatum[] {
   const counts = new Map<string, { name: string; value: number }>();
 
   for (const chat of chats) {
-    if (!chat.genTopics) continue;
+    if (!Array.isArray(chat.tags) || chat.tags.length === 0) {
+      continue;
+    }
 
-    const topics = chat.genTopics
-      .split(",")
-      .map((topic) => topic.trim())
-      .filter((topic) => topic.length > 0);
-
-    for (const topic of topics) {
-      const key = topic.toLowerCase();
+    for (const rawTag of chat.tags) {
+      const tag = rawTag?.toString().trim();
+      if (!tag) {
+        continue;
+      }
+      const key = tag.toLowerCase();
       const existing = counts.get(key);
 
       if (existing) {
         existing.value += 1;
-      } else {
-        counts.set(key, {
-          name: formatTopicLabel(topic),
-          value: 1
-        });
+        continue;
       }
+
+      counts.set(key, {
+        name: formatTagLabel(tag),
+        value: 1
+      });
     }
   }
 
@@ -100,7 +102,7 @@ export function TopicTreemap({ chats }: TopicTreemapProps) {
   if (treemapData.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
-        No topic data available. Run the summarizer to generate topic insights.
+        No tag data available yet. Add tags to Open WebUI chats to populate this treemap.
       </div>
     );
   }
@@ -125,7 +127,7 @@ export function TopicTreemap({ chats }: TopicTreemapProps) {
                 <div className="rounded-lg border bg-background p-3 shadow-lg">
                   <p className="font-semibold">{datum.name}</p>
                   <p className="text-sm">
-                    {datum.value.toLocaleString()} chats tagged with this topic
+                    {datum.value.toLocaleString()} chats with this tag
                   </p>
                 </div>
               );

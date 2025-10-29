@@ -62,7 +62,7 @@ export const ALL_MODELS_OPTION = "All Models";
 export interface ContentChat {
   chatId: string;
   userId?: string | null;
-  genTopics?: string | null;
+  tags: string[];
 }
 
 export interface ContentMessage {

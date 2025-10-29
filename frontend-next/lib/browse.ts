@@ -158,7 +158,6 @@ export interface BrowseChat {
   title: string;
   summary: string;
   outcome: number | null;
-  topics: string | null;
   createdAt: string | null;
   updatedAt: string | null;
   userDisplay: string;
@@ -265,10 +264,6 @@ export function normaliseBrowseChats(rawChats: unknown, rawUsers: unknown): Brow
         outcome = Math.round(outcomeValue);
       }
 
-      // Extract topics (comma-separated string)
-      const topicsValue = record.gen_topics ?? record.topics;
-      const topics = toStringOrNull(topicsValue);
-
       const tagsSet = new Set<string>();
       for (const candidate of toStringArray(meta.tags)) {
         tagsSet.add(candidate);
@@ -291,7 +286,6 @@ export function normaliseBrowseChats(rawChats: unknown, rawUsers: unknown): Brow
         title,
         summary,
         outcome,
-        topics,
         createdAt,
         updatedAt,
         userDisplay,

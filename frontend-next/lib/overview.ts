@@ -1,3 +1,5 @@
+import { encode } from "gpt-tokenizer/encoding/cl100k_base";
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DISPLAY_TIMEZONE = "America/New_York";
 const DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
@@ -6,6 +8,24 @@ const DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   month: "2-digit",
   day: "2-digit"
 });
+
+function countTokens(text: string): number {
+  if (typeof text !== "string") {
+    return 0;
+  }
+  if (!text) {
+    return 0;
+  }
+  try {
+    return encode(text).length;
+  } catch {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return 0;
+    }
+    return Math.max(1, Math.ceil(trimmed.length / 4));
+  }
+}
 
 function parseTimestamp(value: unknown): Date | null {
   if (value instanceof Date) {
@@ -88,7 +108,7 @@ export interface OverviewChat {
   filesUploaded: number;
   createdAt: Date | null;
   updatedAt: Date | null;
-  genTopics?: string;
+  tags: string[];
 }
 
 export interface OverviewMessage {
@@ -97,6 +117,7 @@ export interface OverviewMessage {
   content: string;
   timestamp: Date | null;
   model: string;
+  tokenCount: number;
 }
 
 export interface EngagementMetrics {
@@ -149,6 +170,20 @@ function toStringOrNull(value: unknown): string | null {
   return null;
 }
 
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const result: string[] = [];
+  for (const entry of value) {
+    const normalized = toStringOrNull(entry);
+    if (normalized) {
+      result.push(normalized);
+    }
+  }
+  return result;
+}
+
 export function normaliseChats(raw: unknown): OverviewChat[] {
   if (!Array.isArray(raw)) {
     return [];
@@ -181,7 +216,7 @@ export function normaliseChats(raw: unknown): OverviewChat[] {
 
       const createdAt = parseTimestamp(record.created_at ?? record.timestamp);
       const updatedAt = parseTimestamp(record.updated_at ?? record.timestamp);
-      const genTopics = toStringOrNull(record.gen_topics);
+      const tags = toStringArray(record.tags);
 
       return {
         chatId,
@@ -189,7 +224,7 @@ export function normaliseChats(raw: unknown): OverviewChat[] {
         filesUploaded: Number.isFinite(filesUploaded) ? Number(filesUploaded) : 0,
         createdAt: createdAt ? cloneDateOnly(createdAt) : null,
         updatedAt: updatedAt ? cloneDateOnly(updatedAt) : null,
-        genTopics: genTopics ?? undefined
+        tags
       } satisfies OverviewChat;
     })
     .filter(Boolean) as OverviewChat[];
@@ -285,13 +320,15 @@ export function normaliseMessages(raw: unknown, modelMap: Map<string, string>): 
 
       const modelResolved = modelCandidates.find((candidate) => modelMap.get(candidate)) ?? modelCandidates[0] ?? "";
       const modelDisplay = modelResolved ? modelMap.get(modelResolved) ?? modelResolved : "";
+      const tokenCount = countTokens(content);
 
       return {
         chatId,
         role,
         content,
         timestamp,
-        model: modelDisplay
+        model: modelDisplay,
+        tokenCount
       } satisfies OverviewMessage;
     })
     .filter(Boolean) as OverviewMessage[];
@@ -341,11 +378,11 @@ export function calculateEngagementMetrics(chats: OverviewChat[], messages: Over
   const sumTokensByChat = (collection: OverviewMessage[]): Map<string, number> => {
     const map = new Map<string, number>();
     for (const message of collection) {
-      const length = message.content?.length ?? 0;
-      if (length <= 0) {
+      const tokens = message.tokenCount ?? 0;
+      if (tokens <= 0) {
         continue;
       }
-      map.set(message.chatId, (map.get(message.chatId) ?? 0) + length);
+      map.set(message.chatId, (map.get(message.chatId) ?? 0) + tokens);
     }
     return map;
   };
@@ -412,8 +449,11 @@ export function buildTokenConsumptionSeries(messages: OverviewMessage[]): TokenS
       continue;
     }
     const key = toDateKey(message.timestamp);
-    const length = message.content?.length ?? 0;
-    tokensByDate.set(key, (tokensByDate.get(key) ?? 0) + length);
+    const tokens = message.tokenCount ?? 0;
+    if (tokens <= 0) {
+      continue;
+    }
+    tokensByDate.set(key, (tokensByDate.get(key) ?? 0) + tokens);
     if (!minKey || key < minKey) {
       minKey = key;
     }

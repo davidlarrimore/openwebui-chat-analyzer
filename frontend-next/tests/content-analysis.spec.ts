@@ -13,8 +13,8 @@ import {
 
 describe("content analysis helpers", () => {
   const chats: ContentChat[] = [
-    { chatId: "c1", userId: "u1" },
-    { chatId: "c2", userId: "u2" }
+    { chatId: "c1", userId: "u1", tags: ["analysis", "reporting"] },
+    { chatId: "c2", userId: "u2", tags: ["design"] }
   ];
 
   const messages: ContentMessage[] = [
@@ -83,4 +83,3 @@ describe("content analysis helpers", () => {
     expect(helloEntry?.count).toBeGreaterThanOrEqual(1);
   });
 });
-

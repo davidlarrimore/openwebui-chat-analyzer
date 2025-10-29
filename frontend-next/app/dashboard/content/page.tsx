@@ -77,7 +77,7 @@ export default async function ContentAnalysisPage() {
   const chatsPayload: ContentChat[] = chats.map((chat) => ({
     chatId: chat.chatId,
     userId: chat.userId ?? null,
-    genTopics: chat.genTopics ?? null
+    tags: chat.tags ?? []
   }));
 
   const messagesPayload: ContentMessage[] = messages.map((message) => ({

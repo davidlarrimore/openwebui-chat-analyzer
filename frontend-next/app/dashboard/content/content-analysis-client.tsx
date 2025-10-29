@@ -20,7 +20,6 @@ import {
   type ContentChat,
   type ContentMessage
 } from "@/lib/content-analysis";
-import { apiGet } from "@/lib/api";
 
 interface ContentAnalysisClientProps {
   chats: ContentChat[];
@@ -43,24 +42,9 @@ function AlertMessage({ children }: { children: React.ReactNode }) {
 export function ContentAnalysisClient({ chats, messages, userDisplayMap }: ContentAnalysisClientProps) {
   const [selectedUser, setSelectedUser] = useState<string>(ALL_USERS_OPTION);
   const [selectedModel, setSelectedModel] = useState<string>(ALL_MODELS_OPTION);
-  const [summarizerEnabled, setSummarizerEnabled] = useState<boolean | null>(null);
 
   const userOptions = useMemo(() => buildUserOptions(chats, userDisplayMap), [chats, userDisplayMap]);
   const modelOptions = useMemo(() => buildModelOptions(messages), [messages]);
-
-  // Fetch summarizer settings on mount
-  useEffect(() => {
-    const fetchSummarizerSettings = async () => {
-      try {
-        const settings = await apiGet<{ enabled: boolean }>("api/v1/admin/settings/summarizer");
-        setSummarizerEnabled(settings?.enabled ?? false);
-      } catch (error) {
-        console.error("Failed to fetch summarizer settings:", error);
-        setSummarizerEnabled(false);
-      }
-    };
-    fetchSummarizerSettings();
-  }, []);
 
   useEffect(() => {
     if (!userOptions.find((option) => option.value === selectedUser)) {
@@ -183,23 +167,13 @@ export function ContentAnalysisClient({ chats, messages, userDisplayMap }: Conte
 
       <Card>
         <CardHeader>
-          <CardTitle>Topic Treemap</CardTitle>
+          <CardTitle>Tag Treemap</CardTitle>
           <CardDescription>
-            Compare how frequently summarizer-generated topics appear across your conversations.
+            Explore how often Open WebUI tags appear across conversations in the current filter selection.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {summarizerEnabled === null ? (
-            <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-              Loading summarizer status...
-            </div>
-          ) : !summarizerEnabled ? (
-            <AlertMessage>
-              Please enable and run Summarizer to see this visualization. Visit the Admin settings to enable the summarizer.
-            </AlertMessage>
-          ) : (
-            <TopicTreemap chats={filteredChats} />
-          )}
+          <TopicTreemap chats={filteredChats} />
         </CardContent>
       </Card>
 

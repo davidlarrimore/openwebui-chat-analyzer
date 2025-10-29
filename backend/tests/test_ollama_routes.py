@@ -163,7 +163,7 @@ def test_generate_summary_falls_back_when_model_runs_out_of_memory(
 def test_generate_text_uses_default_temperature(api_client: TestClient, dummy_ollama: DummyOllamaClient) -> None:
     response = api_client.post(
         "/api/v1/genai/generate",
-        json={"prompt": "Write haiku about testing."},
+        json={"prompt": "Write haiku about testing.", "model": "phi3:mini"},
     )
 
     assert response.status_code == 200
@@ -180,7 +180,8 @@ def test_chat_endpoint_returns_message(api_client: TestClient, dummy_ollama: Dum
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi there!"},
                 {"role": "user", "content": "How are you?"},
-            ]
+            ],
+            "model": "phi3:mini",
         },
     )
 

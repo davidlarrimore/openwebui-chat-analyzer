@@ -78,7 +78,6 @@ class DatabaseStorage:
             "title": record.title,
             "gen_chat_summary": record.gen_chat_summary,
             "gen_chat_outcome": record.gen_chat_outcome,
-            "gen_topics": record.gen_topics,
             "created_at": record.created_ts,
             "updated_at": record.updated_ts,
             "timestamp": record.timestamp,
@@ -597,15 +596,13 @@ class DatabaseStorage:
     def update_chat_summaries(
         self,
         summaries: Dict[str, str],
-        outcomes: Optional[Dict[str, int]] = None,
-        topics: Optional[Dict[str, str]] = None
+        outcomes: Optional[Dict[str, Optional[int]]] = None,
     ) -> None:
-        """Update chat summaries, optionally outcomes, and optionally topics in the database.
+        """Update chat summaries and optionally outcomes in the database.
 
         Args:
             summaries: Dictionary mapping chat_id to summary text
-            outcomes: Optional dictionary mapping chat_id to outcome score (1-5)
-            topics: Optional dictionary mapping chat_id to topics string
+            outcomes: Optional dictionary mapping chat_id to outcome score (1-5) or None to clear
         """
         if not summaries:
             return
@@ -617,9 +614,6 @@ class DatabaseStorage:
                 # Include outcome if provided for this chat
                 if outcomes and chat_id in outcomes:
                     values["gen_chat_outcome"] = outcomes[chat_id]
-                # Include topics if provided for this chat
-                if topics and chat_id in topics:
-                    values["gen_topics"] = topics[chat_id]
 
                 session.execute(
                     update(ChatRecord)
@@ -630,8 +624,6 @@ class DatabaseStorage:
         log_parts = [f"{len(summaries)} chats"]
         if outcomes:
             log_parts.append(f"{len(outcomes)} with outcomes")
-        if topics:
-            log_parts.append(f"{len(topics)} with topics")
         LOGGER.info("Updated summaries for %s", ", ".join(log_parts))
 
     def wipe_chats_and_messages(self) -> None:

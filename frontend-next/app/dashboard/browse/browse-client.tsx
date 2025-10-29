@@ -336,16 +336,17 @@ export default function BrowseClient({ chats, messages, summarizerEnabled }: Bro
                       <p className="whitespace-pre-wrap leading-relaxed">
                         {chat.summary?.trim() ? chat.summary.trim() : "No summary available."}
                       </p>
-                      {chat.topics && (
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <span className="text-xs font-semibold text-indigo-700">Topics:</span>
-                          {chat.topics.split(",").map((topic, idx) => (
-                            <span key={idx} className="inline-flex items-center rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-medium text-indigo-800">
-                              {topic.trim()}
-                            </span>
-                          ))}
-                        </div>
-                      )}
+                    </div>
+                  )}
+
+                  {chat.tags.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tags:</span>
+                      {chat.tags.map((tag, index) => (
+                        <span key={`${tag}-${index}`} className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700">
+                          {tag}
+                        </span>
+                      ))}
                     </div>
                   )}
 

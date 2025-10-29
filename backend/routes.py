@@ -634,7 +634,12 @@ def generate_summary(
 ) -> GenAISummarizeResponse:
     """Generate a concise summary using the Ollama service."""
     context = payload.context.strip()
-    primary_model = (payload.model or "").strip() or get_summary_model()
+    primary_model = (payload.model or "").strip()
+    if not primary_model:
+        try:
+            primary_model = get_summary_model()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     fallback_model = None
     if not payload.model:
         fallback_candidate = get_summary_fallback_model()
@@ -714,7 +719,14 @@ def generate_text(
         raise HTTPException(status_code=400, detail="Prompt must not be empty.")
 
     client = get_ollama_client()
-    model = payload.model or OLLAMA_LONGFORM_MODEL
+    model = (payload.model or "").strip()
+    if not model:
+        if not (OLLAMA_LONGFORM_MODEL or "").strip():
+            raise HTTPException(
+                status_code=503,
+                detail="No default Ollama text generation model is configured. Provide a model in the request.",
+            )
+        model = (OLLAMA_LONGFORM_MODEL or "").strip()
     options = dict(payload.options or {})
     options.setdefault("temperature", OLLAMA_DEFAULT_TEMPERATURE)
 
@@ -745,7 +757,14 @@ def chat(
         raise HTTPException(status_code=400, detail="At least one message is required.")
 
     client = get_ollama_client()
-    model = payload.model or OLLAMA_LONGFORM_MODEL
+    model = (payload.model or "").strip()
+    if not model:
+        if not (OLLAMA_LONGFORM_MODEL or "").strip():
+            raise HTTPException(
+                status_code=503,
+                detail="No default Ollama chat model is configured. Provide a model in the request.",
+            )
+        model = (OLLAMA_LONGFORM_MODEL or "").strip()
     options = dict(payload.options or {})
     options.setdefault("temperature", OLLAMA_DEFAULT_TEMPERATURE)
 
@@ -776,7 +795,14 @@ def embed(
         raise HTTPException(status_code=400, detail="inputs must not be empty.")
 
     client = get_ollama_client()
-    model = payload.model or OLLAMA_EMBED_MODEL
+    model = (payload.model or "").strip()
+    if not model:
+        if not (OLLAMA_EMBED_MODEL or "").strip():
+            raise HTTPException(
+                status_code=503,
+                detail="No default Ollama embedding model is configured. Provide a model in the request.",
+            )
+        model = (OLLAMA_EMBED_MODEL or "").strip()
 
     try:
         result = client.embed(inputs=payload.inputs, model=model)

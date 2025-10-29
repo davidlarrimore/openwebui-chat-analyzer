@@ -24,7 +24,16 @@ from urllib.parse import urlparse, urlunparse
 
 from .config import AUTH_TOKEN_HASH_SECRET, AUTH_TOKEN_TTL_SECONDS, DATA_DIR
 from .models import AppMetadata, DatasetMeta, DatasetSyncStats
-from .summarizer import summarize_chats, set_summary_model, get_summary_model, set_summary_temperature, get_summary_temperature, is_summarizer_enabled, set_summarizer_enabled
+from .summarizer import (
+    SummarizerProviderUnavailableError,
+    get_summary_model,
+    get_summary_temperature,
+    is_summarizer_enabled,
+    set_summary_model,
+    set_summary_temperature,
+    set_summarizer_enabled,
+    summarize_chats,
+)
 from .storage import DatabaseState, DatabaseStorage
 
 LOGGER = logging.getLogger(__name__)
@@ -1377,27 +1386,26 @@ class DataService:
 
 
     def _apply_summarizer_setting_from_state(self) -> None:
-        """Ensure the summarizer module reflects stored or environment defaults."""
+        """Ensure the summarizer module reflects stored or built-in defaults."""
         with self._lock:
             raw_setting = self._settings.get(SUMMARIZER_MODEL_SETTING_KEY)
         stored_value = (
             _strip_encapsulating_quotes(raw_setting.strip()) if isinstance(raw_setting, str) else ""
         )
-        env_value = _strip_encapsulating_quotes(os.getenv("OLLAMA_SUMMARY_MODEL", "").strip())
         if stored_value:
-            active = stored_value
-            source = "database"
-        elif env_value:
-            active = env_value
-            source = "environment"
+            set_summary_model(stored_value)
+            LOGGER.info(
+                "Configured summarizer primary model (model=%s, source=database)", stored_value
+            )
         else:
-            active = ""
-            source = "default"
-        set_summary_model(active or None)
-        if active:
-            LOGGER.info("Configured summarizer primary model (model=%s, source=%s)", active, source)
-        else:
-            LOGGER.info("Using default summarizer primary model (model=%s)", get_summary_model())
+            set_summary_model(None)
+            try:
+                LOGGER.info(
+                    "Using default summarizer primary model (model=%s, source=default)",
+                    get_summary_model(),
+                )
+            except RuntimeError:
+                LOGGER.info("No default summarizer primary model configured; awaiting runtime update.")
 
     def _seed_initial_state_from_files(self) -> Optional[DatabaseState]:
         """Populate the database from legacy app.json metadata if necessary."""
@@ -1928,6 +1936,13 @@ class DataService:
                 "job_id": job_id,
             },
         )
+        job_id_str = str(job_id)
+        self._emit_log(
+            "info",
+            "summarize",
+            f"Summarizer job {job_id_str} started ({reason}); {total} chats queued",
+            job_id=job_id_str,
+        )
 
         def progress(
             current: int,
@@ -1974,7 +1989,11 @@ class DataService:
                 event_payload["job_id"] = job_id
                 event_payload.setdefault("completed", current)
                 event_payload.setdefault("total", total_count)
-                message = _format_message(event_payload, outcome)
+                message_override = event_payload.pop("message_override", None)
+                if isinstance(message_override, str) and message_override.strip():
+                    message = message_override.strip()
+                else:
+                    message = _format_message(event_payload, outcome)
                 if message is not None:
                     event_payload["message"] = message
             self._update_summary_state(
@@ -2014,6 +2033,7 @@ class DataService:
         progress_cb: Callable[[int, int, str, str, Optional[Dict[str, Any]]], None],
     ) -> None:
         logger = LOGGER
+        job_id_str = str(job_id)
         logger.info(
             "Summary job %s started for %d chats (%s)",
             job_id,
@@ -2021,18 +2041,17 @@ class DataService:
             reason,
         )
 
-        def chat_persist_callback(chat_summary: Dict[str, str], chat_outcomes: Dict[str, int], chat_topics: Dict[str, str] = None) -> None:
-            """Immediately persist individual chat summary, outcome, and topics to database and update in-memory records.
+        def chat_persist_callback(chat_summary: Dict[str, str], chat_outcomes: Dict[str, Optional[int]]) -> None:
+            """Immediately persist individual chat summary and outcome to database and update in-memory records.
 
             Args:
                 chat_summary: Dict mapping chat_id to summary text
-                chat_outcomes: Dict mapping chat_id to outcome score (1-5)
-                chat_topics: Dict mapping chat_id to topics string
+                chat_outcomes: Dict mapping chat_id to outcome score (1-5) or None to clear
             """
             if not chat_summary:
                 return
 
-            # Update in-memory chat records with summary, outcome, and topics
+            # Update in-memory chat records with summary and outcome
             with self._lock:
                 for chat in self._chats:
                     chat_id = str(chat.get("chat_id") or "")
@@ -2040,13 +2059,14 @@ class DataService:
                         _set_chat_summary(chat, chat_summary[chat_id])
                         # Update outcome if present
                         if chat_id in chat_outcomes:
-                            chat["gen_chat_outcome"] = chat_outcomes[chat_id]
-                        # Update topics if present
-                        if chat_topics and chat_id in chat_topics:
-                            chat["gen_topics"] = chat_topics[chat_id]
+                            outcome_value = chat_outcomes[chat_id]
+                            if outcome_value is None:
+                                chat.pop("gen_chat_outcome", None)
+                            else:
+                                chat["gen_chat_outcome"] = outcome_value
 
-            # Persist to database immediately with summary, outcome, and topics
-            self._storage.update_chat_summaries(chat_summary, chat_outcomes, chat_topics)
+            # Persist to database immediately with summary and outcome
+            self._storage.update_chat_summaries(chat_summary, chat_outcomes)
 
         try:
             summary_map, stats = summarize_chats(
@@ -2076,9 +2096,8 @@ class DataService:
 
             summary_map = {chat_id: summary for chat_id, summary in summary_map.items() if summary}
 
-            # Collect outcomes and topics from the chats that were just summarized
+            # Collect outcomes from the chats that were just summarized
             outcome_map: Dict[str, int] = {}
-            topics_map: Dict[str, str] = {}
             with self._lock:
                 for chat in self._chats:
                     chat_id = str(chat.get("chat_id") or "")
@@ -2088,15 +2107,26 @@ class DataService:
                         outcome_value = chat.get("gen_chat_outcome")
                         if isinstance(outcome_value, int) and 1 <= outcome_value <= 5:
                             outcome_map[chat_id] = outcome_value
-                        # Collect topics if present
-                        topics_value = chat.get("gen_topics")
-                        if isinstance(topics_value, str) and topics_value.strip():
-                            topics_map[chat_id] = topics_value.strip()
                 self._bump_version()
                 self._refresh_app_metadata(persist=False)
 
-            self._storage.update_chat_summaries(summary_map, outcome_map, topics_map)
+            self._storage.update_chat_summaries(summary_map, outcome_map)
 
+            self._emit_log(
+                "info",
+                "summarize",
+                (
+                    f"Summarizer job {job_id_str} completed"
+                    f" (generated={stats['generated']}, failed={stats['failures']}, skipped={stats['skipped']})"
+                ),
+                job_id=job_id_str,
+                details={
+                    "generated": stats["generated"],
+                    "failed": stats["failures"],
+                    "skipped": stats["skipped"],
+                    "total": stats["total"],
+                },
+            )
             logger.info("Summary job %s finished successfully.", job_id)
             completed_at = self._summary_now_iso()
             self._update_summary_state(
@@ -2117,18 +2147,52 @@ class DataService:
             )
         except SummaryJobCancelled:
             logger.info("Summary job %s cancelled before completion.", job_id)
-        except Exception as exc:
-            logger.exception("Summary job failed: %s", exc)
+            self._emit_log("info", "summarize", f"Summarizer job {job_id_str} cancelled", job_id=job_id_str)
+        except SummarizerProviderUnavailableError as exc:
+            logger.error("Summary job %s stopped: %s", job_id, exc, exc_info=True)
             failed_at = self._summary_now_iso()
+            message = f"Summarizer stopped: {exc}"
+            details: Dict[str, Any] = {
+                "provider": exc.provider,
+                "attempts": exc.attempts,
+                "retry_delay_seconds": exc.delay_seconds,
+            }
+            if exc.last_error:
+                details["last_error"] = exc.last_error
+            self._emit_log("error", "summarize", message, job_id=job_id_str, details=details)
             self._update_summary_state(
                 state="failed",
-                message=str(exc),
+                message=message,
                 finished_at=failed_at,
                 event={
                     "type": "error",
                     "event_id": f"error-{job_id}-{uuid4().hex[:8]}",
                     "timestamp": failed_at,
-                    "message": str(exc),
+                    "message": message,
+                    "job_id": job_id,
+                    "provider": exc.provider,
+                    "attempts": exc.attempts,
+                },
+            )
+        except Exception as exc:
+            logger.exception("Summary job failed: %s", exc)
+            failed_at = self._summary_now_iso()
+            message = str(exc)
+            self._emit_log(
+                "error",
+                "summarize",
+                f"Summarizer job {job_id_str} failed: {message}",
+                job_id=job_id_str,
+            )
+            self._update_summary_state(
+                state="failed",
+                message=message,
+                finished_at=failed_at,
+                event={
+                    "type": "error",
+                    "event_id": f"error-{job_id}-{uuid4().hex[:8]}",
+                    "timestamp": failed_at,
+                    "message": message,
                     "job_id": job_id,
                 },
             )
@@ -2873,7 +2937,6 @@ class DataService:
 
     def get_summarizer_settings(self) -> Dict[str, Any]:
         """Return the active summarizer configuration with its origin metadata."""
-        env_model = _strip_encapsulating_quotes(os.getenv("OLLAMA_SUMMARY_MODEL", "").strip())
         with self._lock:
             stored_raw = self._settings.get(SUMMARIZER_MODEL_SETTING_KEY)
         stored_model = (
@@ -2883,12 +2946,13 @@ class DataService:
         if stored_model:
             model = stored_model
             model_source = "database"
-        elif env_model:
-            model = env_model
-            model_source = "environment"
         else:
-            model = get_summary_model()
-            model_source = "default"
+            try:
+                model = get_summary_model()
+                model_source = "default"
+            except RuntimeError:
+                model = ""
+                model_source = "default"
 
         # Handle temperature setting
         env_temp_str = os.getenv("OLLAMA_DEFAULT_TEMPERATURE", "").strip()

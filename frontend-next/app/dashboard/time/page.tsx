@@ -83,7 +83,8 @@ export default async function TimeAnalysisPage() {
 
   const chatsPayload: TimeAnalysisChat[] = chats.map((chat) => ({
     chatId: chat.chatId,
-    userId: chat.userId ?? null
+    userId: chat.userId ?? null,
+    tags: chat.tags ?? []
   }));
 
   const messagesPayload: TimeAnalysisMessage[] = messages.map((message) => ({

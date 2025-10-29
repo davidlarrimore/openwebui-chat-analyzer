@@ -84,6 +84,50 @@ function summariseMeta(service: HealthService, status: HealthStatus | null): str
   return undefined;
 }
 
+function sanitizeDetail(detail: unknown): string | undefined {
+  if (typeof detail !== "string") {
+    return undefined;
+  }
+  const trimmed = detail.trim();
+  if (!trimmed.length) {
+    return undefined;
+  }
+  const MAX_LENGTH = 180;
+  if (trimmed.length > MAX_LENGTH) {
+    return `${trimmed.slice(0, MAX_LENGTH - 1)}…`;
+  }
+  return trimmed;
+}
+
+function formatErrorDetail(service: HealthService, detail: unknown): string | undefined {
+  const message = sanitizeDetail(detail);
+  if (!message) {
+    return undefined;
+  }
+
+  if (service === "ollama") {
+    const hostMatch = message.match(/host='([^']+)'/i);
+    const portMatch = message.match(/port=(\d+)/i);
+    const host = hostMatch?.[1];
+    const port = portMatch?.[1];
+    const location = host ? `${host}${port ? `:${port}` : ""}` : "the configured host";
+    const lower = message.toLowerCase();
+    const connectionIndicators = [
+      "failed to establish a new connection",
+      "connection refused",
+      "network is unreachable",
+      "max retries exceeded",
+      "connection aborted",
+      "timed out",
+    ];
+    if (connectionIndicators.some(indicator => lower.includes(indicator))) {
+      return `Unable to reach Ollama at ${location}. Confirm the service is running and accessible.`;
+    }
+  }
+
+  return message;
+}
+
 export default function SidebarHealthStatus() {
   const [statuses, setStatuses] = useState<HealthMap>(createInitialState);
   const [loading, setLoading] = useState(true);
@@ -151,7 +195,7 @@ export default function SidebarHealthStatus() {
           const detail =
             stateKey === "ok"
               ? summariseMeta(service.id, status)
-              : status?.detail ?? (loading ? undefined : "Status unavailable");
+              : formatErrorDetail(service.id, status?.detail) ?? (loading ? undefined : "Status unavailable");
 
           return (
             <li key={service.id} className="flex flex-col gap-1">
