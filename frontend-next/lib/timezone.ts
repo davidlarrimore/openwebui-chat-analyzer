@@ -1,13 +1,13 @@
 const FALLBACK_TIMEZONE = "UTC";
 
-function validateTimezone(value: string | null | undefined): string {
+function normaliseTimezone(value: string | null | undefined): string | null {
   if (!value) {
-    return FALLBACK_TIMEZONE;
+    return null;
   }
 
   const trimmed = value.trim();
   if (!trimmed) {
-    return FALLBACK_TIMEZONE;
+    return null;
   }
 
   try {
@@ -15,7 +15,20 @@ function validateTimezone(value: string | null | undefined): string {
     new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).format(new Date("2000-01-01T00:00:00Z"));
     return trimmed;
   } catch {
-    return FALLBACK_TIMEZONE;
+    return null;
+  }
+}
+
+function detectRuntimeTimezone(): string | null {
+  if (typeof Intl === "undefined" || typeof Intl.DateTimeFormat !== "function") {
+    return null;
+  }
+
+  try {
+    const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
+    return normaliseTimezone(resolved);
+  } catch {
+    return null;
   }
 }
 
@@ -26,4 +39,7 @@ if (typeof process !== "undefined" && process.env) {
     process.env.NEXT_PUBLIC_DISPLAY_TIMEZONE ?? process.env.DISPLAY_TIMEZONE ?? null;
 }
 
-export const DISPLAY_TIMEZONE = validateTimezone(envTimezone);
+const resolvedEnvTimezone = normaliseTimezone(envTimezone);
+const runtimeTimezone = detectRuntimeTimezone();
+
+export const DISPLAY_TIMEZONE = runtimeTimezone ?? resolvedEnvTimezone ?? FALLBACK_TIMEZONE;

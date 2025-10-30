@@ -1,7 +1,7 @@
 import { encode } from "gpt-tokenizer/encoding/cl100k_base";
+import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const DISPLAY_TIMEZONE = "America/New_York";
 const DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: DISPLAY_TIMEZONE,
   year: "numeric",

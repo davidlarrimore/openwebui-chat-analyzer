@@ -1,10 +1,10 @@
+import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 import type { ContentChat, ContentMessage } from "./content-analysis";
 import type { TimeSeriesPoint } from "./types";
 
 export type { TimeSeriesPoint };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const DISPLAY_TIMEZONE = "America/New_York";
 const ORDERED_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 const dateKeyFormatter = new Intl.DateTimeFormat("en-CA", {

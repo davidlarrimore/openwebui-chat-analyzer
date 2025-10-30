@@ -16,8 +16,8 @@ import {
   LineChart
 } from "recharts";
 import type { AdoptionSeriesPoint, DailyActiveUsersPoint, ModelUsageDatum, PieDatum, TokenSeriesPoint } from "@/lib/overview";
+import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 
-const DISPLAY_TIMEZONE = "America/New_York";
 const palette = ["#6366f1", "#38bdf8", "#f97316", "#22c55e", "#c084fc", "#f43f5e", "#14b8a6", "#facc15"];
 
 function formatDateLabel(dateIso: string): string {
