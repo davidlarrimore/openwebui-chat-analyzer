@@ -1,17 +1,17 @@
 import { ReactNode } from "react";
-import Link from "next/link";
 import { redirect } from "next/navigation";
-import SidebarHealthStatus from "@/components/sidebar-health-status";
+import { DashboardSidebar } from "@/components/dashboard-sidebar";
 import { LogoutButton } from "@/components/logout-button";
 import { getServerAuthSession } from "@/lib/auth";
 
 const NAV_LINKS = [
-  { href: "/dashboard", label: "📊 Overview" },
-  { href: "/dashboard/time", label: "📈 Time Analysis" },
-  { href: "/dashboard/content", label: "📝 Content Analysis" },
-  { href: "/dashboard/search", label: "🔍 Search" },
-  { href: "/dashboard/browse", label: "💬 Browse Chats" },
-  { href: "/dashboard/admin/connection", label: "⚙️ Configuration", separator: true }
+  { href: "/dashboard", label: "Overview", icon: "📊" },
+  { href: "/dashboard/models", label: "Model Analysis", icon: "🤖" },
+  { href: "/dashboard/time", label: "Time Analysis", icon: "📈" },
+  { href: "/dashboard/content", label: "Content Analysis", icon: "📝" },
+  { href: "/dashboard/search", label: "Search", icon: "🔍" },
+  { href: "/dashboard/browse", label: "Browse Chats", icon: "💬" },
+  { href: "/dashboard/admin/connection", label: "Configuration", icon: "⚙️", separator: true }
 ];
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
@@ -21,37 +21,11 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     redirect("/login");
   }
 
+  const userDisplayName = session.user?.name ?? session.user?.email ?? "user";
+
   return (
     <div className="flex min-h-screen bg-background text-foreground">
-      <aside className="hidden w-64 flex-col border-r bg-card lg:flex">
-        <div className="px-6 py-8">
-          <h1 className="text-xl font-semibold">Chat Analyzer</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Logged in as {session.user?.name ?? session.user?.email ?? "user"}
-          </p>
-        </div>
-        <nav className="flex-1 px-4">
-          <ul className="space-y-1">
-            {NAV_LINKS.map((item) => (
-              <li key={item.href}>
-                {item.separator && <hr className="my-3 border-border" />}
-                <Link
-                  className="block rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-                  href={item.href}
-                >
-                  {item.label}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </nav>
-        <div className="border-t px-4 py-6">
-          <SidebarHealthStatus />
-        </div>
-        <div className="border-t px-4 py-6">
-          <LogoutButton className="w-full" variant="ghost" />
-        </div>
-      </aside>
+      <DashboardSidebar navLinks={NAV_LINKS} userDisplayName={userDisplayName} />
       <main className="flex-1 overflow-y-auto bg-muted/20">
         <header className="flex items-center justify-between border-b bg-background px-6 py-4 lg:hidden">
           <p className="text-sm font-medium">Chat Analyzer</p>

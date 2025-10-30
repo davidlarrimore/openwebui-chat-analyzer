@@ -6,24 +6,30 @@ import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 10000;
 
-const SERVICE_LABELS: Record<HealthService, string> = {
-  backend: "Backend API",
-  ollama: "Ollama",
-  database: "Database"
+const SERVICE_PRESENTATION: Record<HealthService, { label: string; icon: string }> = {
+  backend: { label: "Backend API", icon: "🛰️" },
+  ollama: { label: "Ollama", icon: "🧠" },
+  database: { label: "Database", icon: "🗄️" }
 };
 
 type ServiceLookup = {
   id: HealthService;
   label: string;
+  icon: string;
 };
 
 const SERVICES: ServiceLookup[] = HEALTH_SERVICES.map((service) => ({
   id: service,
-  label: SERVICE_LABELS[service]
+  label: SERVICE_PRESENTATION[service].label,
+  icon: SERVICE_PRESENTATION[service].icon
 }));
 
 type HealthMap = {
   [K in HealthService]: HealthStatus | null;
+};
+
+type SidebarHealthStatusProps = {
+  collapsed?: boolean;
 };
 
 function createInitialState(): HealthMap {
@@ -128,7 +134,7 @@ function formatErrorDetail(service: HealthService, detail: unknown): string | un
   return message;
 }
 
-export default function SidebarHealthStatus() {
+export default function SidebarHealthStatus({ collapsed = false }: SidebarHealthStatusProps) {
   const [statuses, setStatuses] = useState<HealthMap>(createInitialState);
   const [loading, setLoading] = useState(true);
 
@@ -183,9 +189,22 @@ export default function SidebarHealthStatus() {
   }, []);
 
   return (
-    <div className="rounded-lg border bg-background p-4">
-      <h2 className="text-sm font-semibold text-muted-foreground">System Status</h2>
-      <ul className="mt-3 space-y-3 text-sm">
+    <div className={cn("rounded-lg border bg-background", collapsed ? "p-2" : "p-4")}
+      data-state={collapsed ? "collapsed" : "expanded"}>
+      <h2
+        className={cn(
+          "text-sm font-semibold text-muted-foreground",
+          collapsed ? "sr-only" : undefined
+        )}
+      >
+        System Status
+      </h2>
+      <ul
+        className={cn(
+          "mt-3 space-y-3 text-sm",
+          collapsed ? "mt-0 flex flex-col items-center gap-3 space-y-0 text-xs" : undefined
+        )}
+      >
         {SERVICES.map((service) => {
           const status = statuses[service.id];
           const stateKey: "ok" | "error" | "loading" =
@@ -198,15 +217,31 @@ export default function SidebarHealthStatus() {
               : formatErrorDetail(service.id, status?.detail) ?? (loading ? undefined : "Status unavailable");
 
           return (
-            <li key={service.id} className="flex flex-col gap-1">
-              <div className="flex items-center justify-between">
-                <span className="font-medium">{service.label}</span>
-                <span className={cn("flex items-center gap-2 text-xs font-medium", presentation.textClass)}>
-                  <span className={cn("h-2 w-2 rounded-full", presentation.dotClass)} />
-                  {presentation.label}
-                </span>
-              </div>
-              {detail && <p className="text-xs text-muted-foreground">{detail}</p>}
+            <li key={service.id} className={cn("flex flex-col gap-1", collapsed && "items-center")}
+              aria-label={`${service.label} status: ${presentation.label}`}>
+              {collapsed ? (
+                <div className="flex flex-col items-center gap-2">
+                  <span className={cn("h-2 w-2 rounded-full", presentation.dotClass)} aria-hidden />
+                  <span aria-hidden className="text-lg">{service.icon}</span>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-2 font-medium">
+                      <span aria-hidden className="text-lg leading-none">{service.icon}</span>
+                      {service.label}
+                    </span>
+                    <span className={cn("flex items-center gap-2 text-xs font-medium", presentation.textClass)}>
+                      <span className={cn("h-2 w-2 rounded-full", presentation.dotClass)} />
+                      {presentation.label}
+                    </span>
+                  </div>
+                  {detail && <p className="text-xs text-muted-foreground">{detail}</p>}
+                </>
+              )}
+              {collapsed && detail && (
+                <p className="sr-only">{detail}</p>
+              )}
             </li>
           );
         })}

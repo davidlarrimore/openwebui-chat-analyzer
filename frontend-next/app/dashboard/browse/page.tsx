@@ -1,5 +1,6 @@
+import { redirect } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { apiGet } from "@/lib/api";
+import { ApiError, apiGet } from "@/lib/api";
 import { normaliseBrowseChats, normaliseBrowseMessages } from "@/lib/browse";
 import type { SummarizerSettingsResponse } from "@/lib/api";
 import BrowseClient from "./browse-client";
@@ -22,7 +23,10 @@ async function fetchBrowseData(): Promise<RawBrowseData | null> {
       apiGet<SummarizerSettingsResponse>("api/v1/admin/settings/summarizer")
     ]);
     return { rawChats, rawMessages, rawUsers, rawModels, summarizerEnabled: summarizerSettings.enabled };
-  } catch {
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      redirect(`/login?error=AuthRequired&callbackUrl=${encodeURIComponent("/dashboard/browse")}`);
+    }
     return null;
   }
 }

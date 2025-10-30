@@ -1,17 +1,19 @@
+import { redirect } from "next/navigation";
 import { KpiCards } from "@/components/kpi-cards";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   DailyActiveUsersChart,
-  ModelUsageBarChart,
-  ModelUsagePieChart,
   TokenConsumptionChart,
+  TopModelsChart,
+  TopTopicsChart,
   UserAdoptionChart
 } from "@/components/charts/overview-charts";
-import { apiGet } from "@/lib/api";
+import { ApiError, apiGet } from "@/lib/api";
 import {
   buildChatUserMap,
   buildDailyActiveUsersSeries,
-  buildModelUsageBreakdown,
+  buildTopModelsByChats,
+  buildTopTopics,
   buildTokenConsumptionSeries,
   buildUserAdoptionSeries,
   calculateEngagementMetrics,
@@ -32,7 +34,10 @@ export default async function DashboardOverviewPage() {
         apiGet<unknown>("api/v1/models")
       ]);
       return { rawChats, rawMessages, rawUsers, rawModels };
-    } catch {
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        redirect(`/login?error=AuthRequired&callbackUrl=${encodeURIComponent("/dashboard")}`);
+      }
       return null;
     }
   }
@@ -76,8 +81,8 @@ export default async function DashboardOverviewPage() {
   const metrics = calculateEngagementMetrics(chats, messages);
   const dateSummary = computeDateSummary(messages);
   const tokenSeries = buildTokenConsumptionSeries(messages);
-  const modelBreakdown = buildModelUsageBreakdown(messages);
-  const modelPie = modelBreakdown.map(({ model, count }) => ({ name: model, value: count }));
+  const topModelsByChats = buildTopModelsByChats(messages);
+  const topTopics = buildTopTopics(chats);
   const adoptionSeries = buildUserAdoptionSeries(messages, chatUserMap, dateSummary.dateMin, dateSummary.dateMax);
   const dailyActiveUsersSeries = buildDailyActiveUsersSeries(messages, chats, chatUserMap, dateSummary.dateMin, dateSummary.dateMax);
 
@@ -191,29 +196,31 @@ export default async function DashboardOverviewPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Assistant Responses by Model</CardTitle>
-            <CardDescription>Selection of models producing assistant replies.</CardDescription>
+            <CardTitle>Top 10 Models</CardTitle>
+            <CardDescription>Models ranked by the number of chats with assistant responses.</CardDescription>
           </CardHeader>
           <CardContent>
-            {modelBreakdown.length ? (
-              <ModelUsageBarChart data={modelBreakdown} />
+            {topModelsByChats.length ? (
+              <TopModelsChart data={topModelsByChats} />
             ) : (
-              <p className="text-sm text-muted-foreground">No assistant messages with model information available.</p>
+              <p className="text-sm text-muted-foreground">
+                Need assistant messages with model metadata to populate this chart.
+              </p>
             )}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Model Usage Share</CardTitle>
-            <CardDescription>Relative share of assistant responses by model.</CardDescription>
+            <CardTitle>Top Topics</CardTitle>
+            <CardDescription>Most common chat tags across all conversations.</CardDescription>
           </CardHeader>
           <CardContent>
-            {modelPie.length ? (
-              <ModelUsagePieChart data={modelPie} />
+            {topTopics.length ? (
+              <TopTopicsChart data={topTopics} />
             ) : (
               <p className="text-sm text-muted-foreground">
-                We need assistant messages with model metadata to build this chart.
+                Apply tags to chats in Open WebUI to see the most frequent topics here.
               </p>
             )}
           </CardContent>

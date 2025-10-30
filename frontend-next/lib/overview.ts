@@ -1,4 +1,3 @@
-import { encode } from "gpt-tokenizer/encoding/cl100k_base";
 import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -9,22 +8,22 @@ const DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit"
 });
 
+const CHARACTERS_PER_TOKEN = 4;
+
 function countTokens(text: string): number {
   if (typeof text !== "string") {
     return 0;
   }
-  if (!text) {
+
+  const trimmed = text.trim();
+  if (!trimmed) {
     return 0;
   }
-  try {
-    return encode(text).length;
-  } catch {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      return 0;
-    }
-    return Math.max(1, Math.ceil(trimmed.length / 4));
-  }
+
+  const naiveEstimate = Math.ceil(trimmed.length / CHARACTERS_PER_TOKEN);
+  const wordCount = trimmed.split(/\s+/).length;
+
+  return Math.max(naiveEstimate, wordCount, 1);
 }
 
 function parseTimestamp(value: unknown): Date | null {
@@ -153,6 +152,16 @@ export interface ModelUsageDatum {
   count: number;
 }
 
+export interface ModelChatUsageDatum {
+  model: string;
+  chatCount: number;
+}
+
+export interface TopicUsageDatum {
+  topic: string;
+  chatCount: number;
+}
+
 export interface PieDatum {
   name: string;
   value: number;
@@ -186,6 +195,24 @@ function toStringArray(value: unknown): string[] {
     }
   }
   return result;
+}
+
+function formatTopicLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed.length) {
+    return "Unknown";
+  }
+
+  const hasMixedCase = /[a-z]/.test(trimmed) && /[A-Z]/.test(trimmed);
+  if (hasMixedCase) {
+    return trimmed;
+  }
+
+  return trimmed
+    .toLowerCase()
+    .split(/\s+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 export function normaliseChats(raw: unknown): OverviewChat[] {
@@ -599,6 +626,95 @@ export function buildModelUsageBreakdown(messages: OverviewMessage[]): ModelUsag
 export function buildModelUsagePie(messages: OverviewMessage[]): PieDatum[] {
   const breakdown = buildModelUsageBreakdown(messages);
   return breakdown.map((item) => ({ name: item.model, value: item.count }));
+}
+
+export function buildTopModelsByChats(messages: OverviewMessage[], limit = 10): ModelChatUsageDatum[] {
+  if (!Array.isArray(messages) || limit <= 0) {
+    return [];
+  }
+
+  const chatIdsByModel = new Map<string, Set<string>>();
+  for (const message of messages) {
+    if (message.role !== "assistant") {
+      continue;
+    }
+    const model = (message.model ?? "").trim();
+    if (!model) {
+      continue;
+    }
+    if (!chatIdsByModel.has(model)) {
+      chatIdsByModel.set(model, new Set());
+    }
+    chatIdsByModel.get(model)!.add(message.chatId);
+  }
+
+  return Array.from(chatIdsByModel.entries())
+    .map(([model, chatIds]) => ({
+      model,
+      chatCount: chatIds.size
+    }))
+    .filter((entry) => entry.chatCount > 0)
+    .sort((a, b) => {
+      if (b.chatCount !== a.chatCount) {
+        return b.chatCount - a.chatCount;
+      }
+      return a.model.localeCompare(b.model);
+    })
+    .slice(0, limit);
+}
+
+export function buildTopTopics(chats: OverviewChat[], limit = 10): TopicUsageDatum[] {
+  if (!Array.isArray(chats) || limit <= 0) {
+    return [];
+  }
+
+  const counts = new Map<string, { label: string; count: number }>();
+
+  for (const chat of chats) {
+    if (!Array.isArray(chat.tags) || chat.tags.length === 0) {
+      continue;
+    }
+
+    const seen = new Set<string>();
+
+    for (const rawTag of chat.tags) {
+      const tag = toStringOrNull(rawTag);
+      if (!tag) {
+        continue;
+      }
+
+      const normalised = tag.trim().toLowerCase();
+      if (!normalised || seen.has(normalised)) {
+        continue;
+      }
+      seen.add(normalised);
+
+      const existing = counts.get(normalised);
+      if (existing) {
+        existing.count += 1;
+        continue;
+      }
+
+      counts.set(normalised, {
+        label: formatTopicLabel(tag),
+        count: 1
+      });
+    }
+  }
+
+  return Array.from(counts.values())
+    .filter((entry) => entry.count > 0)
+    .sort((a, b) => {
+      if (b.count !== a.count) {
+        return b.count - a.count;
+      }
+      return a.label.localeCompare(b.label);
+    })
+    .slice(0, limit)
+    .map(({ label, count }) => ({
+      topic: label,
+      chatCount: count
+    }));
 }
 
 export function buildUserAdoptionSeries(

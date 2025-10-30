@@ -1,6 +1,7 @@
+import { redirect } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ContentAnalysisClient } from "./content-analysis-client";
-import { apiGet } from "@/lib/api";
+import { ApiError, apiGet } from "@/lib/api";
 import { buildChatUserMap, normaliseChats, normaliseMessages, normaliseModels, normaliseUsers } from "@/lib/overview";
 import type { ContentChat, ContentMessage } from "@/lib/content-analysis";
 
@@ -20,7 +21,10 @@ async function fetchContentData(): Promise<RawContentPayload | null> {
       apiGet<unknown>("api/v1/models")
     ]);
     return { rawChats, rawMessages, rawUsers, rawModels };
-  } catch {
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      redirect(`/login?error=AuthRequired&callbackUrl=${encodeURIComponent("/dashboard/content")}`);
+    }
     return null;
   }
 }

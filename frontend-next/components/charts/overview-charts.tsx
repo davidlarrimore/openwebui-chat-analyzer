@@ -15,7 +15,15 @@ import {
   Line,
   LineChart
 } from "recharts";
-import type { AdoptionSeriesPoint, DailyActiveUsersPoint, ModelUsageDatum, PieDatum, TokenSeriesPoint } from "@/lib/overview";
+import type {
+  AdoptionSeriesPoint,
+  DailyActiveUsersPoint,
+  ModelChatUsageDatum,
+  ModelUsageDatum,
+  PieDatum,
+  TokenSeriesPoint,
+  TopicUsageDatum
+} from "@/lib/overview";
 import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 
 const palette = ["#6366f1", "#38bdf8", "#f97316", "#22c55e", "#c084fc", "#f43f5e", "#14b8a6", "#facc15"];
@@ -67,11 +75,13 @@ export function TokenConsumptionChart({ data }: TokenConsumptionChartProps) {
 
 export interface ModelUsageBarChartProps {
   data: ModelUsageDatum[];
+  height?: number;
 }
 
-export function ModelUsageBarChart({ data }: ModelUsageBarChartProps) {
+export function ModelUsageBarChart({ data, height }: ModelUsageBarChartProps) {
+  const chartHeight = height ?? 288;
   return (
-    <div className="h-72 w-full">
+    <div className="w-full" style={{ height: chartHeight }}>
       <ResponsiveContainer height="100%" width="100%">
         <BarChart data={data} layout="vertical" margin={{ top: 16, right: 24, bottom: 16, left: 80 }}>
           <CartesianGrid strokeDasharray="4 4" stroke="#e4e4e7" />
@@ -79,6 +89,28 @@ export function ModelUsageBarChart({ data }: ModelUsageBarChartProps) {
           <YAxis dataKey="model" type="category" width={160} stroke="#71717a" />
           <Tooltip formatter={(value: number) => [`${value.toLocaleString()} messages`, "Messages"]} />
           <Bar dataKey="count" fill="#6366f1" name="Messages" radius={[4, 4, 4, 4]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+export interface TopModelsChartProps {
+  data: ModelChatUsageDatum[];
+  height?: number;
+}
+
+export function TopModelsChart({ data, height }: TopModelsChartProps) {
+  const chartHeight = height ?? 288;
+  return (
+    <div className="w-full" style={{ height: chartHeight }}>
+      <ResponsiveContainer height="100%" width="100%">
+        <BarChart data={data} layout="vertical" margin={{ top: 16, right: 24, bottom: 16, left: 80 }}>
+          <CartesianGrid strokeDasharray="4 4" stroke="#e4e4e7" />
+          <XAxis type="number" stroke="#71717a" />
+          <YAxis dataKey="model" type="category" width={160} stroke="#71717a" />
+          <Tooltip formatter={(value: number) => [`${value.toLocaleString()} chats`, "Chats"]} />
+          <Bar dataKey="chatCount" fill="#6366f1" name="Chats" radius={[4, 4, 4, 4]} />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -111,6 +143,28 @@ export function ModelUsagePieChart({ data }: ModelUsagePieChartProps) {
             ))}
           </Pie>
         </PieChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+export interface TopTopicsChartProps {
+  data: TopicUsageDatum[];
+  height?: number;
+}
+
+export function TopTopicsChart({ data, height }: TopTopicsChartProps) {
+  const chartHeight = height ?? 288;
+  return (
+    <div className="w-full" style={{ height: chartHeight }}>
+      <ResponsiveContainer height="100%" width="100%">
+        <BarChart data={data} layout="vertical" margin={{ top: 16, right: 24, bottom: 16, left: 120 }}>
+          <CartesianGrid strokeDasharray="4 4" stroke="#e4e4e7" />
+          <XAxis type="number" stroke="#71717a" />
+          <YAxis dataKey="topic" type="category" width={200} stroke="#71717a" />
+          <Tooltip formatter={(value: number) => [`${value.toLocaleString()} chats`, "Chats"]} />
+          <Bar dataKey="chatCount" fill="#0ea5e9" name="Chats" radius={[4, 4, 4, 4]} />
+        </BarChart>
       </ResponsiveContainer>
     </div>
   );

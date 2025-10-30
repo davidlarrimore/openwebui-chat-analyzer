@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState, useTransition } from "react";
+import { Suspense, useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { signIn } from "next-auth/react";
@@ -25,9 +25,39 @@ function LoginPageInner() {
 
   const callbackUrl = searchParams.get("callbackUrl") ?? "/dashboard";
   const errorFromQuery = searchParams.get("error");
-  const errorMessage = errorFromQuery === "SessionExpired"
-    ? "Your session has expired. Please sign in again."
-    : errorFromQuery;
+
+  const errorMeta = useMemo(() => {
+    if (!errorFromQuery) {
+      return null;
+    }
+
+    if (errorFromQuery === "SessionExpired") {
+      return {
+        inline: "Your session has expired. Please sign in again.",
+        toastTitle: "Session expired",
+        toastDescription: "Please sign in again to continue working in the dashboard.",
+        variant: "destructive" as const
+      };
+    }
+
+    if (errorFromQuery === "AuthRequired") {
+      return {
+        inline: "Your session ended or you were signed out. Please sign in to continue.",
+        toastTitle: "Sign-in required",
+        toastDescription: "Please sign in to access the dashboard again.",
+        variant: "default" as const
+      };
+    }
+
+    return {
+      inline: errorFromQuery,
+      toastTitle: "Authentication required",
+      toastDescription: errorFromQuery,
+      variant: "destructive" as const
+    };
+  }, [errorFromQuery]);
+
+  const errorMessage = errorMeta?.inline ?? null;
 
   useEffect(() => {
     logAuthEvent("debug", "Login page loaded.", { callbackUrl });
@@ -35,6 +65,16 @@ function LoginPageInner() {
       logAuthEvent("warn", "Login page received error message.", { error: errorMessage });
     }
   }, [callbackUrl, errorMessage]);
+
+  useEffect(() => {
+    if (errorMeta) {
+      toast({
+        title: errorMeta.toastTitle,
+        description: errorMeta.toastDescription,
+        variant: errorMeta.variant
+      });
+    }
+  }, [errorMeta, toast]);
 
   useEffect(() => {
     let isMounted = true;

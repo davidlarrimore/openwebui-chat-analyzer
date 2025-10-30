@@ -1,16 +1,29 @@
 "use client";
 
 import { signOut } from "next-auth/react";
+import { ReactNode, useState } from "react";
+import { LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
 
 interface LogoutButtonProps {
   className?: string;
   variant?: "default" | "destructive" | "outline" | "secondary" | "ghost";
   size?: "default" | "sm" | "lg" | "icon";
+  label?: string;
+  showLabel?: boolean;
+  icon?: ReactNode;
+  title?: string;
 }
 
-export function LogoutButton({ className, variant = "ghost", size = "default" }: LogoutButtonProps) {
+export function LogoutButton({
+  className,
+  variant = "destructive",
+  size = "default",
+  label = "Sign out",
+  showLabel = true,
+  icon,
+  title
+}: LogoutButtonProps) {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const handleLogout = async () => {
@@ -28,6 +41,12 @@ export function LogoutButton({ className, variant = "ghost", size = "default" }:
     }
   };
 
+  const fallbackIcon = <LogOut aria-hidden className="h-4 w-4 text-white" />;
+  const resolvedIcon = icon ?? fallbackIcon;
+  const resolvedLabel = isLoggingOut ? "Signing out..." : label;
+
+  const shouldShowLabel = showLabel && size !== "icon";
+
   return (
     <Button
       className={className}
@@ -35,8 +54,15 @@ export function LogoutButton({ className, variant = "ghost", size = "default" }:
       size={size}
       onClick={handleLogout}
       disabled={isLoggingOut}
+      aria-label={resolvedLabel}
+      title={title}
     >
-      {isLoggingOut ? "Signing out..." : "Sign out"}
+      {resolvedIcon}
+      {shouldShowLabel ? (
+        <span className="ml-2">{resolvedLabel}</span>
+      ) : (
+        <span className="sr-only">{resolvedLabel}</span>
+      )}
     </Button>
   );
 }

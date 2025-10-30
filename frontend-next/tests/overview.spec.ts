@@ -1,4 +1,10 @@
-import { buildTokenConsumptionSeries, type OverviewMessage } from "@/lib/overview";
+import {
+  buildTokenConsumptionSeries,
+  buildTopModelsByChats,
+  buildTopTopics,
+  type OverviewChat,
+  type OverviewMessage
+} from "@/lib/overview";
 import { DISPLAY_TIMEZONE } from "@/lib/timezone";
 
 const DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
@@ -6,6 +12,60 @@ const DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   year: "numeric",
   month: "2-digit",
   day: "2-digit"
+});
+
+describe("overview top aggregations", () => {
+  it("ranks models by unique chat count", () => {
+    const messages: OverviewMessage[] = [
+      { chatId: "chat-1", role: "assistant", content: "", timestamp: null, model: "GPT-4o", tokenCount: 0 },
+      { chatId: "chat-1", role: "assistant", content: "", timestamp: null, model: "GPT-4o", tokenCount: 0 },
+      { chatId: "chat-2", role: "assistant", content: "", timestamp: null, model: "GPT-4o", tokenCount: 0 },
+      { chatId: "chat-3", role: "assistant", content: "", timestamp: null, model: "sonnet", tokenCount: 0 },
+      { chatId: "chat-4", role: "user", content: "", timestamp: null, model: "GPT-4o", tokenCount: 0 },
+      { chatId: "chat-5", role: "assistant", content: "", timestamp: null, model: "", tokenCount: 0 }
+    ];
+
+    const result = buildTopModelsByChats(messages, 1);
+
+    expect(result).toEqual([{ model: "GPT-4o", chatCount: 2 }]);
+  });
+
+  it("counts chats per topic using unique tags", () => {
+    const chats: OverviewChat[] = [
+      {
+        chatId: "chat-1",
+        userId: "user-1",
+        filesUploaded: 0,
+        createdAt: null,
+        updatedAt: null,
+        tags: ["analysis", "analysis", "Design"]
+      },
+      {
+        chatId: "chat-2",
+        userId: "user-2",
+        filesUploaded: 0,
+        createdAt: null,
+        updatedAt: null,
+        tags: ["design", "research"]
+      },
+      {
+        chatId: "chat-3",
+        userId: "user-3",
+        filesUploaded: 0,
+        createdAt: null,
+        updatedAt: null,
+        tags: []
+      }
+    ];
+
+    const result = buildTopTopics(chats);
+
+    expect(result).toEqual([
+      { topic: "Design", chatCount: 2 },
+      { topic: "Analysis", chatCount: 1 },
+      { topic: "Research", chatCount: 1 }
+    ]);
+  });
 });
 
 function toDateKey(date: Date): string {

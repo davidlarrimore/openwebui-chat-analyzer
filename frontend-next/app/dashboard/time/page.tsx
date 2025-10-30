@@ -1,6 +1,7 @@
+import { redirect } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { TimeAnalysisClient } from "./time-analysis-client";
-import { apiGet } from "@/lib/api";
+import { ApiError, apiGet } from "@/lib/api";
 import {
   buildChatUserMap,
   normaliseChats,
@@ -26,7 +27,10 @@ async function fetchTimeData(): Promise<RawTimePayload | null> {
       apiGet<unknown>("api/v1/models")
     ]);
     return { rawChats, rawMessages, rawUsers, rawModels };
-  } catch {
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      redirect(`/login?error=AuthRequired&callbackUrl=${encodeURIComponent("/dashboard/time")}`);
+    }
     return null;
   }
 }
