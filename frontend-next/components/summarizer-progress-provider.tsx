@@ -1,10 +1,37 @@
 "use client";
 
 import { useSession } from "next-auth/react";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { cn } from "@/lib/utils";
-import { apiGet, ApiError } from "@/lib/api";
-import type { SummaryEvent, SummaryEventsResponse, SummaryStatus } from "@/lib/types";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { useToast } from "@/components/ui/use-toast";
+import {
+  ApiError,
+  apiGet,
+  getProcessLogs,
+  type ProcessLogEvent,
+} from "@/lib/api";
+import type {
+  SummaryEvent,
+  SummaryEventsResponse,
+  SummaryStatus,
+} from "@/lib/types";
+import {
+  deriveJobTypeFromLog,
+  inferJobSubtitle,
+  normaliseJobKey,
+  updateDataSyncStages,
+  type JobLifecycleStatus,
+  type JobState,
+} from "@/lib/job-monitor";
+import { JobMonitorPanel } from "@/components/job-monitor-panel";
 
 type SummarizerSnapshot = {
   state: string | null;
@@ -13,22 +40,44 @@ type SummarizerSnapshot = {
   message?: string | null;
 };
 
-type SummarizerListener = (payload: { status: SummarizerSnapshot | null; events: SummaryEvent[] }) => void;
+type SummarizerListener = (payload: {
+  status: SummarizerSnapshot | null;
+  events: SummaryEvent[];
+}) => void;
 
-interface SummarizerProgressContextValue {
+interface JobMonitorContextValue {
+  jobs: JobState[];
+  isPanelCollapsed: boolean;
+  setPanelCollapsed: (collapsed: boolean) => void;
   status: SummarizerSnapshot | null;
   updateStatus: (status: SummarizerSnapshot | null) => void;
   clearStatus: () => void;
   subscribe: (listener: SummarizerListener) => () => void;
 }
 
-const SummarizerProgressContext = createContext<SummarizerProgressContextValue | undefined>(undefined);
+const JobMonitorContext = createContext<JobMonitorContextValue | undefined>(
+  undefined,
+);
 
-const PANEL_HIDE_DELAY_MS = 4000;
-const POLL_INTERVAL_ACTIVE_MS = 2000;
-const POLL_INTERVAL_IDLE_MS = 10000;
+const SUMMARY_POLL_ACTIVE_MS = 2000;
+const SUMMARY_POLL_IDLE_MS = 10000;
+const LOG_POLL_INTERVAL_MS = 2500;
+const JOB_RETENTION_AFTER_COMPLETE_MS = 6000;
+const MAX_LOGS_PER_JOB = 200;
+const MAX_LOG_SIGNATURE_CACHE = 800;
 
-function toSnapshot(status: SummaryStatus | null, fallback: SummarizerSnapshot | null, message?: string | null) {
+const STATUS_PRIORITY: Record<JobLifecycleStatus, number> = {
+  running: 0,
+  error: 1,
+  pending: 2,
+  success: 3,
+};
+
+function toSnapshot(
+  status: SummaryStatus | null,
+  fallback: SummarizerSnapshot | null,
+  message?: string | null,
+): SummarizerSnapshot | null {
   if (!status) {
     return fallback ?? null;
   }
@@ -44,58 +93,294 @@ function toSnapshot(status: SummaryStatus | null, fallback: SummarizerSnapshot |
     state: status.state ?? null,
     total,
     completed,
-    message: rawMessage || null
+    message: rawMessage || null,
   };
 }
 
-export function SummarizerProgressProvider({ children }: { children: React.ReactNode }) {
+export function SummarizerProgressProvider({
+  children,
+}: {
+  children: ReactNode;
+}) {
   const { data: session, status: authStatus } = useSession();
+  const { toast } = useToast();
   const [status, setStatus] = useState<SummarizerSnapshot | null>(null);
-  const [visible, setVisible] = useState(false);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const statusRef = useRef<SummarizerSnapshot | null>(null);
+  const listenersRef = useRef<Set<SummarizerListener>>(new Set());
+  const [jobs, setJobs] = useState<JobState[]>([]);
+  const jobsRef = useRef<Map<string, JobState>>(new Map());
+  const removalTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
+  const [isPanelCollapsed, setIsPanelCollapsed] = useState(true);
+
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastEventIdRef = useRef<string | null>(null);
-  const listenersRef = useRef<Set<SummarizerListener>>(new Set());
   const abortRef = useRef(false);
-  const statusRef = useRef<SummarizerSnapshot | null>(null);
   const unauthorizedRef = useRef(false);
+  const summarizerJobIdRef = useRef<string | null>(null);
 
-  const applyStatus = useCallback((next: SummarizerSnapshot | null) => {
-    setStatus((previous) => {
-      let resolved = next;
-      if (previous === null && next === null) {
-        resolved = previous;
-      } else if (previous && next) {
-        if (
-          previous.state === next.state &&
-          previous.total === next.total &&
-          previous.completed === next.completed &&
-          (previous.message || "") === (next.message || "")
-        ) {
-          resolved = previous;
+  const processedLogSignaturesRef = useRef<Set<string>>(new Set());
+  const processedLogOrderRef = useRef<string[]>([]);
+  const logPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastStateRef = useRef<Map<string, { started?: boolean; finished?: boolean }>>(new Map());
+
+  const publishJobs = useCallback(() => {
+    const ordered = Array.from(jobsRef.current.values()).sort((a, b) => {
+      const statusDiff =
+        STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status];
+      if (statusDiff !== 0) {
+        return statusDiff;
+      }
+      const timeA = new Date(a.updatedAt).getTime();
+      const timeB = new Date(b.updatedAt).getTime();
+      return timeB - timeA;
+    });
+    setJobs(ordered);
+  }, []);
+
+  const cancelRemoval = useCallback((jobKey: string) => {
+    const timer = removalTimersRef.current.get(jobKey);
+    if (timer) {
+      clearTimeout(timer);
+      removalTimersRef.current.delete(jobKey);
+    }
+  }, []);
+
+  const scheduleRemoval = useCallback(
+    (jobKey: string, delay: number = JOB_RETENTION_AFTER_COMPLETE_MS) => {
+      cancelRemoval(jobKey);
+      const timer = setTimeout(() => {
+        jobsRef.current.delete(jobKey);
+        removalTimersRef.current.delete(jobKey);
+        toastStateRef.current.delete(jobKey);
+        publishJobs();
+      }, delay);
+      removalTimersRef.current.set(jobKey, timer);
+    },
+    [cancelRemoval, publishJobs],
+  );
+
+  const clearPreviousDataRun = useCallback(() => {
+    jobsRef.current.forEach((job, key) => {
+      if (job.type === "dataSync" || job.type === "summarizer") {
+        jobsRef.current.delete(key);
+        toastStateRef.current.delete(key);
+        cancelRemoval(key);
+      }
+    });
+    summarizerJobIdRef.current = null;
+  }, [cancelRemoval]);
+
+  const onJobStart = useCallback(
+    (job: JobState, hadJobs: boolean) => {
+      if (!hadJobs) {
+        setIsPanelCollapsed(true);
+      }
+      const entry = toastStateRef.current.get(job.jobKey) ?? {};
+      if (entry.started) {
+        return;
+      }
+      entry.started = true;
+      toastStateRef.current.set(job.jobKey, entry);
+      const descriptionParts: string[] = [];
+      if (job.subtitle) {
+        descriptionParts.push(job.subtitle);
+      }
+      if (job.progress && job.progress.total > 0) {
+        descriptionParts.push(
+          `${job.progress.completed}/${job.progress.total}`,
+        );
+      }
+      toast({
+        title: `${job.label} started`,
+        description: descriptionParts.length
+          ? descriptionParts.join(" • ")
+          : undefined,
+        duration: 3500,
+      });
+    },
+    [toast],
+  );
+
+  const onJobFinish = useCallback(
+    (job: JobState) => {
+      const entry = toastStateRef.current.get(job.jobKey) ?? {};
+      if (entry.finished) {
+        return;
+      }
+      entry.finished = true;
+      toastStateRef.current.set(job.jobKey, entry);
+      toast({
+        title: job.status === "error"
+          ? `${job.label} failed`
+          : `${job.label} complete`,
+        description: job.lastMessage ?? job.subtitle ?? undefined,
+        variant: job.status === "error" ? "destructive" : "default",
+        duration: 4500,
+      });
+    },
+    [toast],
+  );
+
+  const upsertJob = useCallback(
+    (
+      jobKey: string,
+      builder: (current: JobState | undefined) => JobState | null,
+    ) => {
+      const hadJobs = jobsRef.current.size > 0;
+      const existing = jobsRef.current.get(jobKey);
+      const next = builder(existing);
+
+      if (next === null) {
+        jobsRef.current.delete(jobKey);
+        toastStateRef.current.delete(jobKey);
+        cancelRemoval(jobKey);
+        publishJobs();
+        return;
+      }
+
+      if (!existing && next.type === "dataSync") {
+        clearPreviousDataRun();
+      }
+
+      jobsRef.current.set(jobKey, next);
+
+      if (!existing) {
+        onJobStart(next, hadJobs);
+      } else if (existing.status !== next.status) {
+        if (next.status === "success" || next.status === "error") {
+          onJobFinish(next);
         }
       }
-      statusRef.current = resolved ?? null;
-      return resolved;
-    });
-  }, []);
+
+      if (next.status === "success" || next.status === "error") {
+        if (next.type === "dataSync" || next.type === "summarizer") {
+          cancelRemoval(jobKey);
+        } else {
+          scheduleRemoval(jobKey);
+        }
+      } else {
+        cancelRemoval(jobKey);
+      }
+
+      publishJobs();
+    },
+    [
+      cancelRemoval,
+      onJobFinish,
+      onJobStart,
+      publishJobs,
+      scheduleRemoval,
+      clearPreviousDataRun,
+    ],
+  );
+
+  const updateSummarizerJobFromSnapshot = useCallback(
+    (snapshot: SummarizerSnapshot | null) => {
+      const jobId = summarizerJobIdRef.current;
+      if (!snapshot || !jobId) {
+        return;
+      }
+      const jobKey = normaliseJobKey("summarizer", jobId);
+      upsertJob(jobKey, (current) => {
+        if (!current && snapshot.state && snapshot.state !== "running") {
+          return null;
+        }
+        const percent =
+          snapshot.total > 0
+            ? Math.min(
+              100,
+              Math.floor((snapshot.completed / snapshot.total) * 100),
+            )
+            : snapshot.state === "running"
+              ? 0
+              : 100;
+        let status: JobLifecycleStatus = current?.status ?? "running";
+        if (snapshot.state === "running") {
+          status = "running";
+        } else if (snapshot.state === "failed") {
+          status = "error";
+        } else if (snapshot.state) {
+          status = "success";
+        }
+        const completedAt =
+          status === "success" || status === "error"
+            ? current?.completedAt ?? new Date().toISOString()
+            : current?.completedAt;
+        const progress = {
+          completed: snapshot.completed,
+          total: snapshot.total,
+          percent,
+          message: snapshot.message ?? current?.lastMessage ?? null,
+        };
+        const next: JobState = {
+          ...(current ?? {
+            jobKey,
+            jobId,
+            type: "summarizer",
+            label: "Summarizer",
+            subtitle: "Chat summaries",
+            logs: [],
+          }),
+          jobKey,
+          jobId,
+          type: "summarizer",
+          label: "Summarizer",
+          subtitle: current?.subtitle ?? "Chat summaries",
+          status,
+          startedAt: current?.startedAt ?? new Date().toISOString(),
+          completedAt,
+          updatedAt: new Date().toISOString(),
+          progress,
+          lastMessage: progress.message ?? current?.lastMessage ?? null,
+        };
+        return next;
+      });
+    },
+    [upsertJob],
+  );
+
+  const applyStatus = useCallback(
+    (next: SummarizerSnapshot | null) => {
+      const current = statusRef.current;
+      let resolved = next;
+      if (
+        current &&
+        next &&
+        current.state === next.state &&
+        current.total === next.total &&
+        current.completed === next.completed &&
+        (current.message ?? "") === (next.message ?? "")
+      ) {
+        resolved = current;
+      }
+      statusRef.current = resolved;
+      setStatus(resolved);
+      if (resolved) {
+        updateSummarizerJobFromSnapshot(resolved);
+      } else {
+        const jobId = summarizerJobIdRef.current;
+        if (jobId) {
+          const jobKey = normaliseJobKey("summarizer", jobId);
+          scheduleRemoval(jobKey, JOB_RETENTION_AFTER_COMPLETE_MS);
+        }
+      }
+    },
+    [scheduleRemoval, updateSummarizerJobFromSnapshot],
+  );
 
   const updateStatus = useCallback(
     (next: SummarizerSnapshot | null) => {
       applyStatus(next);
     },
-    [applyStatus]
+    [applyStatus],
   );
 
   const clearStatus = useCallback(() => {
-    if (hideTimerRef.current) {
-      clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
     statusRef.current = null;
-    applyStatus(null);
-    setVisible(false);
-  }, [applyStatus]);
+    setStatus(null);
+  }, []);
 
   const subscribe = useCallback((listener: SummarizerListener) => {
     listenersRef.current.add(listener);
@@ -104,42 +389,193 @@ export function SummarizerProgressProvider({ children }: { children: React.React
     };
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (hideTimerRef.current) {
-        clearTimeout(hideTimerRef.current);
-        hideTimerRef.current = null;
+  const handleSummarizerEvents = useCallback(
+    (events: SummaryEvent[], snapshot: SummarizerSnapshot | null) => {
+      if (!events.length) {
+        return;
       }
+      events.forEach((event) => {
+        const jobId =
+          event.job_id !== null && event.job_id !== undefined
+            ? String(event.job_id)
+            : summarizerJobIdRef.current;
+        if (!jobId) {
+          return;
+        }
+        summarizerJobIdRef.current = jobId;
+        const jobKey = normaliseJobKey("summarizer", jobId);
+        const percent =
+          snapshot && snapshot.total > 0
+            ? Math.min(
+              100,
+              Math.floor((snapshot.completed / snapshot.total) * 100),
+            )
+            : snapshot?.state === "running"
+              ? 0
+              : 100;
+        upsertJob(jobKey, (current) => {
+          let status: JobLifecycleStatus = current?.status ?? "running";
+          if (event.outcome === "failed" || /fail/i.test(event.message ?? "")) {
+            status = "error";
+          } else if (
+            /complete/i.test(event.message ?? "") ||
+            event.outcome === "completed"
+          ) {
+            status = "success";
+          } else if (snapshot?.state === "running") {
+            status = "running";
+          }
+          const progress = snapshot
+            ? {
+              completed: snapshot.completed,
+              total: snapshot.total,
+              percent,
+              message:
+                snapshot.message ??
+                event.message ??
+                current?.progress?.message ??
+                null,
+            }
+            : current?.progress ?? null;
+          const next: JobState = {
+            ...(current ?? {
+              jobKey,
+              jobId,
+              type: "summarizer",
+              label: "Summarizer",
+              subtitle: "Chat summaries",
+              logs: [],
+            }),
+            jobKey,
+            jobId,
+            type: "summarizer",
+            label: "Summarizer",
+            subtitle: "Chat summaries",
+            status,
+            startedAt: current?.startedAt ?? event.timestamp ?? new Date().toISOString(),
+            completedAt:
+              status === "success" || status === "error"
+                ? current?.completedAt ?? event.timestamp ?? new Date().toISOString()
+                : current?.completedAt,
+            updatedAt: event.timestamp ?? new Date().toISOString(),
+            progress,
+            lastMessage: progress?.message ?? current?.lastMessage ?? event.message ?? null,
+          };
+          return next;
+        });
+      });
+    },
+    [upsertJob],
+  );
+
+  const applyLogEvent = useCallback(
+    (log: ProcessLogEvent) => {
+      if (!log.job_id) {
+        return;
+      }
+      const jobType = deriveJobTypeFromLog(log);
+      const jobId = String(log.job_id);
+      if (jobType === "summarizer") {
+        summarizerJobIdRef.current = jobId;
+      }
+      const jobKey = normaliseJobKey(jobType, jobId);
+
+      upsertJob(jobKey, (current) => {
+        const defaultLabel =
+          jobType === "summarizer"
+            ? "Summarizer"
+            : jobType === "dataSync"
+              ? "Data Load"
+              : "Background Job";
+        const logs = [...(current?.logs ?? []), log].slice(-MAX_LOGS_PER_JOB);
+        let status: JobLifecycleStatus = current?.status ?? "pending";
+        if (log.phase === "error" || /failed/i.test(log.message)) {
+          status = "error";
+        } else if (log.phase === "done") {
+          status = "success";
+        } else if (status === "pending") {
+          status = "running";
+        }
+
+        const next: JobState = {
+          jobKey,
+          jobId,
+          type: jobType,
+          label: current?.label ?? defaultLabel,
+          subtitle:
+            current?.subtitle ??
+            inferJobSubtitle(jobType, log) ??
+            undefined,
+          status,
+          startedAt: current?.startedAt ?? log.timestamp,
+          completedAt:
+            status === "success" || status === "error"
+              ? current?.completedAt ?? log.timestamp
+              : current?.completedAt,
+          updatedAt: log.timestamp,
+          logs,
+          stages:
+            jobType === "dataSync"
+              ? updateDataSyncStages(current?.stages, log.phase)
+              : current?.stages,
+          progress: jobType === "summarizer" ? current?.progress : undefined,
+          lastMessage: log.message,
+        };
+        return next;
+      });
+    },
+    [upsertJob],
+  );
+
+  const processLogs = useCallback(
+    (logs: ProcessLogEvent[]) => {
+      if (!logs.length) {
+        return;
+      }
+      const ordered = [...logs].sort(
+        (a, b) =>
+          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+      );
+      ordered.forEach((log) => {
+        const signature = `${log.timestamp}|${log.level}|${log.phase}|${log.message}|${log.job_id ?? ""}`;
+        if (processedLogSignaturesRef.current.has(signature)) {
+          return;
+        }
+        processedLogSignaturesRef.current.add(signature);
+        processedLogOrderRef.current.push(signature);
+        if (processedLogOrderRef.current.length > MAX_LOG_SIGNATURE_CACHE) {
+          const removeCount =
+            processedLogOrderRef.current.length - MAX_LOG_SIGNATURE_CACHE;
+          const trimmed = processedLogOrderRef.current.splice(0, removeCount);
+          trimmed.forEach((item) =>
+            processedLogSignaturesRef.current.delete(item),
+          );
+        }
+        applyLogEvent(log);
+      });
+    },
+    [applyLogEvent],
+  );
+
+  useEffect(() => {
+    const removalTimers = removalTimersRef.current;
+    return () => {
+      removalTimers.forEach((timer) => clearTimeout(timer));
+      removalTimers.clear();
       if (pollTimeoutRef.current) {
         clearTimeout(pollTimeoutRef.current);
         pollTimeoutRef.current = null;
+      }
+      if (logPollTimeoutRef.current) {
+        clearTimeout(logPollTimeoutRef.current);
+        logPollTimeoutRef.current = null;
       }
     };
   }, []);
 
   useEffect(() => {
-    if (hideTimerRef.current) {
-      clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
-
-    if (status?.state === "running") {
-      setVisible(true);
-      return;
-    }
-
-    if (status) {
-      hideTimerRef.current = setTimeout(() => {
-        setVisible(false);
-        hideTimerRef.current = null;
-      }, PANEL_HIDE_DELAY_MS);
-    } else {
-      setVisible(false);
-    }
-  }, [status]);
-
-  useEffect(() => {
-    const hasValidSession = authStatus === "authenticated" && Boolean(session?.accessToken);
+    const hasValidSession =
+      authStatus === "authenticated" && Boolean(session?.accessToken);
 
     if (!hasValidSession) {
       unauthorizedRef.current = false;
@@ -148,9 +584,16 @@ export function SummarizerProgressProvider({ children }: { children: React.React
         clearTimeout(pollTimeoutRef.current);
         pollTimeoutRef.current = null;
       }
+      if (logPollTimeoutRef.current) {
+        clearTimeout(logPollTimeoutRef.current);
+        logPollTimeoutRef.current = null;
+      }
       lastEventIdRef.current = null;
+      summarizerJobIdRef.current = null;
       statusRef.current = null;
-      applyStatus(null);
+      setStatus(null);
+      jobsRef.current.clear();
+      publishJobs();
       return;
     }
 
@@ -160,27 +603,27 @@ export function SummarizerProgressProvider({ children }: { children: React.React
 
     abortRef.current = false;
 
-    const schedulePoll = (delay: number) => {
+    const scheduleSummaryPoll = (delay: number) => {
       if (pollTimeoutRef.current) {
         clearTimeout(pollTimeoutRef.current);
       }
-      pollTimeoutRef.current = setTimeout(runPoll, delay);
+      pollTimeoutRef.current = setTimeout(runSummaryPoll, delay);
     };
 
-    const runPoll = async () => {
+    const runSummaryPoll = async () => {
       if (abortRef.current) {
         return;
       }
 
-      let nextDelay = POLL_INTERVAL_IDLE_MS;
+      let nextDelay = SUMMARY_POLL_IDLE_MS;
       let events: SummaryEvent[] = [];
-      let snapshot: SummarizerSnapshot | null = statusRef.current;
+      let snapshot = statusRef.current;
 
       try {
         const statusPayload = await apiGet<SummaryStatus>(
           "api/v1/summaries/status",
           undefined,
-          { skipAuthRedirect: true }
+          { skipAuthRedirect: true },
         );
 
         const isRunning = statusPayload?.state === "running";
@@ -191,68 +634,70 @@ export function SummarizerProgressProvider({ children }: { children: React.React
           const queue = await apiGet<SummaryEventsResponse>(
             path,
             undefined,
-            { skipAuthRedirect: true }
+            { skipAuthRedirect: true },
           );
 
-          const fetchedEvents = Array.isArray(queue?.events) ? queue.events : [];
+          const fetchedEvents = Array.isArray(queue?.events)
+            ? queue.events
+            : [];
 
           if (queue?.reset) {
             lastEventIdRef.current = null;
           }
 
           if (fetchedEvents.length) {
-            lastEventIdRef.current = fetchedEvents[fetchedEvents.length - 1]?.event_id ?? lastEventIdRef.current;
+            lastEventIdRef.current =
+              fetchedEvents[fetchedEvents.length - 1]?.event_id ??
+              lastEventIdRef.current;
             events = fetchedEvents;
           }
         } else {
           lastEventIdRef.current = null;
         }
 
-        const latestMessageFromEvents =
+        const latestMessage =
           events.length && typeof events[events.length - 1]?.message === "string"
             ? (events[events.length - 1].message as string)
             : undefined;
 
-        snapshot = toSnapshot(statusPayload, snapshot, latestMessageFromEvents ?? snapshot?.message ?? null);
+        snapshot = toSnapshot(statusPayload, snapshot, latestMessage ?? snapshot?.message ?? null);
+
+        if (events.length) {
+          handleSummarizerEvents(events, snapshot);
+        }
+
         applyStatus(snapshot);
-        nextDelay = snapshot?.state === "running" ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
+        nextDelay =
+          snapshot?.state === "running"
+            ? SUMMARY_POLL_ACTIVE_MS
+            : SUMMARY_POLL_IDLE_MS;
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
           abortRef.current = true;
           unauthorizedRef.current = true;
           lastEventIdRef.current = null;
           statusRef.current = null;
-          applyStatus(null);
+          setStatus(null);
           return;
         }
         console.error("Failed to poll summarizer status", error);
-        nextDelay = POLL_INTERVAL_IDLE_MS;
+        nextDelay = SUMMARY_POLL_IDLE_MS;
       }
 
-      if (events.length) {
-        listenersRef.current.forEach((listener) => {
-          try {
-            listener({ status: snapshot, events });
-          } catch {
-            // ignore listener errors
-          }
-        });
-      } else {
-        listenersRef.current.forEach((listener) => {
-          try {
-            listener({ status: snapshot, events: [] });
-          } catch {
-            // ignore listener errors
-          }
-        });
-      }
+      listenersRef.current.forEach((listener) => {
+        try {
+          listener({ status: snapshot, events });
+        } catch {
+          // ignore listener errors
+        }
+      });
 
       if (!abortRef.current) {
-        schedulePoll(nextDelay);
+        scheduleSummaryPoll(nextDelay);
       }
     };
 
-    schedulePoll(0);
+    scheduleSummaryPoll(0);
 
     return () => {
       abortRef.current = true;
@@ -261,68 +706,102 @@ export function SummarizerProgressProvider({ children }: { children: React.React
         pollTimeoutRef.current = null;
       }
     };
-  }, [authStatus, session?.accessToken, applyStatus]);
+  }, [
+    applyStatus,
+    authStatus,
+    handleSummarizerEvents,
+    publishJobs,
+    session?.accessToken,
+  ]);
 
-  const contextValue = useMemo(
+  useEffect(() => {
+    const hasValidSession =
+      authStatus === "authenticated" && Boolean(session?.accessToken);
+
+    if (!hasValidSession) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const scheduleLogPoll = (delay: number) => {
+      if (logPollTimeoutRef.current) {
+        clearTimeout(logPollTimeoutRef.current);
+      }
+      logPollTimeoutRef.current = setTimeout(runLogPoll, delay);
+    };
+
+    const runLogPoll = async () => {
+      try {
+        const response = await getProcessLogs(undefined, 200);
+        if (cancelled) {
+          return;
+        }
+        processLogs(response.logs);
+      } catch (error) {
+        console.error("Failed to fetch process logs", error);
+      } finally {
+        if (!cancelled) {
+          scheduleLogPoll(LOG_POLL_INTERVAL_MS);
+        }
+      }
+    };
+
+    scheduleLogPoll(0);
+
+    return () => {
+      cancelled = true;
+      if (logPollTimeoutRef.current) {
+        clearTimeout(logPollTimeoutRef.current);
+        logPollTimeoutRef.current = null;
+      }
+    };
+  }, [authStatus, processLogs, session?.accessToken]);
+
+  const contextValue = useMemo<JobMonitorContextValue>(
     () => ({
+      jobs,
+      isPanelCollapsed,
+      setPanelCollapsed: setIsPanelCollapsed,
       status,
       updateStatus,
       clearStatus,
-      subscribe
+      subscribe,
     }),
-    [status, updateStatus, clearStatus, subscribe]
+    [clearStatus, isPanelCollapsed, jobs, status, subscribe, updateStatus],
   );
 
   return (
-    <SummarizerProgressContext.Provider value={contextValue}>
+    <JobMonitorContext.Provider value={contextValue}>
       {children}
-      <SummarizerProgressPanel status={visible ? status : null} />
-    </SummarizerProgressContext.Provider>
+      <JobMonitorPanel
+        jobs={jobs}
+        isCollapsed={isPanelCollapsed}
+        onCollapseChange={setIsPanelCollapsed}
+      />
+    </JobMonitorContext.Provider>
   );
 }
 
-export function useSummarizerProgress(): SummarizerProgressContextValue {
-  const context = useContext(SummarizerProgressContext);
+export function useJobMonitor(): JobMonitorContextValue {
+  const context = useContext(JobMonitorContext);
   if (!context) {
-    throw new Error("useSummarizerProgress must be used within a SummarizerProgressProvider");
+    throw new Error(
+      "useJobMonitor must be used within a SummarizerProgressProvider",
+    );
   }
   return context;
 }
 
-function SummarizerProgressPanel({ status }: { status: SummarizerSnapshot | null }) {
-  if (!status) {
-    return null;
-  }
-
-  const total = Math.max(0, Math.trunc(status.total ?? 0));
-  const completed = Math.max(0, Math.trunc(status.completed ?? 0));
-  const clampedCompleted = total > 0 ? Math.min(completed, total) : completed;
-  const percent = total > 0 ? Math.min(100, Math.floor((clampedCompleted / total) * 100)) : 0;
-  const hasTotal = total > 0;
-  const progressSummary = hasTotal
-    ? `${clampedCompleted.toLocaleString()} / ${total.toLocaleString()} (${percent}%)`
-    : null;
-  const message = (status.message || "").trim();
-
-  return (
-    <div
-      className="fixed bottom-4 right-4 z-50 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-border/70 bg-card/95 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/80"
-      role="status"
-      aria-live="polite"
-    >
-      <div className="flex items-center justify-between gap-2 border-b border-border/60 px-4 py-2">
-        <span className="text-sm font-semibold text-foreground">Summarizer</span>
-        {progressSummary ? <span className="text-xs text-muted-foreground">{progressSummary}</span> : null}
-      </div>
-      <div className="space-y-3 px-4 py-3">
-        {message ? <p className="text-sm text-foreground">{message}</p> : null}
-        <div className="h-2 w-full rounded-full bg-muted">
-          <div
-            className={cn("h-full rounded-full bg-primary transition-all", hasTotal ? "" : "animate-pulse")}
-            style={{ width: hasTotal ? `${percent}%` : "35%" }}
-          />
-        </div>
-      </div>
-    </div>
-  );
+export function useSummarizerProgress(): Pick<
+  JobMonitorContextValue,
+  "status" | "updateStatus" | "clearStatus" | "subscribe"
+> {
+  const context = useJobMonitor();
+  return {
+    status: context.status,
+    updateStatus: context.updateStatus,
+    clearStatus: context.clearStatus,
+    subscribe: context.subscribe,
+  };
 }

@@ -22,7 +22,6 @@ import {
   runSync,
   rebuildSummaries,
   getSummaryStatus,
-  getSummaryEvents,
   getSummarizerSettings,
   updateSummarizerSettings,
   getAvailableOllamaModels,
@@ -33,13 +32,10 @@ import {
   type ProcessLogEvent,
 } from "@/lib/api";
 import { toast } from "@/components/ui/use-toast";
-import { LogViewer } from "@/components/log-viewer";
-import type { SummaryEvent, SummaryStatus, DatasetMeta, OllamaModelTag } from "@/lib/types";
+import type { SummaryStatus, DatasetMeta, OllamaModelTag } from "@/lib/types";
 
 const SUMMARY_POLL_INTERVAL_MS = 2000;
 const TERMINAL_SUMMARY_STATES = new Set(["idle", "completed", "failed", "cancelled"]);
-const SUMMARY_WARNING_EVENT_TYPES = new Set(["invalid_chat", "empty_context"]);
-
 function getTemperatureLabel(temperature: number): string {
   if (temperature === 0.0) return "Strict";
   if (temperature <= 0.2) return "Precise";
@@ -61,96 +57,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-function formatSummaryEventDetails(event: SummaryEvent): string {
-  const type = typeof event.type === "string" ? event.type : "";
-  if (type === "chat") {
-    const chatId = typeof event.chat_id === "string" ? event.chat_id : "unknown";
-    const outcome = typeof event.outcome === "string" ? event.outcome : "";
-    if (outcome === "generated" || outcome === "success") {
-      return `Generated summary for chat ${chatId}`;
-    }
-    if (outcome === "failed") {
-      return `Failed to summarize chat ${chatId}`;
-    }
-    if (outcome === "skipped") {
-      return `Skipped chat ${chatId}`;
-    }
-    return `Processed chat ${chatId}`;
-  }
-  if (type === "chunk") {
-    const chatId = typeof event.chat_id === "string" ? event.chat_id : "unknown";
-    const chunkIndex = typeof event.chunk_index === "number" ? event.chunk_index : Number(event.chunk_index ?? NaN);
-    const chunkCount = typeof event.chunk_count === "number" ? event.chunk_count : Number(event.chunk_count ?? NaN);
-    if (Number.isFinite(chunkIndex) && Number.isFinite(chunkCount) && chunkCount > 0) {
-      return `Summarizing chunk ${chunkIndex}/${chunkCount} for chat ${chatId}`;
-    }
-    return `Summarizing chat ${chatId}`;
-  }
-  if (type === "skip") {
-    const chatId = typeof event.chat_id === "string" ? event.chat_id : "unknown";
-    return `Skipped existing summary for chat ${chatId}`;
-  }
-  if (type === "invalid_chat") {
-    return "Skipped chat without a valid chat_id";
-  }
-  if (type === "empty_context") {
-    const chatId = typeof event.chat_id === "string" ? event.chat_id : "unknown";
-    return `No summarizable content for chat ${chatId}`;
-  }
-  if (type === "start") {
-    return "Summarizer job started";
-  }
-  if (type === "complete") {
-    return "Summarizer job complete";
-  }
-  if (type === "error") {
-    return "Summarizer job error";
-  }
-  return "";
-}
-
-function determineSummaryEventLevel(event: SummaryEvent): ProcessLogEvent["level"] {
-  const type = typeof event.type === "string" ? event.type : "";
-  const outcome = typeof event.outcome === "string" ? event.outcome : "";
-  if (type === "error" || outcome === "failed") {
-    return "error";
-  }
-  if (SUMMARY_WARNING_EVENT_TYPES.has(type) || outcome === "skipped") {
-    return "warning";
-  }
-  return "info";
-}
-
-function convertSummaryEventToLog(event: SummaryEvent): ProcessLogEvent | null {
-  const messageRaw = typeof event.message === "string" ? event.message.trim() : "";
-  const fallback = formatSummaryEventDetails(event);
-  const message = messageRaw || fallback;
-  if (!message) {
-    return null;
-  }
-  const timestamp =
-    typeof event.timestamp === "string" && event.timestamp.trim().length
-      ? event.timestamp
-      : new Date().toISOString();
-  const log: ProcessLogEvent = {
-    timestamp,
-    level: determineSummaryEventLevel(event),
-    job_id: event.job_id !== null && event.job_id !== undefined ? String(event.job_id) : null,
-    phase: "summarize",
-    message,
-  };
-
-  const details: Record<string, unknown> = {};
-  if (event.event_id) details.event_id = event.event_id;
-  if (event.type) details.type = event.type;
-  if (event.outcome) details.outcome = event.outcome;
-  if (Object.keys(details).length > 0) {
-    log.details = details;
-  }
-
-  return log;
 }
 
 interface ConnectionInfoState {
@@ -252,11 +158,6 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     confirmOpen: false,
   });
 
-  const [summaryLogs, setSummaryLogs] = React.useState<ProcessLogEvent[]>([]);
-  const summaryEventIdsRef = React.useRef<Set<string>>(new Set());
-  const lastSummaryEventIdRef = React.useRef<string | null>(null);
-  const activeSummaryJobIdRef = React.useRef<string | null>(null);
-
   const { updateStatus: setGlobalSummarizerStatus } = useSummarizerProgress();
 
   const syncGlobalSummarizerStatus = React.useCallback(
@@ -295,96 +196,6 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     },
     [setGlobalSummarizerStatus]
   );
-
-  const appendManualSummaryLog = React.useCallback(
-    (message: string, level: ProcessLogEvent["level"] = "info") => {
-      setSummaryLogs(prev => {
-        const nextEntry: ProcessLogEvent = {
-          timestamp: new Date().toISOString(),
-          level,
-          job_id: null,
-          phase: "summarize",
-          message,
-        };
-        const next = [...prev, nextEntry];
-        return next.length > 200 ? next.slice(-200) : next;
-      });
-    },
-    []
-  );
-
-  const resetSummaryLogState = React.useCallback(() => {
-    summaryEventIdsRef.current = new Set();
-    lastSummaryEventIdRef.current = null;
-    activeSummaryJobIdRef.current = null;
-    setSummaryLogs([]);
-  }, []);
-
-  const appendSummaryEventsToLogs = React.useCallback((events: SummaryEvent[]) => {
-    if (!events.length) {
-      return;
-    }
-    setSummaryLogs(prev => {
-      const next = [...prev];
-      let changed = false;
-      for (const event of events) {
-        const eventJobId =
-          event.job_id !== null && event.job_id !== undefined ? String(event.job_id) : null;
-        const activeJobId = activeSummaryJobIdRef.current;
-        if (activeJobId) {
-          if (!eventJobId || eventJobId !== activeJobId) {
-            continue;
-          }
-        } else if (eventJobId) {
-          activeSummaryJobIdRef.current = eventJobId;
-        }
-
-        const eventId =
-          typeof event.event_id === "string" && event.event_id.trim().length ? event.event_id.trim() : null;
-        if (eventId) {
-          if (summaryEventIdsRef.current.has(eventId)) {
-            continue;
-          }
-          summaryEventIdsRef.current.add(eventId);
-        }
-        const logEntry = convertSummaryEventToLog(event);
-        if (!logEntry) {
-          continue;
-        }
-        next.push(logEntry);
-        changed = true;
-      }
-      if (!changed) {
-        return prev;
-      }
-      return next.length > 200 ? next.slice(-200) : next;
-    });
-  }, []);
-
-  const fetchSummaryEventsFeed = React.useCallback(async () => {
-    try {
-      const after = lastSummaryEventIdRef.current ?? undefined;
-      const response = await getSummaryEvents(after);
-      if (response.reset) {
-        summaryEventIdsRef.current = new Set();
-        lastSummaryEventIdRef.current = null;
-      }
-      const events = Array.isArray(response.events) ? response.events : [];
-      if (events.length) {
-        appendSummaryEventsToLogs(events);
-        const lastEvent = events[events.length - 1];
-        const lastId =
-          typeof lastEvent?.event_id === "string" && lastEvent.event_id.trim().length
-            ? lastEvent.event_id.trim()
-            : null;
-        if (lastId) {
-          lastSummaryEventIdRef.current = lastId;
-        }
-      }
-    } catch (err) {
-      console.error("Failed to fetch summary events:", err);
-    }
-  }, [appendSummaryEventsToLogs]);
 
   const fetchSummarizerConfig = React.useCallback(async () => {
     setState(prev => ({
@@ -482,17 +293,58 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }
   }, []);
 
-  // Fetch settings, sync status, scheduler config, and dataset metadata on mount
-  React.useEffect(() => {
-    if (!initialSettings) {
-      fetchSettings();
+  const fetchDatasetMeta = React.useCallback(async () => {
+    try {
+      const meta = await apiGet<DatasetMeta>("api/v1/datasets/meta");
+      setState(prev => ({
+        ...prev,
+        chatCount: meta.chat_count,
+        userCount: meta.user_count,
+        modelCount: meta.model_count,
+        messageCount: meta.message_count,
+        datasetLoaded: meta.chat_count > 0 || meta.user_count > 0 || meta.model_count > 0,
+      }));
+    } catch (err) {
+      console.error("Failed to fetch dataset metadata:", err);
+      setState(prev => ({
+        ...prev,
+        chatCount: 0,
+        userCount: 0,
+        modelCount: 0,
+        messageCount: 0,
+        datasetLoaded: false,
+      }));
     }
-    fetchAnonymizationSettings();
-    fetchSyncStatus();
-    fetchSchedulerConfig();
-    fetchDatasetMeta();
-    fetchSummarizerConfig();
-  }, [initialSettings, fetchSummarizerConfig, fetchAnonymizationSettings]);
+  }, []);
+
+  const fetchSyncStatus = React.useCallback(async () => {
+    try {
+      const syncStatus = await getSyncStatus();
+      setState(prev => ({
+        ...prev,
+        lastSync: syncStatus.last_sync_at,
+        mode: syncStatus.recommended_mode,
+        isStale: syncStatus.is_stale,
+      }));
+    } catch (err) {
+      console.error("Failed to fetch sync status:", err);
+    }
+  }, []);
+
+  const fetchSchedulerConfig = React.useCallback(async () => {
+    try {
+      const config = await getSyncScheduler();
+      setState(prev => ({
+        ...prev,
+        schedulerEnabled: config.enabled,
+        schedulerInterval: config.interval_minutes,
+        schedulerNextRunAt: config.next_run_at,
+        schedulerLastRunAt: config.last_run_at,
+      }));
+    } catch (err) {
+      console.error("Failed to fetch scheduler config:", err);
+    }
+  }, []);
 
   // Poll scheduler config every 10 seconds to update next_run_at
   React.useEffect(() => {
@@ -500,7 +352,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       void fetchSchedulerConfig();
     }, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchSchedulerConfig]);
 
   // Update countdown timer every second
   React.useEffect(() => {
@@ -566,59 +418,25 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     return () => clearInterval(interval);
   }, []);
 
-  const fetchDatasetMeta = async () => {
-    try {
-      const meta = await apiGet<DatasetMeta>("api/v1/datasets/meta");
-      setState(prev => ({
-        ...prev,
-        chatCount: meta.chat_count,
-        userCount: meta.user_count,
-        modelCount: meta.model_count,
-        messageCount: meta.message_count,
-        datasetLoaded: meta.chat_count > 0 || meta.user_count > 0 || meta.model_count > 0,
-      }));
-    } catch (err) {
-      console.error("Failed to fetch dataset metadata:", err);
-      // If fetch fails, assume no data loaded
-      setState(prev => ({
-        ...prev,
-        chatCount: 0,
-        userCount: 0,
-        modelCount: 0,
-        messageCount: 0,
-        datasetLoaded: false,
-      }));
+  // Fetch settings, sync status, scheduler config, and dataset metadata on mount
+  React.useEffect(() => {
+    if (!initialSettings) {
+      fetchSettings();
     }
-  };
-
-  const fetchSyncStatus = async () => {
-    try {
-      const syncStatus = await getSyncStatus();
-      setState(prev => ({
-        ...prev,
-        lastSync: syncStatus.last_sync_at,
-        mode: syncStatus.recommended_mode,
-        isStale: syncStatus.is_stale,
-      }));
-    } catch (err) {
-      console.error("Failed to fetch sync status:", err);
-    }
-  };
-
-  const fetchSchedulerConfig = async () => {
-    try {
-      const config = await getSyncScheduler();
-      setState(prev => ({
-        ...prev,
-        schedulerEnabled: config.enabled,
-        schedulerInterval: config.interval_minutes,
-        schedulerNextRunAt: config.next_run_at,
-        schedulerLastRunAt: config.last_run_at,
-      }));
-    } catch (err) {
-      console.error("Failed to fetch scheduler config:", err);
-    }
-  };
+    fetchAnonymizationSettings();
+    fetchSyncStatus();
+    fetchSchedulerConfig();
+    fetchDatasetMeta();
+    fetchSummarizerConfig();
+  }, [
+    initialSettings,
+    fetchSettings,
+    fetchAnonymizationSettings,
+    fetchSyncStatus,
+    fetchSchedulerConfig,
+    fetchDatasetMeta,
+    fetchSummarizerConfig,
+  ]);
 
   const applyAnonymizationUpdate = async (enabled: boolean) => {
     setAnonymization(prev => ({ ...prev, isSaving: true, error: null, enabled }));
@@ -967,38 +785,24 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }
 
     setState(prev => ({ ...prev, isRebuildingSummaries: true, error: null }));
-    resetSummaryLogState();
-    appendManualSummaryLog("Queuing manual summary rebuild...");
+    toast({
+      title: "Queuing summary rebuild",
+      description: "Summarizer job has been submitted.",
+      variant: "default",
+      duration: 3500,
+    });
 
     try {
       let currentStatus = await rebuildSummaries();
       syncGlobalSummarizerStatus(currentStatus);
-      if (currentStatus.message) {
-        appendManualSummaryLog(currentStatus.message);
-      }
-
-      const lastEvent = currentStatus.last_event;
-      const rawJobId =
-        lastEvent && typeof lastEvent === "object" ? (lastEvent as Record<string, unknown>).job_id : undefined;
-      const initialJobId =
-        rawJobId !== undefined && rawJobId !== null && `${rawJobId}`.trim().length ? String(rawJobId) : null;
-      if (initialJobId) {
-        activeSummaryJobIdRef.current = initialJobId;
-      }
-
-      await fetchSummaryEventsFeed();
 
       while (!isTerminalSummaryState(currentStatus.state)) {
         await sleep(SUMMARY_POLL_INTERVAL_MS);
-        await fetchSummaryEventsFeed();
         currentStatus = await getSummaryStatus();
         syncGlobalSummarizerStatus(currentStatus);
       }
 
-      await fetchSummaryEventsFeed();
-
       if (currentStatus.state === "completed") {
-        appendManualSummaryLog("Summary job completed successfully.");
         toast({
           title: "Chat summaries rebuilt",
           description: "Dashboard analytics will refresh with the latest summaries.",
@@ -1009,16 +813,15 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         await fetchDatasetMeta();
       } else if (currentStatus.state === "failed") {
         const message = currentStatus.message ?? "Summary job failed.";
-        appendManualSummaryLog(message, "error");
         toast({
           title: "Summary job failed",
           description: message,
           variant: "destructive",
           duration: 7000,
         });
+        setState(prev => ({ ...prev, error: message }));
       } else if (currentStatus.state === "cancelled") {
         const message = currentStatus.message ?? "Summary job cancelled (dataset changed).";
-        appendManualSummaryLog(message, "warning");
         toast({
           title: "Summary job cancelled",
           description: message,
@@ -1027,7 +830,6 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         });
       } else {
         const message = currentStatus.message ?? "Summaries still running in the background.";
-        appendManualSummaryLog(message);
         toast({
           title: "Summaries running",
           description: message,
@@ -1038,25 +840,22 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     } catch (err) {
       console.error("Failed to rebuild summaries:", err);
       const message = err instanceof Error ? err.message : "Unable to rebuild summaries";
-      appendManualSummaryLog(message, "error");
       toast({
-        title: "Summary job failed",
+        title: "Summary rebuild failed",
         description: message,
         variant: "destructive",
         duration: 7000,
       });
       syncGlobalSummarizerStatus(null);
+      setState(prev => ({ ...prev, error: message }));
     } finally {
       setState(prev => ({ ...prev, isRebuildingSummaries: false }));
-      activeSummaryJobIdRef.current = null;
     }
   }, [
     state.isRebuildingSummaries,
-    appendManualSummaryLog,
-    fetchSummaryEventsFeed,
-    fetchSyncStatus,
-    resetSummaryLogState,
     syncGlobalSummarizerStatus,
+    fetchSyncStatus,
+    fetchDatasetMeta,
   ]);
 
   const handleEditDataSource = () => {
@@ -1744,17 +1543,6 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         </CardContent>
       </Card>
 
-      {/* Processing Log */}
-      <Card className="flex flex-col">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <span className="text-lg">📋 Processing Log</span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col h-[500px] overflow-hidden">
-          <LogViewer className="flex-1" pollInterval={2000} maxLogs={200} supplementalLogs={summaryLogs} />
-        </CardContent>
-      </Card>
     {anonymization.confirmOpen && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur p-4">
         <div className="w-full max-w-md rounded-lg border border-border bg-background shadow-lg overflow-hidden">

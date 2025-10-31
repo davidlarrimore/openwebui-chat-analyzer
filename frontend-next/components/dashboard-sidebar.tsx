@@ -50,7 +50,6 @@ export function DashboardSidebar({ userDisplayName, navLinks }: DashboardSidebar
         "group/sidebar hidden min-h-full flex-shrink-0 border-r bg-card transition-[width] duration-300 ease-in-out lg:flex",
         collapsed ? "w-[88px]" : "w-72"
       )}
-      aria-expanded={!collapsed}
     >
       <div className="flex h-full w-full flex-col">
         <div

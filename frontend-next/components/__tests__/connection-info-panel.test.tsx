@@ -25,9 +25,6 @@ jest.mock("@/components/ui/use-toast", () => ({
   toast: jest.fn(),
 }));
 
-jest.mock("@/components/log-viewer", () => ({
-  LogViewer: () => <div data-testid="log-viewer" />,
-}));
 jest.mock("@/components/summarizer-progress-provider", () => ({
   useSummarizerProgress: () => ({ updateStatus: jest.fn() }),
   SummarizerProgressProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -93,7 +90,6 @@ describe("ConnectionInfoPanel", () => {
       return {} as never;
     });
     mockedApi.getSummaryStatus.mockResolvedValue(null);
-    mockedApi.getSummaryEvents.mockResolvedValue({ events: [], reset: false });
     mockedApi.getSummarizerSettings.mockResolvedValue({
       model: "llama3.2:3b-instruct-q4_K_M",
       temperature: 0.2,
