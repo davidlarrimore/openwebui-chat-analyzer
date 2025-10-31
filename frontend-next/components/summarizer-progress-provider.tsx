@@ -103,6 +103,8 @@ export function SummarizerProgressProvider({
   children: ReactNode;
 }) {
   const { data: session, status: authStatus } = useSession();
+  const hasValidSession =
+    authStatus === "authenticated" && Boolean(session?.accessToken);
   const { toast } = useToast();
   const [status, setStatus] = useState<SummarizerSnapshot | null>(null);
   const statusRef = useRef<SummarizerSnapshot | null>(null);
@@ -574,9 +576,6 @@ export function SummarizerProgressProvider({
   }, []);
 
   useEffect(() => {
-    const hasValidSession =
-      authStatus === "authenticated" && Boolean(session?.accessToken);
-
     if (!hasValidSession) {
       unauthorizedRef.current = false;
       abortRef.current = true;
@@ -706,18 +705,9 @@ export function SummarizerProgressProvider({
         pollTimeoutRef.current = null;
       }
     };
-  }, [
-    applyStatus,
-    authStatus,
-    handleSummarizerEvents,
-    publishJobs,
-    session?.accessToken,
-  ]);
+  }, [applyStatus, authStatus, handleSummarizerEvents, hasValidSession, publishJobs]);
 
   useEffect(() => {
-    const hasValidSession =
-      authStatus === "authenticated" && Boolean(session?.accessToken);
-
     if (!hasValidSession) {
       return;
     }
@@ -756,7 +746,7 @@ export function SummarizerProgressProvider({
         logPollTimeoutRef.current = null;
       }
     };
-  }, [authStatus, processLogs, session?.accessToken]);
+  }, [authStatus, hasValidSession, processLogs, session?.accessToken]);
 
   const contextValue = useMemo<JobMonitorContextValue>(
     () => ({
@@ -774,11 +764,13 @@ export function SummarizerProgressProvider({
   return (
     <JobMonitorContext.Provider value={contextValue}>
       {children}
-      <JobMonitorPanel
-        jobs={jobs}
-        isCollapsed={isPanelCollapsed}
-        onCollapseChange={setIsPanelCollapsed}
-      />
+      {hasValidSession ? (
+        <JobMonitorPanel
+          jobs={jobs}
+          isCollapsed={isPanelCollapsed}
+          onCollapseChange={setIsPanelCollapsed}
+        />
+      ) : null}
     </JobMonitorContext.Provider>
   );
 }

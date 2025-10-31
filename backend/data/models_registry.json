@@ -1,24 +1,24 @@
 {
   "models": {
-    "llama3.2:3b-instruct-q4_k_m": {
+    "qwen2.5:3b-instruct-q4_k_m": {
       "supports_completions": true,
-      "tested_at": "2025-10-28T19:00:00Z"
-    },
-    "phi3:mini": {
-      "supports_completions": true,
-      "tested_at": "2025-10-28T19:00:00Z"
+      "tested_at": "2025-10-31T15:30:21.210636+00:00"
     },
     "nomic-embed-text:latest": {
       "supports_completions": false,
-      "tested_at": "2025-10-28T19:00:00Z"
+      "tested_at": "2025-10-31T15:30:21.282632+00:00"
     },
-    "qwen2.5:3b-instruct-q4_k_m": {
+    "phi3:mini": {
       "supports_completions": true,
-      "tested_at": "2025-10-28T22:46:10.176976+00:00"
+      "tested_at": "2025-10-31T15:30:43.124037+00:00"
     },
     "llama3:8b": {
       "supports_completions": true,
-      "tested_at": "2025-10-29T03:34:14.722125+00:00"
+      "tested_at": "2025-10-31T15:31:04.692696+00:00"
+    },
+    "llama3.2:3b-instruct-q4_k_m": {
+      "supports_completions": true,
+      "tested_at": "2025-10-31T15:31:08.786350+00:00"
     }
   }
 }

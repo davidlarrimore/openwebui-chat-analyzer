@@ -47,9 +47,16 @@ async function handleJsonResponse<T>(response: Response, options: ResponseOption
     };
     // Handle 401 Unauthorized - redirect to login on client side
     if (response.status === 401 && !options.skipAuthRedirect && typeof window !== "undefined") {
+      const { pathname } = window.location;
+      const onLoginPage = pathname.startsWith("/login");
+      const loginUrl = "/login?error=SessionExpired";
+      if (onLoginPage) {
+        logAuthEvent("info", "API request returned 401 on login page; suppressing redirect.", context);
+        throw new Error("Session expired while already on login page.");
+      }
       logAuthEvent("warn", "API request returned 401; redirecting to login.", context);
       // Clear any stale session and redirect to login
-      window.location.href = "/login?error=SessionExpired";
+      window.location.href = loginUrl;
       throw new Error("Session expired, redirecting to login...");
     }
     logAuthEvent("error", "API request failed.", context);
