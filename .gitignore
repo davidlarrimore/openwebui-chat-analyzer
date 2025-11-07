@@ -50,7 +50,9 @@ processed_data/
 # Generated Analysis Files
 *.csv
 *.xlsx
-*.png
+word_clouds/**/*.png
+reports/**/*.png
+analysis_output/**/*.png
 *.jpg
 *.jpeg
 *.gif
