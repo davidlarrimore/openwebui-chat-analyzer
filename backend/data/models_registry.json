@@ -43,6 +43,182 @@
     "gpt-oss:20b": {
       "supports_completions": true,
       "tested_at": "2025-11-03T20:17:08.751796+00:00"
+    },
+    "global.anthropic.claude-sonnet-4-20250514-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:14.216998+00:00"
+    },
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "supports_completions": false,
+      "tested_at": "2025-11-07T03:21:14.656824+00:00"
+    },
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "supports_completions": false,
+      "tested_at": "2025-11-07T03:21:15.013890+00:00"
+    },
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:17.032300+00:00"
+    },
+    "us.anthropic.claude-opus-4-1-20250805-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:20.500392+00:00"
+    },
+    "amazon.nova-pro-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:21.112642+00:00"
+    },
+    "us.amazon.nova-pro-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:21.685736+00:00"
+    },
+    "us.twelvelabs.pegasus-1-2-v1:0": {
+      "supports_completions": false,
+      "tested_at": "2025-11-07T03:21:22.105508+00:00"
+    },
+    "openai.gpt-oss-20b-1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:22.637276+00:00"
+    },
+    "amazon.titan-tg1-large": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:23.518471+00:00"
+    },
+    "us.amazon.nova-premier-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:24.051741+00:00"
+    },
+    "amazon.nova-lite-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:24.485221+00:00"
+    },
+    "us.amazon.nova-lite-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:25.017261+00:00"
+    },
+    "amazon.nova-micro-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:25.565231+00:00"
+    },
+    "us.amazon.nova-micro-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:26.318228+00:00"
+    },
+    "amazon.nova-sonic-v1:0": {
+      "supports_completions": false,
+      "tested_at": "2025-11-07T03:21:26.590984+00:00"
+    },
+    "amazon.titan-text-express-v1": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:27.464492+00:00"
+    },
+    "ai21.jamba-1-5-large-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:28.174192+00:00"
+    },
+    "ai21.jamba-1-5-mini-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:28.641508+00:00"
+    },
+    "anthropic.claude-3-sonnet-20240229-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:29.534605+00:00"
+    },
+    "us.anthropic.claude-3-sonnet-20240229-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:30.105209+00:00"
+    },
+    "anthropic.claude-3-haiku-20240307-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:30.914392+00:00"
+    },
+    "us.anthropic.claude-3-haiku-20240307-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:32.099078+00:00"
+    },
+    "us.anthropic.claude-3-opus-20240229-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:33.297316+00:00"
+    },
+    "anthropic.claude-3-5-sonnet-20240620-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:34.431731+00:00"
+    },
+    "us.anthropic.claude-3-5-sonnet-20240620-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:35.330071+00:00"
+    },
+    "us.anthropic.claude-3-5-sonnet-20241022-v2:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:36.902906+00:00"
+    },
+    "us.anthropic.claude-3-7-sonnet-20250219-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:38.613054+00:00"
+    },
+    "us.anthropic.claude-opus-4-20250514-v1:0": {
+      "supports_completions": false,
+      "tested_at": "2025-11-07T03:21:38.973549+00:00"
+    },
+    "cohere.command-r-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:39.417222+00:00"
+    },
+    "cohere.command-r-plus-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:40.048024+00:00"
+    },
+    "us.deepseek.r1-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:40.559929+00:00"
+    },
+    "meta.llama3-8b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:40.918586+00:00"
+    },
+    "meta.llama3-70b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:41.383453+00:00"
+    },
+    "us.meta.llama3-1-8b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:41.800524+00:00"
+    },
+    "us.meta.llama3-1-70b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:42.674283+00:00"
+    },
+    "us.meta.llama3-2-11b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:43.329154+00:00"
+    },
+    "us.meta.llama3-2-90b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:44.049946+00:00"
+    },
+    "us.meta.llama3-2-1b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:44.705507+00:00"
+    },
+    "us.meta.llama3-3-70b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:45.118855+00:00"
+    },
+    "mistral.mistral-7b-instruct-v0:2": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:45.486355+00:00"
+    },
+    "mistral.mixtral-8x7b-instruct-v0:1": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:45.881716+00:00"
+    },
+    "mistral.mistral-large-2402-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:46.318123+00:00"
+    },
+    "mistral.mistral-small-2402-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T03:21:46.741498+00:00"
     }
   }
 }

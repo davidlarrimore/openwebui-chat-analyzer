@@ -12,6 +12,8 @@ services:
       - ./backend:/app/backend:ro
       - ./backend/data:/app/backend/data:rw
       - ./data:/app/data:rw
+    env_file:
+      - .env
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OWUI_LOG_LEVEL: ${OWUI_LOG_LEVEL:-INFO}

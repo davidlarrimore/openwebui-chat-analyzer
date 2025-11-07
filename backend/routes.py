@@ -1146,6 +1146,10 @@ def get_summarizer_models(
         False,
         description="When true and no validated models are available, automatically revalidate discovered models.",
     ),
+    force_validate: bool = Query(
+        False,
+        description="Force validation even if validated models already exist.",
+    ),
     _: AuthUserPublic = Depends(resolve_authenticated_user),
 ) -> ProviderModelsResponse:
     """Get models available from a specific provider.
@@ -1160,6 +1164,7 @@ def get_summarizer_models(
             connection,
             include_unvalidated,
             auto_validate_missing=auto_validate_missing,
+            force_auto_validate=force_validate,
         )
         return ProviderModelsResponse(
             models=[ProviderModel(**model) for model in models_data]

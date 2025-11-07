@@ -281,13 +281,17 @@ export async function getSummarizerConnections(): Promise<SummarizerConnectionsR
 export async function getSummarizerModels(
   connection: ProviderType,
   includeUnvalidated: boolean = true,
-  autoValidateMissing = false
+  autoValidateMissing = false,
+  forceValidate = false
 ): Promise<SummarizerModelsResponse> {
   const params = new URLSearchParams();
   params.set("connection", connection);
   params.set("include_unvalidated", includeUnvalidated.toString());
   if (autoValidateMissing) {
     params.set("auto_validate_missing", "true");
+  }
+  if (forceValidate) {
+    params.set("force_validate", "true");
   }
 
   return apiGet<SummarizerModelsResponse>(

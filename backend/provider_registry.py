@@ -162,12 +162,16 @@ class ProviderRegistry:
         include_unvalidated: bool = True,
         *,
         auto_validate_missing: bool = False,
+        force_auto_validate: bool = False,
     ) -> List[Dict[str, Any]]:
         """Get models available from a specific provider.
 
         Args:
             connection_type: Provider identifier ("ollama" | "openai" | "openwebui")
             include_unvalidated: If True, include models not yet validated for completions
+            auto_validate_missing: When True, automatically validates models if no validated
+                entries exist for the provider.
+            force_auto_validate: When True, re-run validation even if validated models exist.
 
         Returns:
             List of model objects with keys:
@@ -220,8 +224,8 @@ class ProviderRegistry:
         if (
             auto_validate_missing
             and not include_unvalidated
-            and validated_count == 0
             and total_discovered > 0
+            and (force_auto_validate or validated_count == 0)
         ):
             LOGGER.warning(
                 "No validated models found for %s; auto validating %d candidates",

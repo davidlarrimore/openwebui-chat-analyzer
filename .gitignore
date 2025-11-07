@@ -40,6 +40,7 @@ streamlit_app.log
 data/
 !backend/data/
 !backend/data/**
+backend/data/provider_registry.json
 exports/
 chat_exports/
 chat_data/

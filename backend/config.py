@@ -84,14 +84,7 @@ def get_openwebui_api_base() -> str:
         return _OPENWEBUI_API_BASE_OVERRIDE
 
     direct_env = _normalize_openwebui_base(os.getenv("OWUI_DIRECT_HOST"))
-    if direct_env:
-        return direct_env
-
-    legacy_env = _normalize_openwebui_base(os.getenv("OPENWEBUI_MODELS_API_BASE"))
-    if legacy_env:
-        return legacy_env
-
-    return _normalize_openwebui_base(DEFAULT_OPENWEBUI_HOST)
+    return direct_env or _normalize_openwebui_base(DEFAULT_OPENWEBUI_HOST)
 
 
 def get_openwebui_api_key() -> str:
@@ -100,14 +93,7 @@ def get_openwebui_api_key() -> str:
         return _OPENWEBUI_API_KEY_OVERRIDE
 
     direct_key = os.getenv("OWUI_DIRECT_API_KEY", "").strip()
-    if direct_key:
-        return direct_key
-
-    legacy_key = os.getenv("OPENWEBUI_MODELS_API_KEY", "").strip()
-    if legacy_key:
-        return legacy_key
-
-    return ""
+    return direct_key
 
 
 def set_openwebui_api_config(base_url: Optional[str], api_key: Optional[str]) -> bool:
@@ -117,7 +103,6 @@ def set_openwebui_api_config(base_url: Optional[str], api_key: Optional[str]) ->
         True if the effective configuration changed, False otherwise.
     """
     global _OPENWEBUI_API_BASE_OVERRIDE, _OPENWEBUI_API_KEY_OVERRIDE
-    global OPENWEBUI_MODELS_API_BASE, OPENWEBUI_MODELS_API_KEY
 
     normalized_base = _normalize_openwebui_base(base_url)
     normalized_key = (api_key or "").strip()
@@ -130,16 +115,7 @@ def set_openwebui_api_config(base_url: Optional[str], api_key: Optional[str]) ->
         _OPENWEBUI_API_KEY_OVERRIDE = normalized_key
         changed = True
 
-    if changed:
-        OPENWEBUI_MODELS_API_BASE = get_openwebui_api_base()
-        OPENWEBUI_MODELS_API_KEY = get_openwebui_api_key()
-
     return changed
-
-
-# Backwards-compatible module-level attributes exposed for legacy imports.
-OPENWEBUI_MODELS_API_BASE = get_openwebui_api_base()
-OPENWEBUI_MODELS_API_KEY = get_openwebui_api_key()
 
 
 AUTH_TOKEN_TTL_SECONDS = int(os.getenv("AUTH_TOKEN_TTL_SECONDS", str(60 * 60 * 24)))

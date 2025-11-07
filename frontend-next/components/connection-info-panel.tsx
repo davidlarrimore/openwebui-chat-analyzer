@@ -106,6 +106,7 @@ interface ConnectionInfoState {
   isUpdatingSummaryModel: boolean;
   isUpdatingSummaryTemperature: boolean;
   isUpdatingSummarizerEnabled: boolean;
+  isValidatingSummaryModels: boolean;
 }
 
 interface ConnectionInfoPanelProps {
@@ -160,6 +161,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     isUpdatingSummaryModel: false,
     isUpdatingSummaryTemperature: false,
     isUpdatingSummarizerEnabled: false,
+    isValidatingSummaryModels: false,
   });
 
   // Track original values to detect changes
@@ -215,7 +217,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     [setGlobalSummarizerStatus]
   );
 
-  const fetchSummarizerConfig = React.useCallback(async (autoValidateMissing = false) => {
+  const fetchSummarizerConfig = React.useCallback(async (autoValidateMissing = false, forceAutoValidate = false) => {
     setState(prev => ({
       ...prev,
       isLoadingConnections: true,
@@ -265,10 +267,12 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         providerTypes.map(async providerType => {
           try {
             const shouldAutoValidate = autoValidateMissing && providerType === connectionToUse;
+            const shouldForceValidate = shouldAutoValidate && forceAutoValidate;
             const modelsResponse = await getSummarizerModels(
               providerType,
               false,
-              shouldAutoValidate
+              shouldAutoValidate,
+              shouldForceValidate
             );
             const modelNames = modelsResponse.models
               .filter(model => model.validated)
@@ -543,6 +547,32 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       }));
     }
   };
+
+  const handleValidateModels = React.useCallback(async () => {
+    if (state.isLoadingSummaryModels || state.isValidatingSummaryModels) {
+      return;
+    }
+    setState(prev => ({ ...prev, isValidatingSummaryModels: true }));
+    try {
+      await fetchSummarizerConfig(true, true);
+      toast({
+        title: "Validation complete",
+        description: "Models revalidated for the selected connection.",
+        variant: "default",
+        duration: 4000,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to validate models";
+      toast({
+        title: "Validation failed",
+        description: message,
+        variant: "destructive",
+        duration: 5000,
+      });
+    } finally {
+      setState(prev => ({ ...prev, isValidatingSummaryModels: false }));
+    }
+  }, [fetchSummarizerConfig, state.isLoadingSummaryModels, state.isValidatingSummaryModels]);
 
   const handleAnonymizationToggle = (nextValue: boolean) => {
     if (!nextValue) {
@@ -1200,10 +1230,19 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
             <Button
               variant="outline"
               size="sm"
-              onClick={() => fetchSummarizerConfig(true)}
+              onClick={() => fetchSummarizerConfig()}
               disabled={state.isLoadingSummaryModels}
             >
               {state.isLoadingSummaryModels ? "Refreshing..." : "Refresh"}
+            </Button>
+            <Button
+              size="sm"
+              variant="default"
+              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              onClick={handleValidateModels}
+              disabled={state.isLoadingSummaryModels || state.isValidatingSummaryModels}
+            >
+              {state.isValidatingSummaryModels ? "Validating..." : "Validate"}
             </Button>
           </div>
         </CardHeader>
@@ -1288,7 +1327,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => fetchSummarizerConfig(true)}
+                onClick={() => fetchSummarizerConfig()}
                 disabled={state.isLoadingSummaryModels}
               >
                 Retry
