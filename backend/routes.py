@@ -17,6 +17,12 @@ from .models import (
     AnonymizationSettingsUpdate,
     SummarizerSettings,
     SummarizerSettingsUpdate,
+    ProviderConnection,
+    ProviderConnectionsResponse,
+    ProviderModel,
+    ProviderModelsResponse,
+    ValidateModelRequest,
+    ValidateModelResponse,
     OpenWebUIHealthTestRequest,
     Chat,
     DatasetMeta,
@@ -43,6 +49,7 @@ from .models import (
 )
 from .services import SUMMARY_EVENT_HISTORY_LIMIT, DataService, get_data_service
 from .clients import OllamaClientError, OllamaOutOfMemoryError, get_ollama_client
+from .provider_registry import get_provider_registry
 from .config import (
     OLLAMA_DEFAULT_TEMPERATURE,
     OLLAMA_EMBED_MODEL,
@@ -870,7 +877,26 @@ def rebuild_summaries(
     Returns:
         dict: Acknowledgement payload returned by the service layer.
     """
-    status_state = service.rebuild_summaries()
+    try:
+        status_state = service.rebuild_summaries()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "status": status_state}
+
+
+@router.post("/summaries/cancel")
+def cancel_summary_job(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> dict:
+    """Cancel the currently running summarizer job.
+
+    Args:
+        service (DataService): The shared data service dependency.
+    Returns:
+        dict: Status payload after cancellation.
+    """
+    status_state = service.cancel_summary_job()
     return {"ok": True, "status": status_state}
 
 
@@ -1042,7 +1068,12 @@ def update_admin_summarizer_settings(
 ) -> SummarizerSettings:
     """Persist summarizer configuration updates."""
     try:
-        settings = service.update_summarizer_settings(model=payload.model, temperature=payload.temperature, enabled=payload.enabled)
+        settings = service.update_summarizer_settings(
+            model=payload.model,
+            temperature=payload.temperature,
+            enabled=payload.enabled,
+            connection=payload.connection
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SummarizerSettings(**settings)
@@ -1074,3 +1105,103 @@ def get_available_ollama_models(
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch Ollama models: {str(exc)}") from exc
+
+
+@router.get(
+    "/admin/summarizer/connections",
+    response_model=ProviderConnectionsResponse,
+    tags=["admin"],
+)
+def get_summarizer_connections(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+) -> ProviderConnectionsResponse:
+    """Get status of all available LLM provider connections.
+
+    Returns the availability and configuration status of all registered providers
+    (Ollama, OpenAI, Open WebUI). Unavailable providers include a reason message.
+    """
+    try:
+        registry = get_provider_registry()
+        connections_data = registry.get_available_connections()
+        return ProviderConnectionsResponse(
+            connections=[ProviderConnection(**conn) for conn in connections_data]
+        )
+    except Exception as exc:
+        LOGGER.error("Failed to get provider connections: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve provider connections: {str(exc)}"
+        ) from exc
+
+
+@router.get(
+    "/admin/summarizer/models",
+    response_model=ProviderModelsResponse,
+    tags=["admin"],
+)
+def get_summarizer_models(
+    connection: str = Query(..., description="Provider type (ollama | openai | openwebui)"),
+    include_unvalidated: bool = Query(True, description="Include models not yet validated"),
+    auto_validate_missing: bool = Query(
+        False,
+        description="When true and no validated models are available, automatically revalidate discovered models.",
+    ),
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+) -> ProviderModelsResponse:
+    """Get models available from a specific provider.
+
+    Discovers models from the specified provider and enriches them with validation
+    status from the global registry. Only validated models are confirmed to support
+    text completion/generation.
+    """
+    try:
+        registry = get_provider_registry()
+        models_data = registry.get_models_for_connection(
+            connection,
+            include_unvalidated,
+            auto_validate_missing=auto_validate_missing,
+        )
+        return ProviderModelsResponse(
+            models=[ProviderModel(**model) for model in models_data]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        LOGGER.error("Failed to get models for provider %s: %s", connection, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve models from provider: {str(exc)}"
+        ) from exc
+
+
+@router.post(
+    "/admin/summarizer/validate-model",
+    response_model=ValidateModelResponse,
+    tags=["admin"],
+)
+def validate_summarizer_model(
+    payload: ValidateModelRequest,
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+) -> ValidateModelResponse:
+    """Validate if a model supports text completion.
+
+    Sends a test prompt to the model and verifies a valid response is returned.
+    If successful, the model is added to the global registry of completion-capable models.
+    """
+    try:
+        registry = get_provider_registry()
+        is_valid = registry.validate_model(payload.connection, payload.model)
+        return ValidateModelResponse(valid=is_valid)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        LOGGER.error(
+            "Failed to validate model %s on provider %s: %s",
+            payload.model,
+            payload.connection,
+            exc
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to validate model: {str(exc)}"
+        ) from exc

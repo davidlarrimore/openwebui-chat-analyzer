@@ -548,7 +548,7 @@ class SummarizerSettings(BaseModel):
 
     model: str = Field(
         ...,
-        description="Effective Ollama model identifier used for summarization tasks.",
+        description="Effective model identifier used for summarization tasks.",
     )
     temperature: float = Field(
         ...,
@@ -557,6 +557,10 @@ class SummarizerSettings(BaseModel):
     enabled: bool = Field(
         ...,
         description="Whether the summarizer is enabled.",
+    )
+    connection: str = Field(
+        ...,
+        description="LLM provider connection type (ollama | openai | openwebui).",
     )
     model_source: Literal["database", "environment", "default"] = Field(
         ...,
@@ -570,6 +574,10 @@ class SummarizerSettings(BaseModel):
         ...,
         description="Origin for the enabled setting (database override, environment variable, or default).",
     )
+    connection_source: Literal["database", "environment", "default"] = Field(
+        ...,
+        description="Origin for the connection type setting (database override, environment variable, or default).",
+    )
 
 
 class SummarizerSettingsUpdate(BaseModel):
@@ -577,7 +585,7 @@ class SummarizerSettingsUpdate(BaseModel):
 
     model: Optional[str] = Field(
         default=None,
-        description="New Ollama model identifier to use for summarization tasks.",
+        description="New model identifier to use for summarization tasks.",
         min_length=1,
     )
     temperature: Optional[float] = Field(
@@ -589,6 +597,93 @@ class SummarizerSettingsUpdate(BaseModel):
     enabled: Optional[bool] = Field(
         default=None,
         description="Whether the summarizer is enabled.",
+    )
+    connection: Optional[str] = Field(
+        default=None,
+        description="LLM provider connection type (ollama | openai | openwebui).",
+        pattern="^(ollama|openai|openwebui)$",
+    )
+
+
+class ProviderConnection(BaseModel):
+    """Status of a single LLM provider connection."""
+
+    type: str = Field(
+        ...,
+        description="Provider identifier (ollama | openai | openwebui)",
+    )
+    available: bool = Field(
+        ...,
+        description="Whether the provider is configured and reachable",
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="Human-readable reason why provider is unavailable",
+    )
+
+
+class ProviderConnectionsResponse(BaseModel):
+    """List of available provider connections."""
+
+    connections: List[ProviderConnection] = Field(
+        ...,
+        description="Status of all registered providers",
+    )
+
+
+class ProviderModel(BaseModel):
+    """Model information from a provider."""
+
+    name: str = Field(
+        ...,
+        description="Model identifier",
+    )
+    display_name: str = Field(
+        ...,
+        description="Human-readable model name",
+    )
+    provider: str = Field(
+        ...,
+        description="Provider identifier",
+    )
+    validated: bool = Field(
+        ...,
+        description="Whether model is confirmed for completions",
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Provider-specific metadata",
+    )
+
+
+class ProviderModelsResponse(BaseModel):
+    """List of models from a provider."""
+
+    models: List[ProviderModel] = Field(
+        ...,
+        description="Available models from the provider",
+    )
+
+
+class ValidateModelRequest(BaseModel):
+    """Request to validate a model's completion support."""
+
+    connection: str = Field(
+        ...,
+        description="Provider identifier (ollama | openai | openwebui)",
+    )
+    model: str = Field(
+        ...,
+        description="Model name to validate",
+    )
+
+
+class ValidateModelResponse(BaseModel):
+    """Result of model validation."""
+
+    valid: bool = Field(
+        ...,
+        description="Whether the model supports completions",
     )
 
 

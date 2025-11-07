@@ -15,6 +15,7 @@ import { useToast } from "@/components/ui/use-toast";
 import {
   ApiError,
   apiGet,
+  cancelSummaryJob,
   getProcessLogs,
   type ProcessLogEvent,
 } from "@/lib/api";
@@ -70,8 +71,37 @@ const STATUS_PRIORITY: Record<JobLifecycleStatus, number> = {
   running: 0,
   error: 1,
   pending: 2,
-  success: 3,
+  cancelled: 3,
+  success: 4,
 };
+
+function loadToastState(): Map<string, { started?: boolean; finished?: boolean }> {
+  if (typeof window === 'undefined') {
+    return new Map();
+  }
+  try {
+    const stored = sessionStorage.getItem('job-toast-state');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      return new Map<string, { started?: boolean; finished?: boolean }>(Object.entries(parsed));
+    }
+  } catch (error) {
+    console.error('Failed to load toast state', error);
+  }
+  return new Map<string, { started?: boolean; finished?: boolean }>();
+}
+
+function saveToastState(state: Map<string, { started?: boolean; finished?: boolean }>): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    const obj = Object.fromEntries(state);
+    sessionStorage.setItem('job-toast-state', JSON.stringify(obj));
+  } catch (error) {
+    console.error('Failed to save toast state', error);
+  }
+}
 
 function toSnapshot(
   status: SummaryStatus | null,
@@ -125,7 +155,7 @@ export function SummarizerProgressProvider({
   const processedLogSignaturesRef = useRef<Set<string>>(new Set());
   const processedLogOrderRef = useRef<string[]>([]);
   const logPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const toastStateRef = useRef<Map<string, { started?: boolean; finished?: boolean }>>(new Map());
+  const toastStateRef = useRef<Map<string, { started?: boolean; finished?: boolean }>>(loadToastState());
 
   const publishJobs = useCallback(() => {
     const ordered = Array.from(jobsRef.current.values()).sort((a, b) => {
@@ -156,6 +186,7 @@ export function SummarizerProgressProvider({
         jobsRef.current.delete(jobKey);
         removalTimersRef.current.delete(jobKey);
         toastStateRef.current.delete(jobKey);
+        saveToastState(toastStateRef.current);
         publishJobs();
       }, delay);
       removalTimersRef.current.set(jobKey, timer);
@@ -171,6 +202,7 @@ export function SummarizerProgressProvider({
         cancelRemoval(key);
       }
     });
+    saveToastState(toastStateRef.current);
     summarizerJobIdRef.current = null;
   }, [cancelRemoval]);
 
@@ -185,6 +217,7 @@ export function SummarizerProgressProvider({
       }
       entry.started = true;
       toastStateRef.current.set(job.jobKey, entry);
+      saveToastState(toastStateRef.current);
       const descriptionParts: string[] = [];
       if (job.subtitle) {
         descriptionParts.push(job.subtitle);
@@ -213,6 +246,7 @@ export function SummarizerProgressProvider({
       }
       entry.finished = true;
       toastStateRef.current.set(job.jobKey, entry);
+      saveToastState(toastStateRef.current);
       toast({
         title: job.status === "error"
           ? `${job.label} failed`
@@ -237,6 +271,7 @@ export function SummarizerProgressProvider({
       if (next === null) {
         jobsRef.current.delete(jobKey);
         toastStateRef.current.delete(jobKey);
+        saveToastState(toastStateRef.current);
         cancelRemoval(jobKey);
         publishJobs();
         return;
@@ -251,12 +286,12 @@ export function SummarizerProgressProvider({
       if (!existing) {
         onJobStart(next, hadJobs);
       } else if (existing.status !== next.status) {
-        if (next.status === "success" || next.status === "error") {
+        if (next.status === "success" || next.status === "error" || next.status === "cancelled") {
           onJobFinish(next);
         }
       }
 
-      if (next.status === "success" || next.status === "error") {
+      if (next.status === "success" || next.status === "error" || next.status === "cancelled") {
         if (next.type === "dataSync" || next.type === "summarizer") {
           cancelRemoval(jobKey);
         } else {
@@ -303,11 +338,13 @@ export function SummarizerProgressProvider({
           status = "running";
         } else if (snapshot.state === "failed") {
           status = "error";
+        } else if (snapshot.state === "cancelled") {
+          status = "cancelled";
         } else if (snapshot.state) {
           status = "success";
         }
         const completedAt =
-          status === "success" || status === "error"
+          status === "success" || status === "error" || status === "cancelled"
             ? current?.completedAt ?? new Date().toISOString()
             : current?.completedAt;
         const progress = {
@@ -456,7 +493,7 @@ export function SummarizerProgressProvider({
             status,
             startedAt: current?.startedAt ?? event.timestamp ?? new Date().toISOString(),
             completedAt:
-              status === "success" || status === "error"
+              status === "success" || status === "error" || status === "cancelled"
                 ? current?.completedAt ?? event.timestamp ?? new Date().toISOString()
                 : current?.completedAt,
             updatedAt: event.timestamp ?? new Date().toISOString(),
@@ -511,7 +548,7 @@ export function SummarizerProgressProvider({
           status,
           startedAt: current?.startedAt ?? log.timestamp,
           completedAt:
-            status === "success" || status === "error"
+            status === "success" || status === "error" || status === "cancelled"
               ? current?.completedAt ?? log.timestamp
               : current?.completedAt,
           updatedAt: log.timestamp,
@@ -748,6 +785,31 @@ export function SummarizerProgressProvider({
     };
   }, [authStatus, hasValidSession, processLogs, session?.accessToken]);
 
+  const handleCancelJob = useCallback(
+    async (jobId: string, jobType: JobState["type"]) => {
+      if (jobType !== "summarizer") {
+        return;
+      }
+      try {
+        await cancelSummaryJob();
+        toast({
+          title: "Summarizer stopped",
+          description: "The summarizer job has been cancelled",
+          duration: 3000,
+        });
+      } catch (error) {
+        console.error("Failed to cancel summarizer job", error);
+        toast({
+          title: "Failed to stop",
+          description: "Could not cancel the summarizer job",
+          variant: "destructive",
+          duration: 4000,
+        });
+      }
+    },
+    [toast],
+  );
+
   const contextValue = useMemo<JobMonitorContextValue>(
     () => ({
       jobs,
@@ -769,6 +831,7 @@ export function SummarizerProgressProvider({
           jobs={jobs}
           isCollapsed={isPanelCollapsed}
           onCollapseChange={setIsPanelCollapsed}
+          onCancelJob={handleCancelJob}
         />
       ) : null}
     </JobMonitorContext.Provider>

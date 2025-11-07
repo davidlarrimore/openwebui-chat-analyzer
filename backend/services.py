@@ -22,13 +22,21 @@ import pandas as pd
 import requests
 from urllib.parse import urlparse, urlunparse
 
-from .config import AUTH_TOKEN_HASH_SECRET, AUTH_TOKEN_TTL_SECONDS, DATA_DIR
+from .config import (
+    AUTH_TOKEN_HASH_SECRET,
+    AUTH_TOKEN_TTL_SECONDS,
+    DATA_DIR,
+    set_openwebui_api_config,
+)
 from .models import AppMetadata, DatasetMeta, DatasetSyncStats
+from .provider_registry import get_provider_registry
 from .summarizer import (
     SummarizerProviderUnavailableError,
+    get_summary_connection,
     get_summary_model,
     get_summary_temperature,
     is_summarizer_enabled,
+    set_summary_connection,
     set_summary_model,
     set_summary_temperature,
     set_summarizer_enabled,
@@ -50,6 +58,7 @@ SUMMARY_EVENT_HISTORY_LIMIT = 500
 SUMMARIZER_MODEL_SETTING_KEY = "SUMMARIZER_PRIMARY_MODEL"
 SUMMARIZER_TEMPERATURE_SETTING_KEY = "SUMMARIZER_TEMPERATURE"
 SUMMARIZER_ENABLED_SETTING_KEY = "SUMMARIZER_ENABLED"
+SUMMARIZER_CONNECTION_SETTING_KEY = "SUMMARIZER_CONNECTION_TYPE"
 ANONYMIZATION_MODE_SETTING_KEY = "ANONYMIZATION_MODE_ENABLED"
 PSEUDONYM_FILE = Path(__file__).with_name("data").joinpath("pseudonyms.json")
 MODELS_REGISTRY_FILE = Path(__file__).with_name("data").joinpath("models_registry.json")
@@ -1539,6 +1548,63 @@ class DataService:
             except RuntimeError:
                 LOGGER.info("No default summarizer primary model configured; awaiting runtime update.")
 
+        # Load connection setting with three-tier priority (database → environment → default)
+        env_connection_raw = os.getenv("SUMMARIZER_CONNECTION_TYPE", "")
+        env_connection = (env_connection_raw or "").strip().lower() or None
+        if env_connection is not None and env_connection not in ("ollama", "openai", "openwebui"):
+            LOGGER.warning(
+                "Ignoring invalid SUMMARIZER_CONNECTION_TYPE value: %s (expected ollama, openai, openwebui)",
+                env_connection_raw,
+            )
+            env_connection = None
+
+        with self._lock:
+            stored_connection_raw = self._settings.get(SUMMARIZER_CONNECTION_SETTING_KEY)
+        stored_connection = None
+        if isinstance(stored_connection_raw, str) and stored_connection_raw.strip():
+            conn_val = stored_connection_raw.strip().lower()
+            if conn_val in ("ollama", "openai", "openwebui"):
+                stored_connection = conn_val
+
+        if stored_connection is not None:
+            set_summary_connection(stored_connection)
+            LOGGER.info("Configured summarizer connection (connection=%s, source=database)", stored_connection)
+        elif env_connection is not None:
+            set_summary_connection(env_connection)
+            LOGGER.info(
+                "Configured summarizer connection (connection=%s, source=environment)", env_connection
+            )
+        else:
+            set_summary_connection("ollama")
+            LOGGER.info("Using default summarizer connection (connection=%s, source=default)", get_summary_connection())
+
+        self._apply_openwebui_provider_configuration()
+
+    def _apply_openwebui_provider_configuration(self) -> None:
+        """Sync the Open WebUI provider with Direct Connect credentials."""
+        settings = self.get_direct_connect_settings()
+        host_raw = settings.get("host") or ""
+        api_key = settings.get("api_key") or ""
+
+        normalized_host = ""
+        if host_raw:
+            try:
+                normalized_host = _normalize_hostname(host_raw)
+            except ValueError:
+                LOGGER.warning(
+                    "Unable to normalize Open WebUI host '%s'; provider will remain disabled",
+                    host_raw,
+                )
+                normalized_host = ""
+
+        if set_openwebui_api_config(normalized_host, api_key):
+            get_provider_registry().refresh_configuration()
+            LOGGER.info(
+                "Updated Open WebUI provider configuration (host=%s, source=%s)",
+                normalized_host or "unset",
+                settings.get("host_source", "unknown"),
+            )
+
     def _seed_initial_state_from_files(self) -> Optional[DatabaseState]:
         """Populate the database from legacy app.json metadata if necessary."""
         if not self._app_metadata_path.exists():
@@ -2982,6 +3048,47 @@ class DataService:
             raise ValueError("Cannot rebuild summaries: summarizer is disabled")
         return self._enqueue_summary_job("manual rebuild", force_resummarize=True)
 
+    def cancel_summary_job(self) -> Dict[str, Any]:
+        """Cancel the currently running summarizer job."""
+        with self._summary_state_lock:
+            current_state = self._summary_state.get("state")
+            job_id = self._summary_active_job_id
+
+            if current_state != "running" or job_id is None:
+                # No active job to cancel
+                return self.get_summary_status()
+
+            # Increment job counter to invalidate the current job
+            # The progress callback will detect this and raise SummaryJobCancelled
+            self._summary_job_counter += 1
+            self._summary_active_job_id = None
+
+            cancelled_at = self._summary_now_iso()
+            job_id_str = str(job_id)
+
+            self._update_summary_state(
+                state="cancelled",
+                message="Summary job cancelled by user",
+                finished_at=cancelled_at,
+                event={
+                    "type": "cancelled",
+                    "event_id": f"cancelled-{job_id}",
+                    "timestamp": cancelled_at,
+                    "message": "Summary job cancelled by user",
+                    "job_id": job_id,
+                },
+            )
+
+            self._emit_log(
+                "info",
+                "summarize",
+                f"Summarizer job {job_id_str} cancelled by user",
+                job_id=job_id_str,
+            )
+
+        LOGGER.info("Summary job %s cancelled by user request", job_id)
+        return self.get_summary_status()
+
     # ------------------------------------------------------------------
     # Admin settings
     # ------------------------------------------------------------------
@@ -3135,13 +3242,40 @@ class DataService:
             enabled = is_summarizer_enabled()
             enabled_source = "default"
 
+        # Handle connection type setting
+        env_connection = os.getenv("SUMMARIZER_CONNECTION_TYPE", "").strip().lower()
+        if env_connection and env_connection in ("ollama", "openai", "openwebui"):
+            pass  # Valid environment connection
+        else:
+            env_connection = None
+
+        with self._lock:
+            stored_connection_raw = self._settings.get(SUMMARIZER_CONNECTION_SETTING_KEY)
+        stored_connection = None
+        if isinstance(stored_connection_raw, str) and stored_connection_raw.strip():
+            conn_val = stored_connection_raw.strip().lower()
+            if conn_val in ("ollama", "openai", "openwebui"):
+                stored_connection = conn_val
+
+        if stored_connection is not None:
+            connection = stored_connection
+            connection_source = "database"
+        elif env_connection is not None:
+            connection = env_connection
+            connection_source = "environment"
+        else:
+            connection = "ollama"  # Default to Ollama for backward compatibility
+            connection_source = "default"
+
         return {
             "model": model,
             "temperature": temperature,
             "enabled": enabled,
+            "connection": connection,
             "model_source": model_source,
             "temperature_source": temperature_source,
             "enabled_source": enabled_source,
+            "connection_source": connection_source,
         }
 
     def update_direct_connect_settings(
@@ -3191,6 +3325,7 @@ class DataService:
             self._storage.write_settings(updates)
             with self._lock:
                 self._settings.update(updates)
+            self._apply_openwebui_provider_configuration()
 
         # If hostname changed, trigger wipe and reload
         if hostname_changed and new_hostname:
@@ -3235,8 +3370,15 @@ class DataService:
 
         return self.get_direct_connect_settings()
 
-    def update_summarizer_settings(self, *, model: Optional[str] = None, temperature: Optional[float] = None, enabled: Optional[bool] = None) -> Dict[str, Any]:
-        """Persist the summarizer model, temperature, and/or enabled preference and return the effective values.
+    def update_summarizer_settings(
+        self,
+        *,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        enabled: Optional[bool] = None,
+        connection: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Persist the summarizer model, temperature, enabled, and/or connection preference and return the effective values.
 
         If the summarizer is being re-enabled after being disabled, this will check for and generate missing summaries.
         """
@@ -3257,8 +3399,14 @@ class DataService:
         if enabled is not None:
             updates[SUMMARIZER_ENABLED_SETTING_KEY] = bool(enabled)
 
+        if connection is not None:
+            conn_val = connection.strip().lower()
+            if conn_val not in ("ollama", "openai", "openwebui"):
+                raise ValueError("Connection must be one of: ollama, openai, openwebui")
+            updates[SUMMARIZER_CONNECTION_SETTING_KEY] = conn_val
+
         if not updates:
-            raise ValueError("At least one of model, temperature, or enabled must be provided.")
+            raise ValueError("At least one of model, temperature, enabled, or connection must be provided.")
 
         self._storage.write_settings(updates)
         with self._lock:
@@ -3276,7 +3424,12 @@ class DataService:
             set_summarizer_enabled(updates[SUMMARIZER_ENABLED_SETTING_KEY])
             LOGGER.info("Updated summarizer enabled state (enabled=%s)", updates[SUMMARIZER_ENABLED_SETTING_KEY])
 
+        if connection is not None:
+            set_summary_connection(updates[SUMMARIZER_CONNECTION_SETTING_KEY])
+            LOGGER.info("Updated summarizer connection type (connection=%s)", updates[SUMMARIZER_CONNECTION_SETTING_KEY])
+
             # If summarizer is being re-enabled, check for missing summaries and generate them
+        if enabled is not None:
             if not was_enabled and enabled:
                 LOGGER.info("Summarizer re-enabled, checking for missing summaries")
                 with self._lock:
@@ -3663,8 +3816,9 @@ class DataService:
 
             # Calculate staleness
             is_stale = False
-            if last_sync_at is not None and isinstance(last_sync_at, datetime):
-                time_since_sync = self._now_utc() - last_sync_at
+            if isinstance(last_sync_at, datetime):
+                normalized_last_sync = self._normalize_utc(last_sync_at)
+                time_since_sync = self._now_utc() - normalized_last_sync
                 staleness_threshold = timedelta(hours=staleness_threshold_hours)
                 is_stale = time_since_sync > staleness_threshold
             elif has_data:

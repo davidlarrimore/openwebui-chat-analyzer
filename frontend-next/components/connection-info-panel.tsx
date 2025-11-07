@@ -25,11 +25,17 @@ import {
   getSummarizerSettings,
   updateSummarizerSettings,
   getAvailableOllamaModels,
+  getSummarizerConnections,
+  getSummarizerModels,
+  validateSummarizerModel,
   type OpenWebUISettingsResponse,
   type OpenWebUISettingsUpdate,
   type SyncStatusResponse,
   type SyncSchedulerConfig,
   type ProcessLogEvent,
+  type ProviderType,
+  type ProviderConnection,
+  type SummarizerModel,
 } from "@/lib/api";
 import { toast } from "@/components/ui/use-toast";
 import type { SummaryStatus, DatasetMeta, OllamaModelTag } from "@/lib/types";
@@ -84,6 +90,9 @@ interface ConnectionInfoState {
   schedulerNextRunAt: string | null;
   schedulerLastRunAt: string | null;
   schedulerCountdown: string;
+  selectedConnection: ProviderType;
+  availableConnections: ProviderConnection[];
+  isLoadingConnections: boolean;
   summaryModel: string;
   summaryModelSource?: "database" | "environment" | "default";
   summaryTemperature: number;
@@ -91,6 +100,7 @@ interface ConnectionInfoState {
   summarizerEnabled: boolean;
   summarizerEnabledSource?: "database" | "environment" | "default";
   availableSummaryModels: string[];
+  modelsByConnection: Record<ProviderType, string[]>;
   summaryModelError: string | null;
   isLoadingSummaryModels: boolean;
   isUpdatingSummaryModel: boolean;
@@ -130,6 +140,9 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     schedulerNextRunAt: null,
     schedulerLastRunAt: null,
     schedulerCountdown: "",
+    selectedConnection: "ollama",
+    availableConnections: [],
+    isLoadingConnections: false,
     summaryModel: "",
     summaryModelSource: undefined,
     summaryTemperature: 0.2,
@@ -137,6 +150,11 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     summarizerEnabled: true,
     summarizerEnabledSource: undefined,
     availableSummaryModels: [],
+    modelsByConnection: {
+      ollama: [],
+      openai: [],
+      openwebui: [],
+    },
     summaryModelError: null,
     isLoadingSummaryModels: false,
     isUpdatingSummaryModel: false,
@@ -197,26 +215,79 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     [setGlobalSummarizerStatus]
   );
 
-  const fetchSummarizerConfig = React.useCallback(async () => {
+  const fetchSummarizerConfig = React.useCallback(async (autoValidateMissing = false) => {
     setState(prev => ({
       ...prev,
+      isLoadingConnections: true,
       isLoadingSummaryModels: true,
       summaryModelError: null,
     }));
     try {
-      const [modelsResponse, summarizerSettings] = await Promise.all([
-        getAvailableOllamaModels(),
+      // Fetch connections and settings in parallel
+      const [connectionsResponse, summarizerSettings] = await Promise.all([
+        getSummarizerConnections(),
         getSummarizerSettings(),
       ]);
 
-      const modelNames = Array.from(
-        new Set(
-          modelsResponse.models
-            .filter((model) => model.supports_completions === true)
-            .map((model) => (typeof model?.name === "string" ? model.name.trim() : ""))
-            .filter((name): name is string => Boolean(name)),
-        ),
-      ).sort((a, b) => a.localeCompare(b));
+      const connections = connectionsResponse.connections || [];
+
+      // Update connections state
+      setState(prev => ({
+        ...prev,
+        availableConnections: connections,
+        isLoadingConnections: false,
+      }));
+
+      const providerTypes: ProviderType[] =
+        connections.length > 0
+          ? Array.from(new Set(connections.map(conn => conn.type as ProviderType)))
+          : (["ollama", "openai", "openwebui"] as ProviderType[]);
+
+      const previousSelection = state.selectedConnection;
+      const preferredConnection = providerTypes.includes(previousSelection) ? previousSelection : undefined;
+      const availableConnection = connections.find(conn => conn.available);
+      const fallbackConnection =
+        (availableConnection?.type as ProviderType | undefined) ??
+        previousSelection ??
+        providerTypes[0] ??
+        "ollama";
+      const connectionToUse = preferredConnection ?? fallbackConnection;
+
+      const modelsByConnection: Record<ProviderType, string[]> = providerTypes.reduce(
+        (acc, type) => {
+          acc[type] = [];
+          return acc;
+        },
+        {} as Record<ProviderType, string[]>
+      );
+
+      await Promise.all(
+        providerTypes.map(async providerType => {
+          try {
+            const shouldAutoValidate = autoValidateMissing && providerType === connectionToUse;
+            const modelsResponse = await getSummarizerModels(
+              providerType,
+              false,
+              shouldAutoValidate
+            );
+            const modelNames = modelsResponse.models
+              .filter(model => model.validated)
+              .map(model => model.name.trim())
+              .sort((a, b) => a.localeCompare(b));
+            modelsByConnection[providerType] = modelNames;
+          } catch (modelErr) {
+            modelsByConnection[providerType] = [];
+            if (providerType === connectionToUse) {
+              throw modelErr instanceof Error
+                ? modelErr
+                : new Error("Failed to load models for selected provider");
+            }
+            console.warn(`Failed to refresh models for ${providerType}:`, modelErr);
+          }
+        })
+      );
+
+      const modelNames = modelsByConnection[connectionToUse] ?? [];
 
       let selectedModel = (summarizerSettings.model || "").trim();
       if (!selectedModel && modelNames.length > 0) {
@@ -230,7 +301,12 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
 
       setState(prev => ({
         ...prev,
+        selectedConnection: connectionToUse,
         availableSummaryModels: options,
+        modelsByConnection: {
+          ...prev.modelsByConnection,
+          ...modelsByConnection,
+        },
         summaryModel: selectedModel,
         summaryModelSource: summarizerSettings.model_source,
         summaryTemperature: summarizerSettings.temperature,
@@ -244,12 +320,13 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       const message = err instanceof Error ? err.message : "Failed to load summarizer settings";
       setState(prev => ({
         ...prev,
+        isLoadingConnections: false,
         isLoadingSummaryModels: false,
         summaryModelError: message,
         availableSummaryModels: [],
       }));
     }
-  }, []);
+  }, [state.selectedConnection]);
 
   const fetchSettings = React.useCallback(async () => {
     setState(prev => ({ ...prev, isLoading: true, error: null }));
@@ -632,6 +709,81 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         description: err instanceof Error ? err.message : "An unexpected error occurred",
         variant: "destructive",
         duration: 7000,
+      });
+    }
+  };
+
+  const handleConnectionChange = async (newConnection: ProviderType) => {
+    if (state.isLoadingSummaryModels || newConnection === state.selectedConnection) {
+      return;
+    }
+
+    setState(prev => ({
+      ...prev,
+      selectedConnection: newConnection,
+      isLoadingSummaryModels: true,
+      summaryModelError: null,
+    }));
+
+    try {
+      // Fetch models for the new connection (only validated)
+      const modelsResponse = await getSummarizerModels(newConnection, false);
+
+      const modelNames = modelsResponse.models
+        .filter(model => model.validated)
+        .map(model => model.name.trim())
+        .sort((a, b) => a.localeCompare(b));
+
+      const selectedModel = modelNames.length > 0 ? modelNames[0] : "";
+
+      setState(prev => ({
+        ...prev,
+        availableSummaryModels: modelNames,
+        summaryModel: selectedModel,
+        isLoadingSummaryModels: false,
+        summaryModelError: null,
+        modelsByConnection: {
+          ...prev.modelsByConnection,
+          [newConnection]: modelNames,
+        },
+      }));
+
+      // Persist the connection change to the backend
+      try {
+        await updateSummarizerSettings({ connection: newConnection });
+        toast({
+          title: "Connection changed",
+          description: `Switched to ${newConnection}. ${selectedModel ? 'Select a model to update.' : 'No models available.'}`,
+          variant: "default",
+          duration: 3000,
+        });
+      } catch (persistErr) {
+        const persistMessage = persistErr instanceof Error ? persistErr.message : "Failed to persist connection change";
+        // Show warning but don't fail the operation since the UI state is already updated
+        toast({
+          title: "Connection changed (not persisted)",
+          description: `Switched to ${newConnection} locally, but failed to save: ${persistMessage}`,
+          variant: "destructive",
+          duration: 5000,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : `Failed to load models from ${newConnection}`;
+      setState(prev => ({
+        ...prev,
+        isLoadingSummaryModels: false,
+        summaryModelError: message,
+        availableSummaryModels: [],
+        modelsByConnection: {
+          ...prev.modelsByConnection,
+          [newConnection]: [],
+        },
+      }));
+      toast({
+        title: "Connection error",
+        description: message,
+        variant: "destructive",
+        duration: 5000,
       });
     }
   };
@@ -1042,13 +1194,13 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
                 <span>🧠 Summarizer Settings</span>
               </CardTitle>
               <p className="text-sm text-muted-foreground">
-                Configure the Ollama model and temperature for automated chat summaries.
+                Configure the LLM provider, model, and temperature for automated chat summaries.
               </p>
             </div>
             <Button
               variant="outline"
               size="sm"
-              onClick={fetchSummarizerConfig}
+              onClick={() => fetchSummarizerConfig(true)}
               disabled={state.isLoadingSummaryModels}
             >
               {state.isLoadingSummaryModels ? "Refreshing..." : "Refresh"}
@@ -1081,6 +1233,53 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
             </div>
           </div>
 
+          {/* Connection Type Selector */}
+          <div className="space-y-2">
+            <Label className="font-medium">Connection Type</Label>
+            <div className="grid grid-cols-3 gap-2">
+              {state.availableConnections.map((conn) => {
+                const isSelected = conn.type === state.selectedConnection;
+                const isDisabled = !conn.available || state.isLoadingConnections || state.isLoadingSummaryModels;
+
+                return (
+                  <button
+                    key={conn.type}
+                    type="button"
+                    onClick={() => !isDisabled && handleConnectionChange(conn.type)}
+                    disabled={isDisabled}
+                    className={cn(
+                      "flex flex-col items-center justify-center rounded-lg border-2 p-3 text-sm font-medium transition-all",
+                      isSelected && conn.available
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border bg-background hover:border-primary/50",
+                      !conn.available && "opacity-50 cursor-not-allowed",
+                      isDisabled && "cursor-wait"
+                    )}
+                    title={!conn.available && conn.reason ? conn.reason : undefined}
+                  >
+                    <span className="capitalize">{conn.type}</span>
+                    {!conn.available && (
+                      <span className="text-xs text-muted-foreground mt-1">
+                        Unavailable
+                      </span>
+                    )}
+                    {isSelected && conn.available && (
+                      <span className="text-xs mt-1">✓</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            {state.selectedConnection && (() => {
+              const selectedConn = state.availableConnections.find(c => c.type === state.selectedConnection);
+              return selectedConn && !selectedConn.available && selectedConn.reason ? (
+                <p className="text-xs text-muted-foreground">
+                  {selectedConn.reason}
+                </p>
+              ) : null;
+            })()}
+          </div>
+
           {state.summaryModelError ? (
             <div className="flex items-start justify-between gap-3 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
               <div className="flex-1">
@@ -1089,7 +1288,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
               <Button
                 variant="outline"
                 size="sm"
-                onClick={fetchSummarizerConfig}
+                onClick={() => fetchSummarizerConfig(true)}
                 disabled={state.isLoadingSummaryModels}
               >
                 Retry
@@ -1138,7 +1337,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
               </p>
               {summaryModelUnavailable && (
                 <p className="text-xs text-destructive">
-                  The configured model was not found on the Ollama server. Select another option before running summaries.
+                  The configured model was not found on the selected provider. Select another option before running summaries.
                 </p>
               )}
 

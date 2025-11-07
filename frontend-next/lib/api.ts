@@ -205,15 +205,18 @@ export interface SummarizerSettingsResponse {
   model: string;
   temperature: number;
   enabled: boolean;
+  connection: string;
   model_source: "database" | "environment" | "default";
   temperature_source: "database" | "environment" | "default";
   enabled_source: "database" | "environment" | "default";
+  connection_source: "database" | "environment" | "default";
 }
 
 export interface SummarizerSettingsUpdate {
   model?: string;
   temperature?: number;
   enabled?: boolean;
+  connection?: string;
 }
 
 export async function getSummarizerSettings(): Promise<SummarizerSettingsResponse> {
@@ -225,6 +228,91 @@ export async function updateSummarizerSettings(
 ): Promise<SummarizerSettingsResponse> {
   return apiPut<SummarizerSettingsResponse>("api/v1/admin/settings/summarizer", payload);
 }
+
+// ============================================================================
+// Summarizer Provider Connections API
+// ============================================================================
+
+export type ProviderType = "ollama" | "openai" | "openwebui";
+
+export interface ProviderConnection {
+  type: ProviderType;
+  available: boolean;
+  reason?: string | null;
+}
+
+export interface SummarizerConnectionsResponse {
+  connections: ProviderConnection[];
+}
+
+export interface SummarizerModel {
+  name: string;
+  display_name: string;
+  provider: string;
+  validated: boolean;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface SummarizerModelsResponse {
+  models: SummarizerModel[];
+}
+
+export interface ValidateModelRequest {
+  connection: ProviderType;
+  model: string;
+}
+
+export interface ValidateModelResponse {
+  valid: boolean;
+}
+
+/**
+ * Get status of all available LLM provider connections
+ */
+export async function getSummarizerConnections(): Promise<SummarizerConnectionsResponse> {
+  return apiGet<SummarizerConnectionsResponse>("api/v1/admin/summarizer/connections");
+}
+
+/**
+ * Get models available from a specific provider
+ * @param connection - Provider type (ollama | openai | openwebui)
+ * @param includeUnvalidated - Whether to include unvalidated models (default: true)
+ */
+export async function getSummarizerModels(
+  connection: ProviderType,
+  includeUnvalidated: boolean = true,
+  autoValidateMissing = false
+): Promise<SummarizerModelsResponse> {
+  const params = new URLSearchParams();
+  params.set("connection", connection);
+  params.set("include_unvalidated", includeUnvalidated.toString());
+  if (autoValidateMissing) {
+    params.set("auto_validate_missing", "true");
+  }
+
+  return apiGet<SummarizerModelsResponse>(
+    `api/v1/admin/summarizer/models?${params.toString()}`
+  );
+}
+
+/**
+ * Validate if a model supports text completion
+ * @param connection - Provider type
+ * @param model - Model name to validate
+ */
+export async function validateSummarizerModel(
+  connection: ProviderType,
+  model: string
+): Promise<ValidateModelResponse> {
+  return apiPost<ValidateModelResponse>("api/v1/admin/summarizer/validate-model", {
+    connection,
+    model,
+  });
+}
+
+// ============================================================================
+// Ollama Models API (Legacy)
+// ============================================================================
 
 export interface OllamaModel {
   name: string;
@@ -408,6 +496,17 @@ export async function getProcessLogs(
  */
 export async function rebuildSummaries(): Promise<SummaryStatus> {
   const payload = await apiPost<SummaryStatus | { status: SummaryStatus }>("api/v1/summaries/rebuild");
+  if (payload && typeof (payload as { status?: SummaryStatus }).status === "object") {
+    return (payload as { status: SummaryStatus }).status;
+  }
+  return payload as SummaryStatus;
+}
+
+/**
+ * Cancel the currently running summarizer job.
+ */
+export async function cancelSummaryJob(): Promise<SummaryStatus> {
+  const payload = await apiPost<SummaryStatus | { status: SummaryStatus }>("api/v1/summaries/cancel");
   if (payload && typeof (payload as { status?: SummaryStatus }).status === "object") {
     return (payload as { status: SummaryStatus }).status;
   }

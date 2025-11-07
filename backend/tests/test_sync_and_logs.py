@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from threading import RLock
 
 from fastapi.testclient import TestClient
 
 from backend.app import app
 from backend.models import AuthUserPublic
+from backend import services as services_module
 
 
 def _fake_auth_user() -> AuthUserPublic:
@@ -157,6 +159,23 @@ def test_sync_supports_full_and_incremental_modes(monkeypatch):
 
     assert response.status_code == 200
     assert sync_mode_used == "called"
+
+
+def test_data_service_sync_status_handles_naive_timestamp():
+    """Regression test: ensure naive timestamps do not raise TypeError."""
+    service_cls = services_module.DataService
+    service = service_cls.__new__(service_cls)  # bypass heavy __init__
+    service._settings = {}  # pylint: disable=protected-access
+    service._lock = RLock()  # pylint: disable=protected-access
+    service._chats = []  # pylint: disable=protected-access
+    service._messages = []  # pylint: disable=protected-access
+    service._users = []  # pylint: disable=protected-access
+    service._models = []  # pylint: disable=protected-access
+    service._dataset_pulled_at = datetime(2024, 1, 1, 12, 0, 0)  # naive timestamp
+
+    status = service.get_sync_status()
+    assert status["last_sync_at"] == "2024-01-01T12:00:00Z"
+    assert status["has_data"] is False
 
 
 def test_logs_endpoint_returns_structured_events(monkeypatch):

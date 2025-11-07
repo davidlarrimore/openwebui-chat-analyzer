@@ -17,6 +17,7 @@ import requests
 from sentence_transformers import SentenceTransformer
 
 from .clients import OllamaClientError, OllamaOutOfMemoryError, get_ollama_client
+from .provider_registry import get_provider_registry
 from .config import (
     OLLAMA_DEFAULT_TEMPERATURE,
     OLLAMA_KEEP_ALIVE,
@@ -31,6 +32,7 @@ from .config import (
 _SUMMARY_MODEL = (OLLAMA_SUMMARY_MODEL or "").strip()
 _SUMMARY_FALLBACK_MODEL = (OLLAMA_SUMMARY_FALLBACK_MODEL or "").strip()
 _SUMMARY_TEMPERATURE = OLLAMA_DEFAULT_TEMPERATURE
+_SUMMARY_CONNECTION = "ollama"  # Default to ollama for backward compatibility
 _SUMMARIZER_ENABLED = True  # Summarizer enabled by default
 
 
@@ -59,6 +61,11 @@ def get_summary_temperature() -> float:
     return _SUMMARY_TEMPERATURE
 
 
+def get_summary_connection() -> str:
+    """Return the active provider connection type used for summarization."""
+    return _SUMMARY_CONNECTION
+
+
 def is_summarizer_enabled() -> bool:
     """Return whether the summarizer is enabled."""
     return _SUMMARIZER_ENABLED
@@ -82,6 +89,19 @@ def set_summary_temperature(temperature: float) -> None:
     """Set the temperature used for summarization at runtime."""
     global _SUMMARY_TEMPERATURE  # noqa: PLW0603 - module-level cache is intentional
     _SUMMARY_TEMPERATURE = temperature
+
+
+def set_summary_connection(connection: str) -> None:
+    """Set the provider connection type used for summarization at runtime.
+
+    Args:
+        connection: Provider type (ollama | openai | openwebui).
+    """
+    global _SUMMARY_CONNECTION  # noqa: PLW0603 - module-level cache is intentional
+    normalized = (connection or "").strip().lower()
+    if normalized not in ("ollama", "openai", "openwebui"):
+        raise ValueError(f"Invalid connection type: {connection}. Must be one of: ollama, openai, openwebui")
+    _SUMMARY_CONNECTION = normalized
 
 
 def set_summarizer_enabled(enabled: bool) -> None:
@@ -114,6 +134,7 @@ class ConversationAnalysis:
     provider: Optional[str] = None
     prompt: Optional[str] = None
     raw_response: Optional[str] = None
+    failure_category: Optional[str] = None
 
 
 class StructuredResponseError(RuntimeError):
@@ -187,24 +208,98 @@ def _format_debug_text(text: str) -> str:
     return text
 
 
+_FAILURE_CATEGORY_BAD_FORMATTING = "bad_formatting"
+_FAILURE_CATEGORY_NO_RESPONSE = "no_response"
+_FAILURE_CATEGORY_BLOCKED = "blocked_by_safeguards"
+_FAILURE_CATEGORY_PROMPT_GUARDRAIL = "prompt_guardrail_breach"
+_FAILURE_CATEGORY_OTHER = "other"
+
+_FAILURE_BLOCKED_KEYWORDS = (
+    "i'm sorry",
+    "i am sorry",
+    "i cannot",
+    "i can't",
+    "i wont",
+    "i won't",
+    "cannot comply",
+    "cannot help with that",
+    "cannot assist with that",
+    "i must refuse",
+    "i cannot comply",
+    "i cannot help with that request",
+)
+
+_FAILURE_GUARDRAIL_KEYWORDS = (
+    "sure,",
+    "here is",
+    "here's",
+    "let me",
+    "i will",
+    "i can",
+    "absolutely",
+    "of course",
+    "certainly",
+    "please find",
+    "step-by-step",
+    "solution",
+    "analysis:",
+)
+
+
+def _categorize_failure(reason: Optional[str], response: Optional[str]) -> str:
+    """Categorize summarizer failure modes for observability."""
+    normalized_reason = (reason or "").strip().lower()
+    response_text = (response or "").strip()
+    normalized_response = response_text.lower()
+    combined = f"{normalized_reason} {normalized_response}".strip()
+
+    if not response_text:
+        # Distinguish between explicit empty response vs infrastructure/config issues.
+        if any(keyword in normalized_reason for keyword in ("empty", "blank", "no summary", "no response")):
+            return _FAILURE_CATEGORY_NO_RESPONSE
+        return _FAILURE_CATEGORY_OTHER
+
+    if any(keyword in combined for keyword in _FAILURE_BLOCKED_KEYWORDS):
+        return _FAILURE_CATEGORY_BLOCKED
+
+    if not response_text.startswith("{") and any(keyword in normalized_response for keyword in _FAILURE_GUARDRAIL_KEYWORDS):
+        return _FAILURE_CATEGORY_PROMPT_GUARDRAIL
+
+    if (
+        "json" in normalized_reason
+        or "parse" in normalized_reason
+        or "format" in normalized_reason
+        or normalized_response.startswith("{\"summary\"")
+        or ('"summary"' in normalized_response and "{" in normalized_response)
+        or normalized_response.startswith("```")
+        or (normalized_response.endswith("}") and not normalized_response.endswith("}}"))
+    ):
+        return _FAILURE_CATEGORY_BAD_FORMATTING
+
+    return _FAILURE_CATEGORY_OTHER
+
+
 def _log_generation_failure(
     provider: str,
     prompt: str,
     reason: str,
     response: Optional[str] = None,
     exc: Optional[BaseException] = None,
-) -> None:
+) -> str:
     """Emit a structured error log with prompt/response previews for failed generations."""
+    category = _categorize_failure(reason, response)
     prompt_preview = _format_debug_text(prompt)
     response_preview = _format_debug_text(response) if response is not None else "<none>"
     _logger.error(
-        "Summarizer %s failure: %s\nPrompt: %s\nResponse: %s",
+        "Summarizer %s failure [%s]: %s\nPrompt: %s\nResponse: %s",
         provider,
+        category,
         reason,
         prompt_preview,
         response_preview,
         exc_info=exc,
     )
+    return category
 
 
 def _iter_exception_chain(exc: BaseException) -> Iterable[BaseException]:
@@ -239,20 +334,21 @@ def _is_transient_ollama_error(exc: BaseException) -> bool:
     return False
 
 
-def _call_ollama_with_retry(
+def _call_provider_with_retry(
     context: str,
     *,
+    connection: str = "ollama",
     model: str,
     prompt: str,
 ) -> ConversationAnalysis:
-    """Call Ollama with retry logic to handle transient connectivity failures."""
+    """Call LLM provider with retry logic to handle transient connectivity failures."""
     attempts = max(1, OLLAMA_RETRY_ATTEMPTS)
     delay = max(0.0, OLLAMA_RETRY_DELAY_SECONDS)
     last_error: Optional[BaseException] = None
 
     for attempt in range(1, attempts + 1):
         try:
-            return _headline_with_ollama(context, model=model, prompt=prompt)
+            return _headline_with_provider(context, connection=connection, model=model, prompt=prompt)
         except (StructuredResponseError, OllamaOutOfMemoryError):
             raise
         except OllamaClientError as exc:
@@ -792,6 +888,39 @@ def _parse_structured_response(response_text: str) -> ConversationAnalysis:
 
         raise StructuredResponseError("LLM response JSON missing 'summary' field.", original_text)
 
+    # Step 5: Attempt to salvage summary/outcome from malformed JSON fragments.
+    summary_match = re.search(r'"summary"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
+    if summary_match:
+        summary_fragment = summary_match.group(0)
+        summary_text = ""
+        try:
+            partial = json.loads(f"{{{summary_fragment}}}")
+        except json.JSONDecodeError:
+            encoded = summary_match.group(1)
+            try:
+                summary_text = json.loads(f'"{encoded}"')
+            except json.JSONDecodeError:
+                summary_text = encoded.replace('\\"', '"').replace("\\\\", "\\")
+        else:
+            summary_text = str(partial.get("summary") or "")
+
+        summary = _trim_one_line(str(summary_text).strip())
+        if summary:
+            outcome = None
+            outcome_match = re.search(r'"outcome"\s*:\s*("?)(-?\d+)\1', cleaned)
+            if outcome_match:
+                try:
+                    outcome_candidate = int(outcome_match.group(2))
+                    if 1 <= outcome_candidate <= 5:
+                        outcome = outcome_candidate
+                    else:
+                        _logger.warning("Outcome score %d out of range in fallback parser; ignoring", outcome_candidate)
+                except ValueError:
+                    _logger.warning("Failed to interpret outcome value %r in fallback parser", outcome_match.group(2))
+
+            _logger.warning("Recovered summary from malformed JSON response; outcome=%s", outcome)
+            return ConversationAnalysis(summary=summary, outcome=outcome)
+
     raise StructuredResponseError("LLM response did not contain valid summary JSON.", original_text)
 
 
@@ -801,6 +930,100 @@ def _build_context(messages: Sequence[Mapping[str, object]]) -> str:
     return _build_context_from_lines(lines)
 
 
+def _headline_with_provider(
+    context: str,
+    *,
+    connection: str = "ollama",
+    model: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> ConversationAnalysis:
+    """Generate structured conversation analysis using the configured LLM provider.
+
+    Uses the ProviderRegistry to access the appropriate provider (Ollama, OpenAI, or Open WebUI)
+    and generate a structured analysis with summary and outcome fields.
+
+    Args:
+        context: Condensed conversation text to analyze.
+        connection: Provider type (ollama | openai | openwebui). Defaults to ollama.
+        model: Model identifier to use for generation. Defaults to get_summary_model().
+        prompt: Optional custom prompt. Defaults to _HEADLINE_USER_TMPL.
+
+    Returns:
+        ConversationAnalysis with plain text summary and optional outcome score.
+    """
+    active_model = (model or "").strip() or get_summary_model()
+    prompt_text = prompt or _HEADLINE_USER_TMPL.format(ctx=context)
+
+    _logger.debug(
+        "Requesting analysis from provider=%s model=%s context_chars=%d",
+        connection,
+        active_model,
+        len(context),
+    )
+
+    # Get provider from registry
+    registry = get_provider_registry()
+    try:
+        provider = registry.get_provider(connection)
+    except ValueError as exc:
+        _logger.error("Invalid provider connection type: %s", connection)
+        raise RuntimeError(f"Invalid provider: {connection}") from exc
+
+    # Check provider availability
+    if not provider.is_available():
+        reason = provider.get_unavailable_reason()
+        _logger.error("Provider %s is not available: %s", connection, reason)
+        raise RuntimeError(f"Provider {connection} is not available: {reason}")
+
+    # Prepare generation options
+    options = {
+        "temperature": get_summary_temperature(),
+        "num_predict": 256,  # Allow sufficient tokens for complete JSON response with summary text
+        "num_ctx": 1024,
+    }
+
+    # Generate using provider
+    try:
+        result = provider.generate(
+            model=active_model,
+            prompt=prompt_text,
+            system=_HEADLINE_SYS,
+            options=options,
+        )
+    except Exception as exc:
+        _logger.error(
+            "Provider %s generation failed: %s",
+            connection,
+            exc,
+            exc_info=True,
+        )
+        raise
+
+    raw_text = result.content or ""
+    if not raw_text.strip():
+        _logger.warning(
+            "Provider %s returned empty response model=%s",
+            connection,
+            result.model,
+        )
+
+    analysis = _parse_structured_response(raw_text)
+    analysis.provider = connection
+    analysis.prompt = prompt_text
+    analysis.raw_response = result.content or ""
+
+    _logger.debug(
+        "Provider %s analysis response model=%s chars=%d summary=%r outcome=%s",
+        connection,
+        result.model,
+        len(result.content or ""),
+        analysis.summary[:120] if analysis.summary else "",
+        analysis.outcome,
+    )
+
+    return analysis
+
+
 def _headline_with_ollama(
     context: str,
     *,
@@ -808,6 +1031,9 @@ def _headline_with_ollama(
     prompt: Optional[str] = None,
 ) -> ConversationAnalysis:
     """Generate structured conversation analysis using the local Ollama service.
+
+    DEPRECATED: Use _headline_with_provider(connection="ollama") instead.
+    This function is maintained for backward compatibility.
 
     Sends a prompt to Ollama requesting JSON output with summary and outcome fields.
     The response is parsed and validated to ensure the summary is plain text.
@@ -839,7 +1065,18 @@ def _headline_with_ollama(
         options=options,
         keep_alive=OLLAMA_KEEP_ALIVE,
     )
-    analysis = _parse_structured_response(result.response)
+    raw_text = result.response or ""
+    if not raw_text.strip():
+        raw_meta = result.raw if isinstance(result.raw, dict) else {}
+        _logger.warning(
+            "Ollama returned empty response model=%s prompt_tokens=%s eval_tokens=%s done_reason=%s total_duration=%s",
+            result.model,
+            raw_meta.get("prompt_eval_count"),
+            raw_meta.get("eval_count"),
+            raw_meta.get("done_reason"),
+            raw_meta.get("total_duration"),
+        )
+    analysis = _parse_structured_response(raw_text)
     analysis.provider = "ollama"
     analysis.prompt = prompt_text
     analysis.raw_response = result.response or ""
@@ -928,16 +1165,31 @@ def _headline_with_openwebui(context: str, *, prompt: Optional[str] = None) -> C
     return analysis
 
 
-def _headline_with_llm(context: str) -> ConversationAnalysis:
-    """Attempt structured conversation analysis via Ollama, falling back to Open WebUI if needed."""
-    _logger.debug("Analyzing conversation via LLM for context_chars=%d", len(context))
+def _headline_with_llm(context: str, *, connection: str = "ollama") -> ConversationAnalysis:
+    """Attempt structured conversation analysis via configured provider, with legacy fallback support.
+
+    Args:
+        context: Condensed conversation text to analyze.
+        connection: Provider type (ollama | openai | openwebui). Defaults to ollama.
+
+    Returns:
+        ConversationAnalysis with plain text summary and optional outcome score.
+    """
+    _logger.debug("Analyzing conversation via LLM provider=%s context_chars=%d", connection, len(context))
     prompt = _HEADLINE_USER_TMPL.format(ctx=context)
     try:
         primary_model = get_summary_model()
     except Exception as exc:
         reason = f"Unable to determine summary model: {exc}"
-        _log_generation_failure("ollama", prompt, reason, None, exc)
-        return ConversationAnalysis(summary="", outcome=None, failure_reason=reason, provider="ollama", prompt=prompt)
+        category = _log_generation_failure(connection, prompt, reason, None, exc)
+        return ConversationAnalysis(
+            summary="",
+            outcome=None,
+            failure_reason=reason,
+            provider=connection,
+            prompt=prompt,
+            failure_category=category,
+        )
 
     fallback_candidate = get_summary_fallback_model()
     failure_details: Optional[Dict[str, Optional[str]]] = None
@@ -949,78 +1201,81 @@ def _headline_with_llm(context: str) -> ConversationAnalysis:
         exc: Optional[BaseException] = None,
     ) -> None:
         nonlocal failure_details
+        category = _log_generation_failure(provider, prompt, reason, response, exc)
         failure_details = {
             "provider": provider,
             "reason": reason,
             "response": response,
+            "category": category,
         }
-        _log_generation_failure(provider, prompt, reason, response, exc)
 
     try:
-        analysis = _call_ollama_with_retry(context, model=primary_model, prompt=prompt)
+        analysis = _call_provider_with_retry(context, connection=connection, model=primary_model, prompt=prompt)
         if analysis.summary:
-            _logger.debug("Analysis obtained via Ollama")
+            _logger.debug("Analysis obtained via provider %s", connection)
             return analysis
-        remember_failure("ollama", "Ollama returned an empty summary response.", analysis.raw_response or "", None)
+        remember_failure(connection, f"{connection.capitalize()} returned an empty summary response.", analysis.raw_response or "", None)
     except SummarizerProviderUnavailableError as exc:
-        remember_failure("ollama", str(exc), exc.last_error or "", exc)
+        remember_failure(connection, str(exc), exc.last_error or "", exc)
         raise
     except StructuredResponseError as exc:
-        remember_failure("ollama", f"Ollama response parsing failed: {exc}", exc.response_text, exc)
+        remember_failure(connection, f"{connection.capitalize()} response parsing failed: {exc}", exc.response_text, exc)
     except OllamaOutOfMemoryError as exc:  # pragma: no cover - depends on runtime model.
-        remember_failure("ollama", f"Ollama model {primary_model} ran out of memory.", "", exc)
+        remember_failure(connection, f"{connection.capitalize()} model {primary_model} ran out of memory.", "", exc)
         fallback_model = fallback_candidate
         if fallback_model:
             _logger.warning(
-                "Ollama model %s ran out of memory; retrying with fallback model %s.",
+                "%s model %s ran out of memory; retrying with fallback model %s.",
+                connection.capitalize(),
                 primary_model,
                 fallback_model,
                 exc_info=True,
             )
             try:
-                analysis = _headline_with_ollama(context, model=fallback_model, prompt=prompt)
+                analysis = _headline_with_provider(context, connection=connection, model=fallback_model, prompt=prompt)
                 if analysis.summary:
-                    _logger.debug("Analysis obtained via Ollama fallback model %s", fallback_model)
+                    _logger.debug("Analysis obtained via %s fallback model %s", connection, fallback_model)
                     return analysis
                 remember_failure(
-                    "ollama",
-                    f"Ollama fallback model {fallback_model} returned an empty summary response.",
+                    connection,
+                    f"{connection.capitalize()} fallback model {fallback_model} returned an empty summary response.",
                     analysis.raw_response or "",
                     None,
                 )
             except StructuredResponseError as fallback_exc:
                 remember_failure(
-                    "ollama",
-                    f"Ollama fallback model {fallback_model} response parsing failed: {fallback_exc}",
+                    connection,
+                    f"{connection.capitalize()} fallback model {fallback_model} response parsing failed: {fallback_exc}",
                     fallback_exc.response_text,
                     fallback_exc,
                 )
             except OllamaClientError as fallback_exc:
                 remember_failure(
-                    "ollama",
-                    f"Ollama fallback model {fallback_model} failed: {fallback_exc}",
+                    connection,
+                    f"{connection.capitalize()} fallback model {fallback_model} failed: {fallback_exc}",
                     "",
                     fallback_exc,
                 )
             except SummarizerProviderUnavailableError as fallback_exc:
-                remember_failure("ollama", str(fallback_exc), fallback_exc.last_error or "", fallback_exc)
+                remember_failure(connection, str(fallback_exc), fallback_exc.last_error or "", fallback_exc)
                 raise
             except Exception as fallback_exc:  # pragma: no cover - logged for observability.
                 remember_failure(
-                    "ollama",
-                    f"Ollama fallback model {fallback_model} encountered an unexpected error: {fallback_exc}",
+                    connection,
+                    f"{connection.capitalize()} fallback model {fallback_model} encountered an unexpected error: {fallback_exc}",
                     "",
                     fallback_exc,
                 )
         else:
             _logger.warning(
-                "Ollama summarization failed because the model ran out of memory and no fallback model is configured.",
+                "%s summarization failed because the model ran out of memory and no fallback model is configured.",
+                connection.capitalize(),
                 exc_info=True,
             )
     except OllamaClientError as exc:  # pragma: no cover - logged for observability.
-        remember_failure("ollama", f"Ollama summarization failed: {exc}", "", exc)
+        remember_failure(connection, f"{connection.capitalize()} summarization failed: {exc}", "", exc)
     except Exception as exc:  # pragma: no cover - logged for observability.
-        remember_failure("ollama", f"Unexpected error during Ollama summarization: {exc}", "", exc)
+        remember_failure(connection, f"Unexpected error during {connection} summarization: {exc}", "", exc)
 
     if OWUI_FALLBACK_ENABLED:
         try:
@@ -1045,6 +1300,7 @@ def _headline_with_llm(context: str) -> ConversationAnalysis:
     failure_reason = failure_details["reason"] if failure_details else "Summarizer failed without a reported reason."
     provider = failure_details["provider"] if failure_details else "ollama"
     raw_response = failure_details["response"] if failure_details else None
+    failure_category = failure_details["category"] if failure_details else _categorize_failure(failure_reason, raw_response)
     return ConversationAnalysis(
         summary="",
         outcome=None,
@@ -1052,6 +1308,7 @@ def _headline_with_llm(context: str) -> ConversationAnalysis:
         provider=provider,
         prompt=prompt,
         raw_response=raw_response,
+        failure_category=failure_category,
     )
 
 
@@ -1065,26 +1322,35 @@ def _estimate_token_length(text: str) -> int:
     return max(1, len(cleaned) // 4)
 
 
-def _summarize_context(context: str) -> ConversationAnalysis:
+def _summarize_context(context: str, *, connection: str = "ollama") -> ConversationAnalysis:
     """Generate structured analysis via the LLM with a deterministic fallback.
 
     Args:
-        context (str): Concatenated salient conversation lines.
+        context: Concatenated salient conversation lines.
+        connection: Provider type (ollama | openai | openwebui). Defaults to ollama.
+
     Returns:
         ConversationAnalysis: Analysis with summary and optional outcome, or fallback with no outcome.
     """
     if not context:
         return ConversationAnalysis(summary="", outcome=None)
-    _logger.debug("Analyzing single chat context_chars=%d", len(context))
+    _logger.debug("Analyzing single chat provider=%s context_chars=%d", connection, len(context))
     try:
-        analysis = _headline_with_llm(context)
+        analysis = _headline_with_llm(context, connection=connection)
     except SummarizerProviderUnavailableError:
         raise
     except Exception as exc:  # pragma: no cover - defensive guard.
         prompt = _HEADLINE_USER_TMPL.format(ctx=context)
         reason = f"Summarizer pipeline exception: {exc}"
-        _log_generation_failure("pipeline", prompt, reason, None, exc)
-        return ConversationAnalysis(summary="", outcome=None, failure_reason=reason, provider="pipeline", prompt=prompt)
+        category = _log_generation_failure("pipeline", prompt, reason, None, exc)
+        return ConversationAnalysis(
+            summary="",
+            outcome=None,
+            failure_reason=reason,
+            provider="pipeline",
+            prompt=prompt,
+            failure_category=category,
+        )
 
     if analysis.summary:
         _logger.debug("Analysis obtained via LLM summary=%r outcome=%s", analysis.summary[:120], analysis.outcome)
@@ -1093,21 +1359,26 @@ def _summarize_context(context: str) -> ConversationAnalysis:
     failure_reason = analysis.failure_reason or "Summarizer did not return a summary."
     provider = analysis.provider or "<unknown>"
     raw_response = analysis.raw_response if analysis.raw_response else "<none>"
+    category = analysis.failure_category or _categorize_failure(failure_reason, analysis.raw_response)
     _logger.error(
-        "Summarizer failed for context chars=%d provider=%s reason=%s\nRaw response:\n%s",
+        "Summarizer failed for context chars=%d provider=%s reason=%s category=%s\nRaw response:\n%s",
         len(context),
         provider,
         failure_reason,
+        category,
         raw_response,
     )
+    analysis.failure_category = category
     return analysis
 
 
-def summarize_chat(messages: Sequence[Mapping[str, object]]) -> ConversationAnalysis:
+def summarize_chat(messages: Sequence[Mapping[str, object]], *, connection: str = "ollama") -> ConversationAnalysis:
     """Analyze a single chat's message history.
 
     Args:
-        messages (Sequence[Mapping[str, object]]): Exported messages for a single chat.
+        messages: Exported messages for a single chat.
+        connection: Provider type (ollama | openai | openwebui). Defaults to ollama.
+
     Returns:
         ConversationAnalysis: Structured analysis with summary and optional outcome score.
     """
@@ -1115,7 +1386,7 @@ def summarize_chat(messages: Sequence[Mapping[str, object]]) -> ConversationAnal
     if not context:
         return ConversationAnalysis(summary="", outcome=None)
 
-    return _summarize_context(context)
+    return _summarize_context(context, connection=connection)
 
 
 ProgressCallback = Optional[Callable[[int, int, str, str, Optional[Dict[str, object]]], None]]
@@ -1130,8 +1401,22 @@ def _summarize_with_chunks(
     progress_index: int,
     total: int,
     chat_id: str,
+    connection: str = "ollama",
 ) -> ConversationAnalysis:
-    """Analyze a chat using a single request against the LLM."""
+    """Analyze a chat using a single request against the LLM.
+
+    Args:
+        lines: Pre-formatted chat lines.
+        fallback_context: Pre-built context string.
+        on_progress: Optional progress callback.
+        progress_index: Current chat index for progress reporting.
+        total: Total chats being processed.
+        chat_id: Chat identifier for logging.
+        connection: Provider type (ollama | openai | openwebui). Defaults to ollama.
+
+    Returns:
+        ConversationAnalysis with summary and optional outcome.
+    """
     context = fallback_context.strip()
     if not context:
         joined_lines = " ".join(str(line).strip() for line in lines if str(line).strip())
@@ -1140,12 +1425,13 @@ def _summarize_with_chunks(
         return ConversationAnalysis(summary="", outcome=None)
 
     _logger.debug(
-        "Analyzing chat %s without chunking (context_chars=%d)",
+        "Analyzing chat %s provider=%s without chunking (context_chars=%d)",
         chat_id or "<unknown>",
+        connection,
         len(context),
     )
 
-    analysis = _summarize_context(context)
+    analysis = _summarize_context(context, connection=connection)
     if analysis.summary:
         _logger.debug(
             "Analysis generated for chat %s summary=%r outcome=%s",
@@ -1186,6 +1472,10 @@ def summarize_chats(
         - summary_map: Dict mapping chat_id to plain text summary string
         - stats: Dict with keys 'total', 'skipped', 'failures', 'generated'
     """
+    # Retrieve the configured provider connection at the start of the job
+    active_connection = get_summary_connection()
+    _logger.info("Starting chat summarization with provider: %s", active_connection)
+
     chats_list = list(chats)
     messages_list = list(messages)
     total = len(chats_list)
@@ -1282,6 +1572,7 @@ def summarize_chats(
                 progress_index=idx,
                 total=total,
                 chat_id=chat_id,
+                connection=active_connection,
             )
         except SummarizerProviderUnavailableError:
             raise
@@ -1325,10 +1616,11 @@ def summarize_chats(
                         exc_info=True,
                     )
             _logger.error(
-                "Summarizer failure persisted for chat %s: %s (provider=%s)",
+                "Summarizer failure persisted for chat %s: %s (provider=%s category=%s)",
                 chat_id,
                 failure_reason,
                 failure_provider or "<unknown>",
+                analysis.failure_category or "<unspecified>",
             )
 
         if on_progress:
@@ -1344,6 +1636,8 @@ def summarize_chats(
                 details["failure_reason"] = failure_reason
                 if failure_provider:
                     details["failure_provider"] = failure_provider
+                if analysis.failure_category:
+                    details["failure_category"] = analysis.failure_category
                 if prompt_snapshot:
                     details["prompt_preview"] = _format_debug_text(prompt_snapshot)
                 if response_snapshot is not None:

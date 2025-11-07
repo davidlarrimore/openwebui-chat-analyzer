@@ -107,3 +107,23 @@ def test_list_users_can_expose_real_names(monkeypatch):
     assert users[0]["name"] == "Charlie Example"
     assert users[0]["pseudonym"] == "Rocket"
     assert users[0]["real_name"] == "Charlie Example"
+
+
+def test_rebuild_summaries_errors_when_disabled(monkeypatch):
+    """POST /summaries/rebuild should surface disabled-state errors as HTTP 400."""
+
+    class FakeService:
+        def rebuild_summaries(self):
+            raise ValueError("Cannot rebuild summaries: summarizer is disabled")
+
+    fake_service = FakeService()
+
+    monkeypatch.setattr("backend.app.data_service.load_initial_data", lambda: None)
+    monkeypatch.setattr("backend.routes.require_authenticated_user", lambda: _fake_auth_user())
+    monkeypatch.setattr("backend.routes.get_data_service", lambda: fake_service)
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/summaries/rebuild")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Cannot rebuild summaries: summarizer is disabled"

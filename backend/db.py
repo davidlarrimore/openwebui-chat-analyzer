@@ -10,6 +10,7 @@ from typing import Generator
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.exc import SQLAlchemyError
 
 from dotenv import load_dotenv
 
@@ -209,13 +210,25 @@ def init_database() -> None:
 
     # Enable WAL mode for SQLite for better concurrency during large operations
     if DATABASE_URL.startswith("sqlite"):
-        with engine.begin() as conn:
-            # Enable WAL (Write-Ahead Logging) mode
-            conn.execute(text("PRAGMA journal_mode=WAL"))
-            # Enable foreign key constraints
-            conn.execute(text("PRAGMA foreign_keys=ON"))
-            # Set synchronous mode to NORMAL for better performance (still safe with WAL)
-            conn.execute(text("PRAGMA synchronous=NORMAL"))
+        try:
+            with engine.begin() as conn:
+                # Enable WAL (Write-Ahead Logging) mode
+                result = conn.execute(text("PRAGMA journal_mode=WAL"))
+                journal_mode = result.scalar()
+                if isinstance(journal_mode, str) and journal_mode.lower() == "wal":
+                    # With WAL enabled we relax synchronous mode for better throughput.
+                    conn.execute(text("PRAGMA synchronous=NORMAL"))
+        except SQLAlchemyError as exc:
+            LOGGER.warning(
+                "Unable to enable SQLite WAL mode; continuing with default journal settings: %s",
+                exc,
+            )
+
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("PRAGMA foreign_keys=ON"))
+        except SQLAlchemyError as exc:
+            LOGGER.warning("Failed to enable SQLite foreign key enforcement: %s", exc)
 
     Base.metadata.create_all(bind=engine)
     _run_migrations()

@@ -2,7 +2,7 @@ import type { ProcessLogEvent } from "./api";
 
 export type JobType = "summarizer" | "dataSync" | "generic";
 
-export type JobLifecycleStatus = "pending" | "running" | "success" | "error";
+export type JobLifecycleStatus = "pending" | "running" | "success" | "error" | "cancelled";
 
 export type JobStageVisualState = "pending" | "current" | "complete" | "error";
 

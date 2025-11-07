@@ -119,6 +119,14 @@ export function useToast() {
 
 export function Toaster() {
   const { toasts } = useToast();
+  const hasCleared = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!hasCleared.current) {
+      hasCleared.current = true;
+      dispatch({ type: "REMOVE_TOAST" });
+    }
+  }, []);
 
   return (
     <ToastProvider>

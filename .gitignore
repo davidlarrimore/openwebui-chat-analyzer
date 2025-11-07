@@ -86,6 +86,9 @@ Temporary Items
 .project
 .pydevproject
 
+# Salesforce DX
+.sfdx/
+
 # Jupyter Notebooks
 .ipynb_checkpoints/
 *.ipynb
@@ -143,6 +146,12 @@ out/
 .turbo/
 frontend-next/.next/
 frontend-next/.turbo/
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# pnpm artifacts
+.pnpm-store/
+.pnpm-home/
 frontend-next/.pnpm-store/
 frontend-next/.pnpm-home/
 

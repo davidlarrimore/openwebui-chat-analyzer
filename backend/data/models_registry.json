@@ -19,6 +19,30 @@
     "llama3.2:3b-instruct-q4_k_m": {
       "supports_completions": true,
       "tested_at": "2025-10-31T15:31:08.786350+00:00"
+    },
+    "qwen3:8b": {
+      "supports_completions": true,
+      "tested_at": "2025-11-03T18:25:31.923862+00:00"
+    },
+    "llama3.2:latest": {
+      "supports_completions": true,
+      "tested_at": "2025-11-03T18:26:00.598386+00:00"
+    },
+    "qwen3:30b": {
+      "supports_completions": true,
+      "tested_at": "2025-11-03T18:28:04.282703+00:00"
+    },
+    "llama3.1:latest": {
+      "supports_completions": true,
+      "tested_at": "2025-11-03T19:06:48.772478+00:00"
+    },
+    "gemma3:1b": {
+      "supports_completions": true,
+      "tested_at": "2025-11-03T19:06:50.486940+00:00"
+    },
+    "gpt-oss:20b": {
+      "supports_completions": true,
+      "tested_at": "2025-11-03T20:17:08.751796+00:00"
     }
   }
 }

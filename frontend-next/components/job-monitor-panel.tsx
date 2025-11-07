@@ -11,6 +11,7 @@ import {
   Radio,
   ChevronDown,
   ChevronRight,
+  StopCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ProcessLogEvent } from "@/lib/api";
@@ -20,12 +21,14 @@ interface JobMonitorPanelProps {
   jobs: JobState[];
   isCollapsed: boolean;
   onCollapseChange: (collapsed: boolean) => void;
+  onCancelJob?: (jobId: string, jobType: JobState["type"]) => void;
 }
 
 export function JobMonitorPanel({
   jobs,
   isCollapsed,
   onCollapseChange,
+  onCancelJob,
 }: JobMonitorPanelProps) {
   const [logVisibility, setLogVisibility] = React.useState<Record<string, boolean>>({});
 
@@ -131,6 +134,7 @@ export function JobMonitorPanel({
                           [job.jobKey]: !isLogsOpen,
                         }))
                       }
+                      onCancel={onCancelJob}
                     />
                   );
                 })}
@@ -147,9 +151,10 @@ interface JobCardProps {
   job: JobState;
   showLogs: boolean;
   onToggleLogs: () => void;
+  onCancel?: (jobId: string, jobType: JobState["type"]) => void;
 }
 
-function JobCard({ job, showLogs, onToggleLogs }: JobCardProps) {
+function JobCard({ job, showLogs, onToggleLogs, onCancel }: JobCardProps) {
   const duration = React.useMemo(
     () => formatDuration(job.startedAt, job.completedAt),
     [job.startedAt, job.completedAt],
@@ -199,20 +204,33 @@ function JobCard({ job, showLogs, onToggleLogs }: JobCardProps) {
             ) : null}
           </div>
         </div>
-        <button
-          type="button"
-          className="inline-flex items-center gap-1 rounded border border-border/70 px-2 py-1 text-xs font-medium transition hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          onClick={onToggleLogs}
-          aria-expanded={showLogs}
-          aria-label={showLogs ? "Hide logs" : "Show logs"}
-        >
-          {showLogs ? (
-            <ChevronDown className="h-3 w-3" aria-hidden />
-          ) : (
-            <ChevronRight className="h-3 w-3" aria-hidden />
-          )}
-          Logs
-        </button>
+        <div className="flex items-center gap-2">
+          {job.type === "summarizer" && job.status === "running" && onCancel ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded border border-destructive/70 bg-destructive/10 px-2 py-1 text-xs font-medium text-destructive transition hover:bg-destructive/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              onClick={() => onCancel(job.jobId, job.type)}
+              aria-label="Stop job"
+            >
+              <StopCircle className="h-3 w-3" aria-hidden />
+              Stop
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded border border-border/70 px-2 py-1 text-xs font-medium transition hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            onClick={onToggleLogs}
+            aria-expanded={showLogs}
+            aria-label={showLogs ? "Hide logs" : "Show logs"}
+          >
+            {showLogs ? (
+              <ChevronDown className="h-3 w-3" aria-hidden />
+            ) : (
+              <ChevronRight className="h-3 w-3" aria-hidden />
+            )}
+            Logs
+          </button>
+        </div>
       </div>
 
       <div className="mt-3 space-y-3">
@@ -329,6 +347,12 @@ function StatusBadge({ status }: { status: JobState["status"] }) {
           label: "Complete",
           className:
             "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200",
+        };
+      case "cancelled":
+        return {
+          label: "Cancelled",
+          className:
+            "bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-200",
         };
       case "error":
       default:
