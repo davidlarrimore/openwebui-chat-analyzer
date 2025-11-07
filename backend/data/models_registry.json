@@ -50,7 +50,7 @@
     },
     "us.anthropic.claude-haiku-4-5-20251001-v1:0": {
       "supports_completions": false,
-      "tested_at": "2025-11-07T03:21:14.656824+00:00"
+      "tested_at": "2025-11-07T14:43:33.361430+00:00"
     },
     "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
       "supports_completions": false,
@@ -219,6 +219,50 @@
     "mistral.mistral-small-2402-v1:0": {
       "supports_completions": true,
       "tested_at": "2025-11-07T03:21:46.741498+00:00"
+    },
+    "us.anthropic.claude-sonnet-4-20250514-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:32.844964+00:00"
+    },
+    "openai.gpt-oss-120b-1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:33.865139+00:00"
+    },
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:37.087060+00:00"
+    },
+    "qwen.qwen3-coder-30b-a3b-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:37.835076+00:00"
+    },
+    "qwen.qwen3-32b-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:38.318691+00:00"
+    },
+    "amazon.titan-text-lite-v1": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:39.430449+00:00"
+    },
+    "us.anthropic.claude-3-5-haiku-20241022-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:40.560951+00:00"
+    },
+    "us.meta.llama3-2-3b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:41.283872+00:00"
+    },
+    "us.meta.llama4-scout-17b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:42.050980+00:00"
+    },
+    "us.meta.llama4-maverick-17b-instruct-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:42.658611+00:00"
+    },
+    "us.mistral.pixtral-large-2502-v1:0": {
+      "supports_completions": true,
+      "tested_at": "2025-11-07T14:43:43.466531+00:00"
     }
   }
 }

@@ -28,6 +28,7 @@ import {
   getSummarizerConnections,
   getSummarizerModels,
   validateSummarizerModel,
+  getProcessLogs,
   type OpenWebUISettingsResponse,
   type OpenWebUISettingsUpdate,
   type SyncStatusResponse,
@@ -42,6 +43,11 @@ import type { SummaryStatus, DatasetMeta, OllamaModelTag } from "@/lib/types";
 
 const SUMMARY_POLL_INTERVAL_MS = 2000;
 const TERMINAL_SUMMARY_STATES = new Set(["idle", "completed", "failed", "cancelled"]);
+const CONNECTION_LABELS: Record<ProviderType, string> = {
+  ollama: "Ollama",
+  openai: "Open AI",
+  openwebui: "Open WebUI",
+};
 function getTemperatureLabel(temperature: number): string {
   if (temperature === 0.0) return "Strict";
   if (temperature <= 0.2) return "Precise";
@@ -164,6 +170,8 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     isValidatingSummaryModels: false,
   });
 
+  const selectedConnectionRef = React.useRef<ProviderType>(state.selectedConnection);
+
   // Track original values to detect changes
   const [originalValues, setOriginalValues] = React.useState({
     hostname: initialSettings?.host || "",
@@ -177,6 +185,10 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     error: null as string | null,
     confirmOpen: false,
   });
+
+  React.useEffect(() => {
+    selectedConnectionRef.current = state.selectedConnection;
+  }, [state.selectedConnection]);
 
   const { updateStatus: setGlobalSummarizerStatus } = useSummarizerProgress();
 
@@ -245,15 +257,21 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
           ? Array.from(new Set(connections.map(conn => conn.type as ProviderType)))
           : (["ollama", "openai", "openwebui"] as ProviderType[]);
 
-      const previousSelection = state.selectedConnection;
-      const preferredConnection = providerTypes.includes(previousSelection) ? previousSelection : undefined;
+      const savedConnectionRaw = summarizerSettings.connection?.toLowerCase() as ProviderType | undefined;
+      const savedConnection =
+        savedConnectionRaw && providerTypes.includes(savedConnectionRaw) ? savedConnectionRaw : undefined;
+
+      const previousSelection = selectedConnectionRef.current;
+      const previousSelectionValid = providerTypes.includes(previousSelection) ? previousSelection : undefined;
+
       const availableConnection = connections.find(conn => conn.available);
       const fallbackConnection =
         (availableConnection?.type as ProviderType | undefined) ??
-        previousSelection ??
         providerTypes[0] ??
+        previousSelection ??
         "ollama";
-      const connectionToUse = preferredConnection ?? fallbackConnection;
+
+      const connectionToUse = savedConnection ?? previousSelectionValid ?? fallbackConnection;
 
       const modelsByConnection: Record<ProviderType, string[]> = providerTypes.reduce(
         (acc, type) => {
@@ -330,7 +348,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         availableSummaryModels: [],
       }));
     }
-  }, [state.selectedConnection]);
+  }, []);
 
   const fetchSettings = React.useCallback(async () => {
     setState(prev => ({ ...prev, isLoading: true, error: null }));
@@ -473,10 +491,10 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
 
     const checkForAutoSync = async () => {
       try {
-        const logs = await apiGet<ProcessLogEvent[]>("api/v1/sync/logs");
+        const { logs } = await getProcessLogs();
 
         // Look for recent "Automatic sync triggered" messages
-        const recentAutoSyncLog = logs.find(log =>
+        const recentAutoSyncLog = logs.find((log: ProcessLogEvent) =>
           log.message?.includes("Automatic sync triggered by scheduler") &&
           new Date(log.timestamp).getTime() > lastCheckTime
         );
@@ -1218,7 +1236,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       {/* Summarizer Configuration */}
       <Card>
         <CardHeader>
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <span>🧠 Summarizer Settings</span>
@@ -1227,23 +1245,28 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
                 Configure the LLM provider, model, and temperature for automated chat summaries.
               </p>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => fetchSummarizerConfig()}
-              disabled={state.isLoadingSummaryModels}
-            >
-              {state.isLoadingSummaryModels ? "Refreshing..." : "Refresh"}
-            </Button>
-            <Button
-              size="sm"
-              variant="default"
-              className="bg-emerald-600 text-white hover:bg-emerald-700"
-              onClick={handleValidateModels}
-              disabled={state.isLoadingSummaryModels || state.isValidatingSummaryModels}
-            >
-              {state.isValidatingSummaryModels ? "Validating..." : "Validate"}
-            </Button>
+            <div className="flex w-full justify-end lg:w-auto">
+              <div className="inline-flex w-full max-w-sm justify-end rounded-md shadow-sm lg:w-auto" role="group">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-none first:rounded-l-md last:rounded-r-md first:border-r-0"
+                  onClick={() => fetchSummarizerConfig()}
+                  disabled={state.isLoadingSummaryModels}
+                >
+                  {state.isLoadingSummaryModels ? "⏳ Refreshing..." : "🔁 Refresh"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="rounded-none first:rounded-l-md last:rounded-r-md bg-emerald-600 text-white hover:bg-emerald-700"
+                  onClick={handleValidateModels}
+                  disabled={state.isLoadingSummaryModels || state.isValidatingSummaryModels}
+                >
+                  {state.isValidatingSummaryModels ? "🧪 Validating..." : "✅ Validate"}
+                </Button>
+              </div>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -1296,7 +1319,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
                     )}
                     title={!conn.available && conn.reason ? conn.reason : undefined}
                   >
-                    <span className="capitalize">{conn.type}</span>
+                    <span>{CONNECTION_LABELS[conn.type] ?? conn.type}</span>
                     {!conn.available && (
                       <span className="text-xs text-muted-foreground mt-1">
                         Unavailable
