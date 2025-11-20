@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timezone
-from threading import RLock
+from threading import Lock, RLock
 
 from fastapi.testclient import TestClient
 
@@ -16,10 +17,41 @@ def _fake_auth_user() -> AuthUserPublic:
     return AuthUserPublic(id="tester", username="tester", email="tester", name="Test User")
 
 
+def _build_summary_service(state: str = "idle", job_id: int | None = None):
+    """Create a minimal DataService instance configured for summary state tests."""
+    service_cls = services_module.DataService
+    service = service_cls.__new__(service_cls)  # bypass heavy __init__
+    service._lock = RLock()  # pylint: disable=protected-access
+    service._summary_state_lock = Lock()  # pylint: disable=protected-access
+    service._summary_state = {  # pylint: disable=protected-access
+        "state": state,
+        "total": 0,
+        "completed": 0,
+        "message": "",
+        "started_at": None,
+        "finished_at": None,
+        "updated_at": None,
+        "last_event": None,
+    }
+    service._summary_events = deque(  # pylint: disable=protected-access
+        maxlen=services_module.SUMMARY_EVENT_HISTORY_LIMIT
+    )
+    service._process_logs = deque(maxlen=200)  # pylint: disable=protected-access
+    service._summary_thread = None  # pylint: disable=protected-access
+    service._summary_target_dataset_id = None  # pylint: disable=protected-access
+    service._summary_job_counter = job_id or 0  # pylint: disable=protected-access
+    service._summary_active_job_id = job_id  # pylint: disable=protected-access
+    service._settings = {}  # pylint: disable=protected-access
+    return service
+
+
 def test_sync_status_includes_staleness_info(monkeypatch):
     """Sync status should include staleness indicator and local counts."""
 
     class FakeService:
+        def __init__(self) -> None:
+            self.wipe_calls = 0
+
         def get_sync_status(self):
             return {
                 "last_sync_at": datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
@@ -94,6 +126,9 @@ def test_sync_supports_full_and_incremental_modes(monkeypatch):
     sync_mode_used = None
 
     class FakeService:
+        def __init__(self) -> None:
+            self.wipe_calls = 0
+
         def get_sync_status(self):
             return {
                 "last_sync_at": None,
@@ -105,7 +140,7 @@ def test_sync_supports_full_and_incremental_modes(monkeypatch):
                 "local_counts": None,
             }
 
-        def sync_from_openwebui(self, hostname, api_key):
+        def sync_from_openwebui(self, hostname, api_key, *, mode: str | None = None):
             nonlocal sync_mode_used
             # Capture that sync was called
             # Mode detection happens in route, but we can verify it's called
@@ -143,6 +178,9 @@ def test_sync_supports_full_and_incremental_modes(monkeypatch):
                     queued_chat_ids=None,
                 ),
             )
+
+        def wipe_chats_and_messages(self):
+            self.wipe_calls += 1
 
     fake_service = FakeService()
 
@@ -367,3 +405,27 @@ def test_scheduler_post_updates_config(monkeypatch):
     assert data["enabled"] is False
     assert data["interval_minutes"] == 120
     assert fake_service.updated_config == {"enabled": False, "interval_minutes": 120}
+
+
+def test_cancel_summary_job_returns_immediately_when_idle():
+    """Cancelling while idle should simply echo the current status."""
+    service = _build_summary_service(state="idle")
+
+    status = service.cancel_summary_job()
+
+    assert status["state"] == "idle"
+    assert status["last_event"] is None
+
+
+def test_cancel_summary_job_marks_state_and_logs_event():
+    """Active summarizer jobs should transition to cancelled and emit a log."""
+    service = _build_summary_service(state="running", job_id=7)
+
+    status = service.cancel_summary_job()
+
+    assert status["state"] == "cancelled"
+    assert status["last_event"]["type"] == "cancelled"
+    assert status["last_event"]["job_id"] == 7
+    logs = service.get_process_logs(job_id="7", limit=5)
+    assert logs, "Expected a cancellation log entry"
+    assert "cancelled by user" in logs[0]["message"]

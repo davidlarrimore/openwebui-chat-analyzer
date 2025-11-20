@@ -394,10 +394,10 @@ openwebui-chat-analyzer/
 - 🔒 Keys never appear in processing logs or responses
 
 ### Authentication
-- Auth.js (NextAuth) with local credentials provider
-- Optional GitHub OAuth integration
-- Session-based authentication
-- Protected API routes
+- FastAPI-managed local + OIDC sessions (AUTH_MODE = DEFAULT, HYBRID, or OAUTH)
+- Secure HttpOnly cookies with automatic refresh rotation and admin-controlled revocation
+- Microsoft Entra ID support via the `/api/backend/auth/oidc/*` flows
+- Middleware-protected dashboard routes that preserve the original callback URL
 
 ---
 

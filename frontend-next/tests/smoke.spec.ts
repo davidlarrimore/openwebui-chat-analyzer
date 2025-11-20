@@ -1,56 +1,38 @@
-describe("API smoke test", () => {
+import type { NextRequest } from "next/server";
+import { middleware } from "@/middleware";
+
+function buildRequest(url: string): NextRequest {
+  const nextUrl = new URL(url);
+  const headers = new Headers();
+  return {
+    nextUrl,
+    headers,
+    cookies: {
+      get: () => undefined,
+      getAll: () => [],
+      has: () => false
+    }
+  } as unknown as NextRequest;
+}
+
+describe("middleware", () => {
   beforeEach(() => {
     jest.resetModules();
   });
 
-  it("returns 401 for unauthenticated session requests", async () => {
-    jest.mock("@/lib/auth", () => ({
-      getServerAuthSession: jest.fn().mockResolvedValue(null)
-    }));
+  it("allows dashboard access when backend session is valid", async () => {
+    global.fetch = jest.fn().mockResolvedValue(new Response(null, { status: 200 }));
 
-    const { GET: sessionGet } = await import("@/app/api/session/route");
-    const { getServerAuthSession } = await import("@/lib/auth");
-
-    const response = await sessionGet(new Request("http://localhost:3000/api/session"));
-    expect(response.status).toBe(401);
-    expect(getServerAuthSession).toHaveBeenCalled();
+    const result = await middleware(buildRequest("http://localhost:3000/dashboard"));
+    expect(result.cookies.getAll().length).toBe(0);
+    expect(global.fetch).toHaveBeenCalledWith(new URL("/api/backend/auth/session", "http://localhost:3000"), expect.any(Object));
   });
 
-  it("proxies the login endpoint successfully", async () => {
-    jest.mock("@/lib/auth", () => ({
-      getServerAuthSession: jest.fn().mockResolvedValue({ accessToken: "token", user: { id: "1" } })
-    }));
+  it("redirects to login when the session check fails", async () => {
+    global.fetch = jest.fn().mockResolvedValue(new Response(null, { status: 401 }));
 
-    process.env.BACKEND_BASE_URL = "http://backend.test";
-
-    global.fetch = jest.fn().mockResolvedValue(
-      new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      })
-    );
-
-    const { POST: proxyPost } = await import("@/app/api/proxy/[...path]/route");
-    const { getServerAuthSession } = await import("@/lib/auth");
-
-    const request = new Request("http://localhost:3000/api/proxy/api/v1/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username: "demo", password: "demo" }),
-      headers: { "content-type": "application/json" }
-    });
-
-    const response = await proxyPost(
-      Object.assign(request, {
-        text: () => Promise.resolve(JSON.stringify({ username: "demo", password: "demo" }))
-      }),
-      { params: { path: ["api", "v1", "auth", "login"] } }
-    );
-
-    expect(response.status).toBe(200);
-    expect(global.fetch).toHaveBeenCalledWith(
-      "http://backend.test/api/v1/auth/login",
-      expect.objectContaining({ method: "POST" })
-    );
-    expect(getServerAuthSession).toHaveBeenCalled();
+    const response = await middleware(buildRequest("http://localhost:3000/dashboard?tab=models"));
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toContain("/login");
   });
 });

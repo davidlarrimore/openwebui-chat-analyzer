@@ -1,10 +1,13 @@
 import { logAuthEvent } from "./logger";
 import type { SummaryEventsResponse, SummaryStatus, OllamaModelTag } from "./types";
 
-const ALLOWED_PATH = /^\/?api\/v1\//;
+const DATA_PATH = /^\/?api\/v1\//;
+const BACKEND_ROOT = /^\/?api\/backend\//i;
 const AUTH_OPTIONAL_PATHS = new Set([
-  "/api/v1/auth/status",
-  "/api/v1/auth/bootstrap"
+  "/api/backend/auth/status",
+  "/api/backend/auth/bootstrap",
+  "/api/backend/auth/login",
+  "/api/backend/auth/oidc/login"
 ]);
 
 export class ApiError extends Error {
@@ -18,10 +21,13 @@ export class ApiError extends Error {
 
 function normalise(path: string) {
   const formatted = path.startsWith("/") ? path : `/${path}`;
-  if (!ALLOWED_PATH.test(formatted)) {
+  if (BACKEND_ROOT.test(formatted)) {
+    return formatted;
+  }
+  if (!DATA_PATH.test(formatted)) {
     throw new Error(`Disallowed API path: ${formatted}`);
   }
-  return formatted;
+  return `/api/backend${formatted}`;
 }
 
 interface ResponseOptions {
@@ -45,20 +51,6 @@ async function handleJsonResponse<T>(response: Response, options: ResponseOption
       redirected: response.redirected,
       source: options.isServer ? "server" : "client"
     };
-    // Handle 401 Unauthorized - redirect to login on client side
-    if (response.status === 401 && !options.skipAuthRedirect && typeof window !== "undefined") {
-      const { pathname } = window.location;
-      const onLoginPage = pathname.startsWith("/login");
-      const loginUrl = "/login?error=SessionExpired";
-      if (onLoginPage) {
-        logAuthEvent("info", "API request returned 401 on login page; suppressing redirect.", context);
-        throw new Error("Session expired while already on login page.");
-      }
-      logAuthEvent("warn", "API request returned 401; redirecting to login.", context);
-      // Clear any stale session and redirect to login
-      window.location.href = loginUrl;
-      throw new Error("Session expired, redirecting to login...");
-    }
     logAuthEvent("error", "API request failed.", context);
     const message = response.statusText || `Request failed with status ${response.status}`;
     throw new ApiError(response.status, message);
@@ -95,46 +87,107 @@ async function request<T>(
   if (body !== undefined && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
+  const payload = body !== undefined ? JSON.stringify(body) : undefined;
 
-  if (typeof window === "undefined") {
-    const [{ BACKEND_BASE_URL }, { getServerAuthSession }] = await Promise.all([import("./config"), import("./auth")]);
-    const session = await getServerAuthSession();
-    if (!skipAuth && session?.accessToken && !headers.has("authorization")) {
-      headers.set("authorization", `Bearer ${session.accessToken}`);
+  const execute = async (): Promise<{ response: Response; isServer: boolean }> => {
+    if (typeof window === "undefined") {
+      const [{ getServerConfig }, { cookies, headers: nextHeaders }] = await Promise.all([
+        import("./config"),
+        import("next/headers")
+      ]);
+      const { BACKEND_BASE_URL } = getServerConfig();
+      const cookieStore = cookies();
+      if (!headers.has("cookie")) {
+        const cookieHeader = cookieStore
+          .getAll()
+          .map((entry) => `${entry.name}=${entry.value}`)
+          .join("; ");
+        if (cookieHeader) {
+          headers.set("cookie", cookieHeader);
+        }
+      }
+      headers.set("x-analyzer-internal", "true");
+      const forwarded = nextHeaders().get("x-forwarded-for");
+      if (forwarded && !headers.has("x-forwarded-for")) {
+        headers.set("x-forwarded-for", forwarded);
+      }
+      const response = await fetch(`${BACKEND_BASE_URL.replace(/\/$/, "")}${normalised}`, {
+        ...init,
+        method,
+        headers,
+        body: payload,
+        cache: "no-store"
+      });
+      return { response, isServer: true };
     }
 
-    const response = await fetch(`${BACKEND_BASE_URL.replace(/\/$/, "")}${normalised}`, {
+    const response = await fetch(normalised, {
       ...init,
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      cache: "no-store"
+      body: payload,
+      credentials: "include"
     });
+    return { response, isServer: false };
+  };
 
-    return handleJsonResponse<T>(response, {
-      skipAuthRedirect: skipAuth || options.skipAuthRedirect,
-      requestPath: normalised,
-      requestMethod: method,
-      isServer: true
-    });
+  const attemptRefresh = async (isServer: boolean): Promise<boolean> => {
+    if (normalised === "/api/backend/auth/refresh" || isServer) {
+      return false;
+    }
+    try {
+      const refreshResponse = await fetch("/api/backend/auth/refresh", {
+        method: "POST",
+        credentials: "include"
+      });
+      return refreshResponse.ok;
+    } catch (error) {
+      console.error("Session refresh failed", error);
+      return false;
+    }
+  };
+
+  let { response, isServer } = await execute();
+
+  if (
+    response.status === 401 &&
+    !skipAuth &&
+    !options.skipAuthRedirect &&
+    (await attemptRefresh(isServer))
+  ) {
+    ({ response } = await execute());
   }
 
-  if (skipAuth) {
-    headers.set("x-next-auth-skip", "true");
-  }
+  if (
+    response.status === 401 &&
+    !skipAuth &&
+    !options.skipAuthRedirect &&
+    typeof window !== "undefined"
+  ) {
+    const { pathname, search } = window.location;
+    const onAuthPage = pathname.startsWith("/login") || pathname.startsWith("/register");
+    const hittingAuthEndpoint = normalised.startsWith("/api/backend/auth/");
 
-  const response = await fetch(`/api/proxy${normalised}`, {
-    ...init,
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined
-  });
+    if (!onAuthPage && !hittingAuthEndpoint) {
+      const loginUrl = new URL("/login", window.location.origin);
+      loginUrl.searchParams.set("error", "SessionExpired");
+      loginUrl.searchParams.set("callbackUrl", pathname + search);
+      logAuthEvent("warn", "Session expired; redirecting to login.", {
+        path: normalised,
+        method,
+        status: response.status,
+        redirected: true,
+        source: "client"
+      });
+      window.location.href = loginUrl.toString();
+    }
+  }
 
   return handleJsonResponse<T>(response, {
     skipAuthRedirect: skipAuth || options.skipAuthRedirect,
     requestPath: normalised,
     requestMethod: method,
-    isServer: false
+    isServer
   });
 }
 

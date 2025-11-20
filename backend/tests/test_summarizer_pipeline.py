@@ -17,7 +17,7 @@ def test_summarize_chats_emits_chunk_events(monkeypatch: pytest.MonkeyPatch) -> 
 
     recorded_contexts: List[str] = []
 
-    def fake_summarize_context(context: str) -> summarizer.ConversationAnalysis:
+    def fake_summarize_context(context: str, **_: Any) -> summarizer.ConversationAnalysis:
         recorded_contexts.append(context)
         return summarizer.ConversationAnalysis(summary=f"summary:{len(context)}", outcome=None)
 

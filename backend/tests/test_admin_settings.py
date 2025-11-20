@@ -313,8 +313,12 @@ def test_get_summarizer_settings(monkeypatch):
             return {
                 "model": "llama3.2:3b-instruct-q4_K_M",
                 "temperature": 0.2,
+                "enabled": True,
+                "connection": "ollama",
                 "model_source": "database",
                 "temperature_source": "database",
+                "enabled_source": "database",
+                "connection_source": "database",
             }
 
     fake_service = FakeService()
@@ -330,8 +334,12 @@ def test_get_summarizer_settings(monkeypatch):
     assert response.json() == {
         "model": "llama3.2:3b-instruct-q4_K_M",
         "temperature": 0.2,
+        "enabled": True,
+        "connection": "ollama",
         "model_source": "database",
         "temperature_source": "database",
+        "enabled_source": "database",
+        "connection_source": "database",
     }
 
 
@@ -342,13 +350,29 @@ def test_update_summarizer_settings(monkeypatch):
         def __init__(self) -> None:
             self.updated_with = None
 
-        def update_summarizer_settings(self, *, model: str | None = None, temperature: float | None = None):
-            self.updated_with = {"model": model, "temperature": temperature}
+        def update_summarizer_settings(
+            self,
+            *,
+            model: str | None = None,
+            temperature: float | None = None,
+            enabled: bool | None = None,
+            connection: str | None = None,
+        ):
+            self.updated_with = {
+                "model": model,
+                "temperature": temperature,
+                "enabled": enabled,
+                "connection": connection,
+            }
             return {
                 "model": model,
                 "temperature": 0.2,
+                "enabled": True,
+                "connection": "ollama",
                 "model_source": "database",
                 "temperature_source": "database",
+                "enabled_source": "database",
+                "connection_source": "database",
             }
 
     fake_service = FakeService()
@@ -368,17 +392,33 @@ def test_update_summarizer_settings(monkeypatch):
     assert payload == {
         "model": "phi3:mini",
         "temperature": 0.2,
+        "enabled": True,
+        "connection": "ollama",
         "model_source": "database",
         "temperature_source": "database",
+        "enabled_source": "database",
+        "connection_source": "database",
     }
-    assert fake_service.updated_with == {"model": "phi3:mini", "temperature": None}
+    assert fake_service.updated_with == {
+        "model": "phi3:mini",
+        "temperature": None,
+        "enabled": None,
+        "connection": None,
+    }
 
 
 def test_update_summarizer_settings_validation_error(monkeypatch):
     """Validation failures from the service should surface as HTTP 400."""
 
     class FakeService:
-        def update_summarizer_settings(self, *, model: str | None = None, temperature: float | None = None):
+        def update_summarizer_settings(
+            self,
+            *,
+            model: str | None = None,
+            temperature: float | None = None,
+            enabled: bool | None = None,
+            connection: str | None = None,
+        ):
             raise ValueError("Update failed")
 
     fake_service = FakeService()

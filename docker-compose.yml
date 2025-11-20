@@ -17,6 +17,15 @@ services:
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OWUI_LOG_LEVEL: ${OWUI_LOG_LEVEL:-INFO}
+      AUTH_MODE: ${AUTH_MODE:-HYBRID}
+      SESSION_SECRET: ${SESSION_SECRET:-super-secret-change-me}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-analyzer_session}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-Lax}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:${FRONTEND_NEXT_PORT:-8503}}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
       TZ: ${TZ:-UTC}
     healthcheck:
       test:
@@ -30,18 +39,16 @@ services:
   frontend-next:
     build:
       context: ./frontend-next
+      args:
+        BACKEND_BASE_URL: ${FRONTEND_NEXT_BACKEND_BASE_URL:-http://backend:8502}
+        APP_BASE_URL: ${APP_BASE_URL:-http://localhost:${FRONTEND_NEXT_PORT:-8503}}
     container_name: openwebui-chat-analyzer-frontend-next
     ports:
       - "${FRONTEND_NEXT_PORT:-8503}:3000"
     environment:
       - NODE_ENV=production
       - BACKEND_BASE_URL=${FRONTEND_NEXT_BACKEND_BASE_URL:-http://backend:8502}
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-dev-secret}
-      - NEXTAUTH_URL=${FRONTEND_NEXT_PUBLIC_URL:-http://localhost:${FRONTEND_NEXT_PORT:-8503}}
-      - GITHUB_OAUTH_ENABLED=${GITHUB_OAUTH_ENABLED:-false}
-      - NEXT_PUBLIC_GITHUB_OAUTH_ENABLED=${NEXT_PUBLIC_GITHUB_OAUTH_ENABLED:-false}
-      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
-      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - APP_BASE_URL=${APP_BASE_URL:-http://localhost:${FRONTEND_NEXT_PORT:-8503}}
       - PORT=3000
     depends_on:
       backend:

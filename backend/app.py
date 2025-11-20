@@ -7,6 +7,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .auth import auth_router, get_auth_service
 from .config import API_ALLOWED_ORIGINS, API_HOST, API_PORT
 from .logging_config import configure_logging
 from .routes import router
@@ -26,6 +27,7 @@ app = FastAPI(
 # backend.app.data_service.*
 setattr(app, "data_service", data_service)
 app.state.data_service = data_service
+app.state.auth_service = get_auth_service()
 
 # Configure CORS so that the Next.js dashboard (and other approved origins) can call the API.
 # We deliberately keep the allow list driven by configuration so deployments can constrain access.
@@ -38,7 +40,9 @@ app.add_middleware(
 )
 
 # Mount the API router that exposes all data related endpoints.
+app.include_router(auth_router)
 app.include_router(router)
+app.include_router(router, prefix="/api/backend")
 
 
 @app.on_event("startup")

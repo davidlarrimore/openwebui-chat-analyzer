@@ -1,65 +1,54 @@
-import { withAuth } from "next-auth/middleware";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { logAuthEvent } from "@/lib/logger";
 
-async function backendHasUsers(request: NextRequest): Promise<boolean> {
-  try {
-    const statusUrl = new URL("/api/proxy/api/v1/auth/status", request.nextUrl.origin);
-    const response = await fetch(statusUrl, {
-      headers: {
-        "x-next-auth-skip": "true"
-      }
-    });
-    if (!response.ok) {
-      logAuthEvent("warn", "Auth status proxy returned non-OK response.", {
-        status: response.status,
-        url: statusUrl.toString()
-      });
-      return true;
-    }
-    const data = (await response.json()) as { has_users?: boolean };
-    logAuthEvent("debug", "Auth status proxy resolved.", {
-      hasUsers: data.has_users,
-      url: statusUrl.toString()
-    });
-    return Boolean(data.has_users);
-  } catch (error) {
-    logAuthEvent("warn", "Auth status proxy request failed.", {
-      message: error instanceof Error ? error.message : "unknown-error"
-    });
+const PUBLIC_PATHS = new Set(["/", "/login", "/register"]);
+const PUBLIC_PREFIXES = ["/_next", "/assets", "/favicon", "/api/backend/auth", "/api/health", "/api/public"];
+
+function isPublic(pathname: string): boolean {
+  if (PUBLIC_PATHS.has(pathname)) {
     return true;
   }
+  return PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
-export default withAuth(
-  () => NextResponse.next(),
-  {
-    callbacks: {
-      authorized: async ({ token, req }) => {
-        const hasUsers = await backendHasUsers(req as NextRequest);
-        if (!hasUsers) {
-          logAuthEvent("info", "Authorization bypassed; no users provisioned.", {
-            path: req.nextUrl.pathname
-          });
-          return true;
-        }
-        const authorized = !!token;
-        if (!authorized) {
-          logAuthEvent("warn", "Middleware rejected request without session token.", {
-            path: req.nextUrl.pathname
-          });
-        }
-        return authorized;
-      }
-    },
-    pages: {
-      signIn: "/login"
-    }
+export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  if (!pathname.startsWith("/dashboard") || isPublic(pathname)) {
+    return NextResponse.next();
   }
-);
+
+  try {
+    const sessionUrl = new URL("/api/backend/auth/session", request.nextUrl.origin);
+    const response = await fetch(sessionUrl, {
+      headers: {
+        cookie: request.headers.get("cookie") ?? "",
+        "x-analyzer-internal": "true"
+      },
+      credentials: "include"
+    });
+
+    if (response.status === 200) {
+      return NextResponse.next();
+    }
+
+    logAuthEvent("warn", "Middleware detected missing session; redirecting to login.", {
+      path: pathname,
+      status: response.status
+    });
+  } catch (error) {
+    logAuthEvent("error", "Session check failed; redirecting.", {
+      path: pathname,
+      message: error instanceof Error ? error.message : "unknown"
+    });
+  }
+
+  const loginUrl = new URL("/login", request.nextUrl.origin);
+  loginUrl.searchParams.set("callbackUrl", pathname + request.nextUrl.search);
+  return NextResponse.redirect(loginUrl);
+}
 
 export const config = {
-  // Only protect dashboard routes - explicitly exclude auth pages
   matcher: ["/dashboard/:path*"]
 };

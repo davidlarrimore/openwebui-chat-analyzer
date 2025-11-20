@@ -3056,35 +3056,36 @@ class DataService:
 
             if current_state != "running" or job_id is None:
                 # No active job to cancel
-                return self.get_summary_status()
+                return dict(self._summary_state)
 
             # Increment job counter to invalidate the current job
             # The progress callback will detect this and raise SummaryJobCancelled
             self._summary_job_counter += 1
             self._summary_active_job_id = None
 
-            cancelled_at = self._summary_now_iso()
-            job_id_str = str(job_id)
+        assert job_id is not None  # narrow type for static checkers
+        cancelled_at = self._summary_now_iso()
+        job_id_str = str(job_id)
 
-            self._update_summary_state(
-                state="cancelled",
-                message="Summary job cancelled by user",
-                finished_at=cancelled_at,
-                event={
-                    "type": "cancelled",
-                    "event_id": f"cancelled-{job_id}",
-                    "timestamp": cancelled_at,
-                    "message": "Summary job cancelled by user",
-                    "job_id": job_id,
-                },
-            )
+        self._update_summary_state(
+            state="cancelled",
+            message="Summary job cancelled by user",
+            finished_at=cancelled_at,
+            event={
+                "type": "cancelled",
+                "event_id": f"cancelled-{job_id}",
+                "timestamp": cancelled_at,
+                "message": "Summary job cancelled by user",
+                "job_id": job_id,
+            },
+        )
 
-            self._emit_log(
-                "info",
-                "summarize",
-                f"Summarizer job {job_id_str} cancelled by user",
-                job_id=job_id_str,
-            )
+        self._emit_log(
+            "info",
+            "summarize",
+            f"Summarizer job {job_id_str} cancelled by user",
+            job_id=job_id_str,
+        )
 
         LOGGER.info("Summary job %s cancelled by user request", job_id)
         return self.get_summary_status()
@@ -3684,6 +3685,18 @@ class DataService:
         if self._storage.revoke_access_token(token_hash, revoked_at=now):
             return True
         return self._storage.delete_access_token(token_hash)
+
+    def wipe_chats_and_messages(self) -> None:
+        """Remove all chats and messages while leaving users/models intact."""
+        self._storage.wipe_chats_and_messages()
+        with self._lock:
+            self._chats = []
+            self._messages = []
+            self._source_origin = None
+            self._dataset_source_override = None
+            self._dataset_pulled_at = None
+            self._chats_uploaded_at = None
+            self._bump_version()
 
     def has_auth_users(self) -> bool:
         count = self._storage.auth_user_count()

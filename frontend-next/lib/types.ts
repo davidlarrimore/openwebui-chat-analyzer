@@ -130,17 +130,25 @@ export interface AuthStatus {
   has_users: boolean;
 }
 
-export interface AuthSessionUser {
+export interface SessionUser {
   id: string;
-  username: string;
   email: string;
   name: string;
+  is_admin?: boolean;
+  provider?: string;
+  tenant?: string | null;
 }
 
-export interface AuthResponse {
-  access_token: string;
-  token_type: "bearer";
-  user: AuthSessionUser;
+export interface SessionMeta {
+  session_id: string;
+  expires_at: string;
+  refresh_expires_at: string;
+}
+
+export interface SessionEnvelope {
+  user: SessionUser;
+  session: SessionMeta;
+  callback_url?: string | null;
 }
 
 export interface DirectConnectSettings {

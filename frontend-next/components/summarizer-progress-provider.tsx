@@ -1,6 +1,5 @@
 "use client";
 
-import { useSession } from "next-auth/react";
 import {
   createContext,
   useCallback,
@@ -132,9 +131,9 @@ export function SummarizerProgressProvider({
 }: {
   children: ReactNode;
 }) {
-  const { data: session, status: authStatus } = useSession();
-  const hasValidSession =
-    authStatus === "authenticated" && Boolean(session?.accessToken);
+  const unauthorizedRef = useRef(false);
+  const [isAuthorized, setIsAuthorized] = useState(true);
+  const hasValidSession = isAuthorized && !unauthorizedRef.current;
   const { toast } = useToast();
   const [status, setStatus] = useState<SummarizerSnapshot | null>(null);
   const statusRef = useRef<SummarizerSnapshot | null>(null);
@@ -149,7 +148,6 @@ export function SummarizerProgressProvider({
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastEventIdRef = useRef<string | null>(null);
   const abortRef = useRef(false);
-  const unauthorizedRef = useRef(false);
   const summarizerJobIdRef = useRef<string | null>(null);
 
   const processedLogSignaturesRef = useRef<Set<string>>(new Set());
@@ -614,7 +612,6 @@ export function SummarizerProgressProvider({
 
   useEffect(() => {
     if (!hasValidSession) {
-      unauthorizedRef.current = false;
       abortRef.current = true;
       if (pollTimeoutRef.current) {
         clearTimeout(pollTimeoutRef.current);
@@ -711,6 +708,7 @@ export function SummarizerProgressProvider({
         if (error instanceof ApiError && error.status === 401) {
           abortRef.current = true;
           unauthorizedRef.current = true;
+          setIsAuthorized(false);
           lastEventIdRef.current = null;
           statusRef.current = null;
           setStatus(null);
@@ -742,7 +740,7 @@ export function SummarizerProgressProvider({
         pollTimeoutRef.current = null;
       }
     };
-  }, [applyStatus, authStatus, handleSummarizerEvents, hasValidSession, publishJobs]);
+  }, [applyStatus, handleSummarizerEvents, hasValidSession, publishJobs]);
 
   useEffect(() => {
     if (!hasValidSession) {
@@ -766,6 +764,11 @@ export function SummarizerProgressProvider({
         }
         processLogs(response.logs);
       } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+          setIsAuthorized(false);
+          unauthorizedRef.current = true;
+          return;
+        }
         console.error("Failed to fetch process logs", error);
       } finally {
         if (!cancelled) {
@@ -783,7 +786,7 @@ export function SummarizerProgressProvider({
         logPollTimeoutRef.current = null;
       }
     };
-  }, [authStatus, hasValidSession, processLogs, session?.accessToken]);
+  }, [hasValidSession, processLogs]);
 
   const handleCancelJob = useCallback(
     async (jobId: string, jobType: JobState["type"]) => {

@@ -1,6 +1,5 @@
 "use client";
 
-import { signOut } from "next-auth/react";
 import { ReactNode, useState } from "react";
 import { LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -29,15 +28,14 @@ export function LogoutButton({
   const handleLogout = async () => {
     setIsLoggingOut(true);
     try {
-      // First, revoke the backend token
-      await fetch("/api/auth/logout", {
+      await fetch("/api/backend/auth/logout", {
         method: "POST",
+        credentials: "include",
       });
     } catch (error) {
-      console.error("Failed to revoke backend token:", error);
+      console.error("Failed to revoke backend session:", error);
     } finally {
-      // Always sign out from NextAuth, even if backend revocation fails
-      await signOut({ callbackUrl: "/login" });
+      window.location.href = "/login";
     }
   };
 

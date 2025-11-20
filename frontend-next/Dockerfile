@@ -10,7 +10,11 @@ RUN pnpm install
 FROM node:20-alpine AS builder
 RUN corepack enable
 WORKDIR /app
+ARG BACKEND_BASE_URL
+ARG APP_BASE_URL
 ENV NODE_ENV=production
+ENV BACKEND_BASE_URL=${BACKEND_BASE_URL}
+ENV APP_BASE_URL=${APP_BASE_URL}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN pnpm install --prod=false && pnpm build

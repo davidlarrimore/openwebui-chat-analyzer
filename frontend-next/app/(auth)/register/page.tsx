@@ -2,14 +2,13 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { signIn } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { apiGet, apiPost } from "@/lib/api";
-import type { AuthResponse, AuthStatus } from "@/lib/types";
+import type { AuthStatus } from "@/lib/types";
 
 function RegisterPageInner() {
   const router = useRouter();
@@ -24,7 +23,7 @@ function RegisterPageInner() {
     let active = true;
     (async () => {
       try {
-        const status = await apiGet<AuthStatus>("api/v1/auth/status");
+        const status = await apiGet<AuthStatus>("/api/backend/auth/status", undefined, { skipAuthRedirect: true });
         if (status.has_users) {
           router.replace("/login");
           return;
@@ -55,8 +54,8 @@ function RegisterPageInner() {
 
     setIsSubmitting(true);
     try {
-      await apiPost<AuthResponse>("api/v1/auth/bootstrap", {
-        username: email,
+      await apiPost("/api/backend/auth/bootstrap", {
+        email,
         password
       });
 
@@ -65,12 +64,8 @@ function RegisterPageInner() {
         description: "Signing you in…"
       });
 
-      await signIn("credentials", {
-        username: email,
-        password,
-        redirect: true,
-        callbackUrl: "/dashboard"
-      });
+      router.push("/dashboard");
+      router.refresh();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to create the account.";
       toast({

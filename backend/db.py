@@ -207,6 +207,7 @@ def init_database() -> None:
     """Ensure all ORM tables are created in the configured database."""
     # Import models within the function to avoid circular imports.
     from . import db_models  # noqa: F401  # pylint: disable=unused-import
+    from .auth import models as auth_models  # noqa: F401  # pylint: disable=unused-import
 
     # Enable WAL mode for SQLite for better concurrency during large operations
     if DATABASE_URL.startswith("sqlite"):

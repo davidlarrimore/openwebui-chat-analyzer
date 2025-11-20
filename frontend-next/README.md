@@ -6,7 +6,7 @@ This directory contains the Next.js 14 + App Router implementation of the chat a
 
 - Next.js App Router (TypeScript)
 - Tailwind CSS with shadcn/ui primitives
-- Auth.js (NextAuth) with credentials and optional GitHub OAuth
+- FastAPI-backed HttpOnly sessions (local or Microsoft Entra ID)
 - Recharts and Visx for data visualisation
 - FastAPI backend consumed through server-side proxy route handlers
 
@@ -18,7 +18,7 @@ This directory contains the Next.js 14 + App Router implementation of the chat a
 
 ## Getting Started
 
-1. Ensure the project root `.env` includes the frontend-next variables (`FRONTEND_NEXT_PORT`, `NEXTAUTH_SECRET`, `BACKEND_BASE_URL`, etc.).
+1. Ensure the project root `.env` includes the frontend-next variables (`FRONTEND_NEXT_PORT`, `BACKEND_BASE_URL`, `APP_BASE_URL`, etc.).
 2. Install dependencies and start dev server:
    ```bash
    cd frontend-next
@@ -43,9 +43,9 @@ This uses the root `.env` for configuration and only starts the Next.js frontend
 
 ## Auth Configuration
 
-- Credentials provider posts to `${BACKEND_BASE_URL}/api/v1/auth/login`.
+- Client-side components call the backend session authority at `/api/backend/auth/*` using same-origin requests with `credentials: "include"`.
 - On first launch, if no backend users exist, you'll be redirected to `/register` to create the initial administrator account.
-- Set `GITHUB_OAUTH_ENABLED=true` **and** `NEXT_PUBLIC_GITHUB_OAUTH_ENABLED=true` to enable the GitHub login button. Fill in `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
+- To enable Microsoft Entra ID, populate the `OIDC_*` variables in `.env` and set `AUTH_MODE=HYBRID` or `AUTH_MODE=OAUTH`.
 
 ## Backend CORS
 
@@ -70,12 +70,10 @@ app.add_middleware(
 frontend-next/
   app/                # App Router routes & layouts
   components/         # UI primitives, charts, tables, providers
-  lib/                # Auth, proxy, and type utilities
-  tests/              # Jest smoke test hitting API handlers
-  middleware.ts       # Protects /dashboard routes
+  lib/                # API client, config helpers, shared types
+  tests/              # Jest smoke tests exercising the middleware
+  middleware.ts       # Protects /dashboard routes via backend session checks
 ```
-
-Route handlers under `app/api/` proxy requests to the FastAPI backend, injecting the authenticated session token server-side for SSR safety.
 
 ## Testing
 

@@ -3,13 +3,10 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, status
 
+from .auth.service import AuthService, get_auth_service
 from .models import (
-    AuthLoginRequest,
-    AuthLoginResponse,
-    AuthStatus,
-    AuthUserCreate,
     AuthUserPublic,
     AdminDirectConnectSettings,
     AdminDirectConnectSettingsUpdate,
@@ -74,13 +71,11 @@ def resolve_data_service() -> DataService:
     return get_data_service()
 
 
-def require_authenticated_user(
-    authorization: Optional[str] = Header(default=None, convert_underscores=False),
-    service: DataService = Depends(resolve_data_service),
+def _legacy_token_auth(
+    authorization: Optional[str],
+    service: DataService,
 ) -> AuthUserPublic:
-    """Resolve the current authenticated user or raise an HTTP 401 error."""
     if not authorization or not authorization.lower().startswith("bearer "):
-        LOGGER.warning("Authorization header missing or malformed during auth check.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authorization header with Bearer token required.",
@@ -88,36 +83,65 @@ def require_authenticated_user(
     token = authorization.split(" ", 1)[1].strip()
     user_record = service.resolve_user_from_token(token)
     if user_record is None:
-        LOGGER.warning("Access token validation failed during auth check.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token.",
         )
-    LOGGER.debug("Authenticated user %s via access token.", user_record["username"])
     return AuthUserPublic(**user_record)
 
 
-def resolve_authenticated_user(
+def require_authenticated_user(
+    request: Request,
     authorization: Optional[str] = Header(default=None, convert_underscores=False),
     service: DataService = Depends(resolve_data_service),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> AuthUserPublic:
+    """Resolve the current authenticated user or raise an HTTP 401 error."""
+    principal = auth_service.validate_request(request)
+    if principal is not None:
+        return auth_service.serialize_user(principal.user)
+    LOGGER.debug("Falling back to legacy Authorization header for auth check.")
+    return _legacy_token_auth(authorization, service)
+
+
+def resolve_authenticated_user(
+    request: Request,
+    authorization: Optional[str] = Header(default=None, convert_underscores=False),
+    service: DataService = Depends(resolve_data_service),
+    auth_service: AuthService = Depends(get_auth_service),
 ) -> AuthUserPublic:
     """Wrapper used in FastAPI dependency injections to allow monkeypatch overrides."""
     try:
-        return require_authenticated_user(authorization=authorization, service=service)
+        return require_authenticated_user(
+            request=request,
+            authorization=authorization,
+            service=service,
+            auth_service=auth_service,
+        )
     except TypeError:
         # Test suites may monkeypatch the dependency with a simplified zero-arg callable.
         return require_authenticated_user()  # type: ignore[misc]
 
 
 def resolve_optional_authenticated_user(
+    request: Request,
     authorization: Optional[str] = Header(default=None, convert_underscores=False),
     service: DataService = Depends(resolve_data_service),
+    auth_service: AuthService = Depends(get_auth_service),
 ) -> Optional[AuthUserPublic]:
     """Variant that allows anonymous access when the Authorization header is absent."""
+    principal = auth_service.validate_request(request)
+    if principal is not None:
+        return auth_service.serialize_user(principal.user)
     if authorization is None:
         return None
     try:
-        return require_authenticated_user(authorization=authorization, service=service)
+        return require_authenticated_user(
+            request=request,
+            authorization=authorization,
+            service=service,
+            auth_service=auth_service,
+        )
     except TypeError:
         return require_authenticated_user()  # type: ignore[misc]
 
@@ -555,20 +579,7 @@ def sync_openwebui(
         # Users and models are preserved and updated incrementally
         if mode == "full":
             LOGGER.info("Full sync requested - wiping existing chats and messages")
-            service._storage.wipe_chats_and_messages()
-
-            # Clear in-memory state for chats and messages only
-            # IMPORTANT: Clear _source_origin to force the sync logic to treat this as a new/full sync
-            with service._lock:
-                service._chats = []
-                service._messages = []
-                service._source_origin = None  # Critical: clears source matching to force full sync behavior
-                service._dataset_source_override = None
-                # Preserve users and models
-                service._dataset_pulled_at = None
-                service._chats_uploaded_at = None
-                service._bump_version()
-
+            service.wipe_chats_and_messages()
             LOGGER.info("Chats and messages wiped successfully (users and models preserved)")
 
         dataset, stats = service.sync_from_openwebui(
@@ -898,78 +909,6 @@ def cancel_summary_job(
     """
     status_state = service.cancel_summary_job()
     return {"ok": True, "status": status_state}
-
-
-@router.get("/auth/status", response_model=AuthStatus, tags=["auth"])
-def auth_status(service: DataService = Depends(resolve_data_service)) -> AuthStatus:
-    """Report whether any authentication users have been created."""
-    return AuthStatus(has_users=service.has_auth_users())
-
-
-@router.post(
-    "/auth/bootstrap",
-    response_model=AuthLoginResponse,
-    status_code=status.HTTP_201_CREATED,
-    tags=["auth"],
-)
-def bootstrap_first_user(
-    payload: AuthUserCreate,
-    service: DataService = Depends(resolve_data_service),
-) -> AuthLoginResponse:
-    """Create the initial authentication user when none exist yet."""
-    if service.has_auth_users():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Authentication users already exist.",
-        )
-    try:
-        created = service.create_auth_user(payload.username, payload.password, name=payload.name)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-    token = service.issue_access_token(created["username"])
-    user_public = AuthUserPublic(
-        id=created["username"],
-        username=created["username"],
-        email=created["username"],
-        name=created["name"],
-    )
-    return AuthLoginResponse(access_token=token, token_type="bearer", user=user_public)
-
-
-@router.post("/auth/login", response_model=AuthLoginResponse, tags=["auth"])
-def login(
-    payload: AuthLoginRequest,
-    service: DataService = Depends(resolve_data_service),
-) -> AuthLoginResponse:
-    """Authenticate user credentials and return a bearer token."""
-    LOGGER.info("Login attempt for user '%s'.", payload.username)
-    user_record = service.authenticate_credentials(payload.username, payload.password)
-    if user_record is None:
-        LOGGER.warning("Failed login attempt for user '%s'.", payload.username)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password.",
-        )
-    token = service.issue_access_token(user_record["username"])
-    user_public = AuthUserPublic(**user_record)
-    LOGGER.info("Issued new access token for user '%s'.", user_record["username"])
-    return AuthLoginResponse(access_token=token, token_type="bearer", user=user_public)
-
-
-@router.post("/auth/logout", tags=["auth"], status_code=status.HTTP_200_OK)
-def logout(
-    authorization: Optional[str] = Header(default=None, convert_underscores=False),
-    service: DataService = Depends(resolve_data_service),
-) -> Dict[str, Any]:
-    """Revoke the current access token, logging out the user."""
-    if not authorization or not authorization.lower().startswith("bearer "):
-        LOGGER.info("Logout requested without bearer token; nothing to revoke.")
-        return {"ok": True, "detail": "No token provided."}
-    token = authorization.split(" ", 1)[1].strip()
-    revoked = service.revoke_token(token)
-    LOGGER.info("Processed logout; token revoked=%s.", revoked)
-    return {"ok": True, "revoked": revoked}
 
 
 @router.get("/users/me", response_model=AuthUserPublic, tags=["auth"])

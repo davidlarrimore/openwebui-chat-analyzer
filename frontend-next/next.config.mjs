@@ -4,6 +4,8 @@ import { resolve } from "path";
 loadEnv({ path: resolve(process.cwd(), "../.env"), override: false, quiet: true });
 loadEnv({ path: resolve(process.cwd(), ".env"), override: false, quiet: true });
 
+const backendBaseUrl = process.env.BACKEND_BASE_URL ?? "http://localhost:8502";
+
 const nextConfig = {
   eslint: {
     ignoreDuringBuilds: false
@@ -11,7 +13,15 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: false
   },
-  output: "standalone"
+  output: "standalone",
+  async rewrites() {
+    return [
+      {
+        source: "/api/backend/:path*",
+        destination: `${backendBaseUrl.replace(/\/$/, "")}/api/backend/:path*`
+      }
+    ];
+  }
 };
 
 export default nextConfig;
