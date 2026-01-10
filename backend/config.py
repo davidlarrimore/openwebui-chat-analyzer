@@ -101,6 +101,18 @@ SUMMARIZER_ENABLE_DROPOFF_DETECTION = os.getenv("SUMMARIZER_ENABLE_DROPOFF_DETEC
 # Number of recent messages to analyze for drop-off detection
 SUMMARIZER_DROPOFF_LOOKBACK_MESSAGES = max(2, int(os.getenv("SUMMARIZER_DROPOFF_LOOKBACK_MESSAGES", "4")))
 
+# Sprint 5: Advanced resilience and observability configuration
+# Enable detailed logging of all summarizer operations (prompt/response pairs)
+SUMMARIZER_ENABLE_DETAILED_LOGGING = os.getenv("SUMMARIZER_ENABLE_DETAILED_LOGGING", "false").strip().lower() in {"1", "true", "yes", "on"}
+# Hours to retain detailed logs before rotation (0 = keep forever)
+SUMMARIZER_LOG_RETENTION_HOURS = max(0, int(os.getenv("SUMMARIZER_LOG_RETENTION_HOURS", "72")))
+# Maximum retry attempts for failed metric extractions
+SUMMARIZER_MAX_RETRIES = max(0, min(5, int(os.getenv("SUMMARIZER_MAX_RETRIES", "2"))))
+# Enable automatic retry with simplified prompts on failure
+SUMMARIZER_ENABLE_FALLBACK_PROMPTS = os.getenv("SUMMARIZER_ENABLE_FALLBACK_PROMPTS", "true").strip().lower() in {"1", "true", "yes", "on"}
+# Enable graceful degradation (continue with other metrics if one fails)
+SUMMARIZER_ENABLE_GRACEFUL_DEGRADATION = os.getenv("SUMMARIZER_ENABLE_GRACEFUL_DEGRADATION", "true").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _normalize_openwebui_base(value: Optional[str]) -> str:
     """Normalize a configured Open WebUI host into a usable base URL."""

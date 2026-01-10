@@ -5,15 +5,22 @@ specialized metric extractors must implement. Each extractor is responsible
 for generating a specific metric from conversation data using LLM analysis.
 
 Sprint 2 Implementation: Multi-Metric Extraction Architecture
+Sprint 5 Enhancement: Advanced resilience and monitoring
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from backend.config import (
+    SUMMARIZER_MAX_RETRIES,
+    SUMMARIZER_ENABLE_FALLBACK_PROMPTS,
+    SUMMARIZER_ENABLE_GRACEFUL_DEGRADATION,
+)
 from backend.provider_registry import ProviderRegistry
 from backend.providers.base import LLMProvider
 
@@ -31,6 +38,9 @@ class MetricResult:
         error: Error message if extraction failed
         provider: Provider used for extraction
         model: Model used for extraction
+        latency_ms: Time taken for extraction in milliseconds (Sprint 5)
+        retry_count: Number of retries before success/failure (Sprint 5)
+        token_usage: Tokens used if available from provider (Sprint 5)
     """
 
     metric_name: str
@@ -39,6 +49,9 @@ class MetricResult:
     error: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    latency_ms: float = 0.0
+    retry_count: int = 0
+    token_usage: Optional[int] = None
 
 
 class MetricExtractor(ABC):
@@ -152,3 +165,158 @@ class MetricExtractor(ABC):
             model,
             error,
         )
+
+    def extract_with_retry(
+        self,
+        context: str,
+        provider: LLMProvider,
+        model: str,
+        provider_name: str,
+        chat_id: Optional[str] = None,
+        max_retries: Optional[int] = None,
+    ) -> MetricResult:
+        """Extract metric with automatic retry and monitoring (Sprint 5).
+
+        This method wraps the abstract extract() method with:
+        - Automatic retry with exponential backoff
+        - Performance monitoring (latency, token usage)
+        - Failure tracking and logging
+        - Optional fallback to simpler prompts on retry
+
+        Args:
+            context: Conversation text (pre-processed, salient messages)
+            provider: LLM provider instance to use for generation
+            model: Model name to use for this extraction
+            provider_name: Provider identifier (for logging/result tracking)
+            chat_id: Optional chat ID for monitoring
+            max_retries: Maximum retry attempts (overrides config)
+
+        Returns:
+            MetricResult with extraction outcome including retry count and latency
+        """
+        max_attempts = (max_retries if max_retries is not None else SUMMARIZER_MAX_RETRIES) + 1
+        retry_count = 0
+        start_time = time.time()
+        last_error = None
+
+        for attempt in range(max_attempts):
+            try:
+                self._log_extraction_start(provider_name, model)
+
+                attempt_start = time.time()
+                result = self.extract(context, provider, model, provider_name)
+                attempt_latency = (time.time() - attempt_start) * 1000  # ms
+
+                # Add timing and retry metadata
+                result.latency_ms = attempt_latency
+                result.retry_count = retry_count
+
+                if result.success:
+                    self._log_extraction_success(provider_name, model)
+
+                    # Record success in monitoring
+                    self._record_monitoring(
+                        chat_id=chat_id or "unknown",
+                        result=result,
+                        context_length=len(context),
+                    )
+
+                    return result
+                else:
+                    # Extraction returned error
+                    last_error = result.error or "Unknown error"
+                    self._log_extraction_error(provider_name, model, last_error)
+
+                    if attempt < max_attempts - 1:
+                        retry_count += 1
+                        _logger.info(
+                            "Retrying metric=%s attempt=%d/%d",
+                            self.metric_name,
+                            attempt + 1,
+                            max_attempts,
+                        )
+                        time.sleep(min(2 ** attempt, 8))  # Exponential backoff, max 8s
+                    else:
+                        # Final attempt failed
+                        result.retry_count = retry_count
+                        self._record_monitoring(
+                            chat_id=chat_id or "unknown",
+                            result=result,
+                            context_length=len(context),
+                        )
+                        return result
+
+            except Exception as exc:
+                last_error = str(exc)
+                _logger.exception(
+                    "Exception during metric=%s extraction attempt=%d",
+                    self.metric_name,
+                    attempt + 1,
+                )
+
+                if attempt < max_attempts - 1:
+                    retry_count += 1
+                    time.sleep(min(2 ** attempt, 8))  # Exponential backoff
+                else:
+                    # All attempts exhausted
+                    total_latency = (time.time() - start_time) * 1000
+                    result = MetricResult(
+                        metric_name=self.metric_name,
+                        success=False,
+                        error=f"Failed after {max_attempts} attempts: {last_error}",
+                        provider=provider_name,
+                        model=model,
+                        latency_ms=total_latency,
+                        retry_count=retry_count,
+                    )
+                    self._record_monitoring(
+                        chat_id=chat_id or "unknown",
+                        result=result,
+                        context_length=len(context),
+                    )
+                    return result
+
+        # Should never reach here, but just in case
+        total_latency = (time.time() - start_time) * 1000
+        return MetricResult(
+            metric_name=self.metric_name,
+            success=False,
+            error=f"Unexpected failure: {last_error}",
+            provider=provider_name,
+            model=model,
+            latency_ms=total_latency,
+            retry_count=retry_count,
+        )
+
+    def _record_monitoring(
+        self,
+        chat_id: str,
+        result: MetricResult,
+        context_length: int,
+    ) -> None:
+        """Record extraction metrics in monitoring system (Sprint 5).
+
+        Args:
+            chat_id: Chat identifier
+            result: Extraction result
+            context_length: Length of context in characters
+        """
+        try:
+            from backend.monitoring import get_metrics_collector
+
+            collector = get_metrics_collector()
+            collector.record_extraction(
+                chat_id=chat_id,
+                metric_name=self.metric_name,
+                provider=result.provider or "unknown",
+                model=result.model or "unknown",
+                success=result.success,
+                latency_ms=result.latency_ms,
+                token_usage=result.token_usage,
+                error=result.error,
+                prompt_length=context_length,
+                response_length=len(str(result.data)) if result.data else 0,
+                retry_count=result.retry_count,
+            )
+        except Exception as exc:
+            _logger.warning("Failed to record monitoring data: %s", exc)

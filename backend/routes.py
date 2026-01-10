@@ -1423,6 +1423,127 @@ def test_summarizer_connection(
 
 
 @router.get(
+    "/admin/summarizer/monitoring/overall",
+    tags=["admin", "monitoring"],
+)
+def get_summarizer_overall_monitoring(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+) -> Dict[str, Any]:
+    """Get overall monitoring statistics (Sprint 5).
+
+    Returns aggregated statistics across all metric types including
+    success rates, latency, token usage, and retry counts.
+    """
+    from backend.monitoring import get_metrics_collector
+
+    collector = get_metrics_collector()
+    return collector.get_overall_stats()
+
+
+@router.get(
+    "/admin/summarizer/monitoring/by-metric",
+    tags=["admin", "monitoring"],
+)
+def get_summarizer_metrics_monitoring(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+) -> Dict[str, Any]:
+    """Get monitoring statistics broken down by metric type (Sprint 5)."""
+    from backend.monitoring import get_metrics_collector
+
+    collector = get_metrics_collector()
+    return {
+        "metrics": collector.get_all_metric_stats()
+    }
+
+
+@router.get(
+    "/admin/summarizer/monitoring/recent-failures",
+    tags=["admin", "monitoring"],
+)
+def get_summarizer_recent_failures(
+    limit: int = 50,
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+) -> Dict[str, Any]:
+    """Get recent failure logs for debugging (Sprint 5).
+
+    Args:
+        limit: Maximum number of failures to return (default: 50, max: 200)
+
+    Returns:
+        List of recent failure logs with full details
+    """
+    from backend.monitoring import get_metrics_collector
+
+    limit = min(limit, 200)  # Cap at 200
+    collector = get_metrics_collector()
+    return {
+        "failures": collector.get_recent_failures(limit=limit)
+    }
+
+
+@router.get(
+    "/admin/summarizer/monitoring/recent-logs",
+    tags=["admin", "monitoring"],
+)
+def get_summarizer_recent_logs(
+    limit: int = 100,
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+) -> Dict[str, Any]:
+    """Get recent extraction logs (all attempts) for debugging (Sprint 5).
+
+    Args:
+        limit: Maximum number of logs to return (default: 100, max: 500)
+
+    Returns:
+        List of recent logs with full details
+    """
+    from backend.monitoring import get_metrics_collector
+
+    limit = min(limit, 500)  # Cap at 500
+    collector = get_metrics_collector()
+    return {
+        "logs": collector.get_recent_logs(limit=limit)
+    }
+
+
+@router.post(
+    "/admin/summarizer/monitoring/export",
+    tags=["admin", "monitoring"],
+)
+def export_summarizer_logs(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+) -> Dict[str, str]:
+    """Export all monitoring logs to a file (Sprint 5).
+
+    Returns:
+        Path to exported file
+    """
+    import os
+    from datetime import datetime
+    from backend.monitoring import get_metrics_collector
+
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = "logs/summarizer/exports"
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = f"{output_dir}/export_{timestamp}.json"
+
+        collector = get_metrics_collector()
+        collector.export_logs(output_path)
+
+        return {
+            "status": "success",
+            "path": output_path,
+            "message": f"Logs exported to {output_path}",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": str(exc),
+        }
+
+
+@router.get(
     "/admin/ollama/models",
     tags=["admin"],
 )
