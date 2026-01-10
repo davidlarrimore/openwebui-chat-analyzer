@@ -1385,7 +1385,7 @@ def get_summarizer_connections(
     tags=["admin"],
 )
 def get_summarizer_models(
-    connection: str = Query(..., description="Provider type (ollama | openai | openwebui)"),
+    connection: str = Query(..., description="Provider type (ollama | openai | litellm | openwebui)"),
     include_unvalidated: bool = Query(True, description="Include models not yet validated"),
     auto_validate_missing: bool = Query(
         False,
