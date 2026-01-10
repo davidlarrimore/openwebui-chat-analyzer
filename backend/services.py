@@ -26,6 +26,7 @@ from .config import (
     AUTH_TOKEN_HASH_SECRET,
     AUTH_TOKEN_TTL_SECONDS,
     DATA_DIR,
+    OPENWEBUI_TIMEOUT_SECONDS,
     set_openwebui_api_config,
 )
 from .models import AppMetadata, DatasetMeta, DatasetSyncStats
@@ -789,7 +790,7 @@ def _build_openwebui_base_candidates(base_url: str) -> List[str]:
 def _fetch_openwebui_json(session: requests.Session, url: str) -> Any:
     """Fetch JSON payloads from Open WebUI endpoints."""
     try:
-        response = session.get(url, timeout=30)
+        response = session.get(url, timeout=OPENWEBUI_TIMEOUT_SECONDS)
         response.raise_for_status()
     except requests.exceptions.RequestException as exc:  # pragma: no cover - network errors
         raise RuntimeError(f"Request to {url} failed: {exc}") from exc
@@ -3048,6 +3049,12 @@ class DataService:
             raise ValueError("Cannot rebuild summaries: summarizer is disabled")
         return self._enqueue_summary_job("manual rebuild", force_resummarize=True)
 
+    def run_summaries(self, *, force_resummarize: bool, reason: str = "manual run") -> Dict[str, Any]:
+        """Trigger asynchronous summarization with explicit replace behavior."""
+        if not is_summarizer_enabled():
+            raise ValueError("Cannot run summaries: summarizer is disabled")
+        return self._enqueue_summary_job(reason, force_resummarize=force_resummarize)
+
     def cancel_summary_job(self) -> Dict[str, Any]:
         """Cancel the currently running summarizer job."""
         with self._summary_state_lock:
@@ -3402,8 +3409,8 @@ class DataService:
 
         if connection is not None:
             conn_val = connection.strip().lower()
-            if conn_val not in ("ollama", "openai", "openwebui"):
-                raise ValueError("Connection must be one of: ollama, openai, openwebui")
+            if conn_val not in ("ollama", "openai", "openwebui", "litellm"):
+                raise ValueError("Connection must be one of: ollama, openai, openwebui, litellm")
             updates[SUMMARIZER_CONNECTION_SETTING_KEY] = conn_val
 
         if not updates:
