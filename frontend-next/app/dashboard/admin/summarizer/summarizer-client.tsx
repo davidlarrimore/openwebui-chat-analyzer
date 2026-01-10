@@ -66,7 +66,8 @@ export function SummarizerClient() {
 
   const loadAvailableMetrics = async () => {
     try {
-      const metrics = await apiGet<AvailableMetric[]>("/api/v1/admin/summarizer/metrics/available");
+      const response = await apiGet<{ metrics: AvailableMetric[] }>("/api/v1/metrics/available");
+      const metrics = response.metrics || [];
       setAvailableMetrics(metrics);
 
       // Initialize selected metrics with defaults
