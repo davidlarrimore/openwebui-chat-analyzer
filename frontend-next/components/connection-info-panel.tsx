@@ -239,6 +239,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       isLoadingSummaryModels: true,
       summaryModelError: null,
     }));
+
     try {
       // Fetch connections and settings in parallel
       const [connectionsResponse, summarizerSettings] = await Promise.all([
@@ -247,81 +248,41 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       ]);
 
       const connections = connectionsResponse.connections || [];
-
-      // Update connections state
       setState(prev => ({
         ...prev,
         availableConnections: connections,
         isLoadingConnections: false,
       }));
 
-      const providerTypes: ProviderType[] =
-        connections.length > 0
-          ? Array.from(new Set(connections.map(conn => conn.type as ProviderType)))
-          : (["ollama", "openai", "openwebui"] as ProviderType[]);
+      // Determine which connection to use (simple priority: saved → first available → ollama)
+      const savedConnection = summarizerSettings.connection?.toLowerCase() as ProviderType | undefined;
+      const firstAvailable = connections.find(conn => conn.available)?.type as ProviderType | undefined;
+      const connectionToUse = savedConnection ?? firstAvailable ?? "ollama";
 
-      const savedConnectionRaw = summarizerSettings.connection?.toLowerCase() as ProviderType | undefined;
-      const savedConnection =
-        savedConnectionRaw && providerTypes.includes(savedConnectionRaw) ? savedConnectionRaw : undefined;
+      // Fetch models only for the selected connection
+      const shouldAutoValidate = autoValidateMissing;
+      const shouldForceValidate = autoValidateMissing && forceAutoValidate;
 
-      const previousSelection = selectedConnectionRef.current;
-      const previousSelectionValid = providerTypes.includes(previousSelection) ? previousSelection : undefined;
-
-      const availableConnection = connections.find(conn => conn.available);
-      const fallbackConnection =
-        (availableConnection?.type as ProviderType | undefined) ??
-        providerTypes[0] ??
-        previousSelection ??
-        "ollama";
-
-      const connectionToUse = savedConnection ?? previousSelectionValid ?? fallbackConnection;
-
-      const modelsByConnection: Record<ProviderType, string[]> = providerTypes.reduce(
-        (acc, type) => {
-          acc[type] = [];
-          return acc;
-        },
-        {} as Record<ProviderType, string[]>
+      const modelsResponse = await getSummarizerModels(
+        connectionToUse,
+        true,  // Include unvalidated models
+        shouldAutoValidate,
+        shouldForceValidate
       );
 
-      await Promise.all(
-        providerTypes.map(async providerType => {
-          try {
-            const shouldAutoValidate = autoValidateMissing && providerType === connectionToUse;
-            const shouldForceValidate = shouldAutoValidate && forceAutoValidate;
-            const modelsResponse = await getSummarizerModels(
-              providerType,
-              true,  // Include unvalidated models
-              shouldAutoValidate,
-              shouldForceValidate
-            );
-            const modelNames = modelsResponse.models
-              .map(model => model.name.trim())
-              .sort((a, b) => a.localeCompare(b));
-            modelsByConnection[providerType] = modelNames;
-          } catch (modelErr) {
-            modelsByConnection[providerType] = [];
-            if (providerType === connectionToUse) {
-              throw modelErr instanceof Error
-                ? modelErr
-                : new Error("Failed to load models for selected provider");
-            }
-            console.warn(`Failed to refresh models for ${providerType}:`, modelErr);
-          }
-        })
-      );
+      const modelNames = modelsResponse.models
+        .map(model => model.name.trim())
+        .sort((a, b) => a.localeCompare(b));
 
-      const modelNames = modelsByConnection[connectionToUse] ?? [];
+      // Determine which model to select
+      const savedModel = (summarizerSettings.model || "").trim();
+      const modelInList = savedModel && modelNames.includes(savedModel);
+      const selectedModel = modelInList ? savedModel : (modelNames[0] || "");
 
-      let selectedModel = (summarizerSettings.model || "").trim();
-      if (!selectedModel && modelNames.length > 0) {
-        selectedModel = modelNames[0];
-      }
-
-      const options = modelNames.slice();
-      if (selectedModel && !options.includes(selectedModel)) {
-        options.unshift(selectedModel);
-      }
+      // Build options list (include saved model even if not in list for display)
+      const options = modelInList
+        ? modelNames
+        : (savedModel ? [savedModel, ...modelNames] : modelNames);
 
       setState(prev => ({
         ...prev,
@@ -329,7 +290,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         availableSummaryModels: options,
         modelsByConnection: {
           ...prev.modelsByConnection,
-          ...modelsByConnection,
+          [connectionToUse]: modelNames,
         },
         summaryModel: selectedModel,
         summaryModelSource: summarizerSettings.model_source,
