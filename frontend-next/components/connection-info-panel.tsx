@@ -46,7 +46,8 @@ const SUMMARY_POLL_INTERVAL_MS = 2000;
 const TERMINAL_SUMMARY_STATES = new Set(["idle", "completed", "failed", "cancelled"]);
 const CONNECTION_LABELS: Record<ProviderType, string> = {
   ollama: "Ollama",
-  openai: "Open AI",
+  openai: "OpenAI",
+  litellm: "LiteLLM",
   openwebui: "Open WebUI",
 };
 function getTemperatureLabel(temperature: number): string {
