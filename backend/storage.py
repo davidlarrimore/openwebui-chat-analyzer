@@ -691,13 +691,13 @@ class DatabaseStorage:
     def get_chat_metrics(self, chat_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve conversation metrics from chat metadata.
 
-        Sprint 2: Retrieves extended metrics from the 'meta' JSON field.
+        Sprint 2: Retrieves the full meta structure including metrics and extraction_metadata.
 
         Args:
             chat_id: Chat ID to retrieve metrics for
 
         Returns:
-            Dictionary of metrics data, or None if chat not found or no metrics exist
+            Dictionary with 'metrics' and 'extraction_metadata', or None if chat not found
         """
         with session_scope() as session:
             chat = session.execute(
@@ -707,7 +707,8 @@ class DatabaseStorage:
             if not chat or not chat.meta:
                 return None
 
-            return chat.meta.get("metrics")
+            # Return full meta structure (contains both metrics and extraction_metadata)
+            return chat.meta
 
     def wipe_chats_and_messages(self) -> None:
         """Transactionally wipe only chats and messages (for full sync).

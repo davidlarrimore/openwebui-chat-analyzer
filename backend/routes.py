@@ -1,7 +1,7 @@
 """API routes for the Open WebUI Chat Analyzer backend."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, status
 
@@ -43,6 +43,10 @@ from .models import (
     GenAISummarizeRequest,
     GenAISummarizeResponse,
     GenAIMessage,
+    # Sprint 2: Multi-Metric Extraction
+    MetricExtractionRequest,
+    MetricExtractionResponse,
+    MetricExtractionResult,
 )
 from .services import SUMMARY_EVENT_HISTORY_LIMIT, DataService, get_data_service
 from .clients import OllamaClientError, OllamaOutOfMemoryError, get_ollama_client
@@ -69,6 +73,28 @@ router = APIRouter(prefix="/api/v1", tags=["data"])
 def resolve_data_service() -> DataService:
     """Wrapper to allow monkeypatching of the shared data service dependency."""
     return get_data_service()
+
+
+def _resolve_openwebui_health_inputs(
+    payload: Optional[OpenWebUIHealthTestRequest],
+    service: DataService,
+) -> Dict[str, Any]:
+    """Return host/api_key for OpenWebUI health checks along with source metadata."""
+    if payload and (payload.host is not None or payload.api_key is not None):
+        return {
+            "host": payload.host or "",
+            "api_key": payload.api_key or "",
+            "host_source": "request",
+            "api_key_source": "request" if payload.api_key else None,
+        }
+
+    settings = service.get_direct_connect_settings()
+    return {
+        "host": settings.get("host", ""),
+        "api_key": settings.get("api_key", ""),
+        "host_source": settings.get("host_source"),
+        "api_key_source": settings.get("api_key_source"),
+    }
 
 
 def _legacy_token_auth(
@@ -175,6 +201,45 @@ def health_backend() -> Dict[str, Any]:
     return result.to_dict()
 
 
+@router.get("/health/openwebui", tags=["health"])
+def health_openwebui_status(service: DataService = Depends(resolve_data_service)) -> Dict[str, Any]:
+    """Return the health status for the configured OpenWebUI instance using stored settings."""
+    inputs = _resolve_openwebui_health_inputs(payload=None, service=service)
+    host = inputs["host"]
+    api_key = inputs["api_key"]
+
+    if not host or not host.strip():
+        return {
+            "service": "openwebui",
+            "status": "error",
+            "attempts": 0,
+            "elapsed_seconds": 0.0,
+            "detail": "No OpenWebUI host configured. Please configure a host in settings.",
+            "meta": {
+                "host_source": inputs.get("host_source"),
+                "api_key_source": inputs.get("api_key_source"),
+                "has_api_key": bool(api_key),
+            },
+        }
+
+    result = check_openwebui_health(
+        host=host,
+        api_key=api_key,
+        interval_seconds=2.0,
+        timeout_seconds=10.0,
+    ).to_dict()
+
+    meta = result.setdefault("meta", {})
+    meta.update(
+        {
+            "host_source": inputs.get("host_source"),
+            "api_key_source": inputs.get("api_key_source"),
+            "has_api_key": bool(api_key),
+        }
+    )
+    return result
+
+
 @router.post("/health/openwebui", tags=["health"])
 def health_openwebui(
     payload: OpenWebUIHealthTestRequest,
@@ -190,16 +255,9 @@ def health_openwebui(
     Returns:
         Health check result with status, connection metadata, and any error details.
     """
-    # Get host and API key from request or fall back to stored settings
-    if payload.host is not None or payload.api_key is not None:
-        # Use explicitly provided values
-        host = payload.host or ""
-        api_key = payload.api_key or ""
-    else:
-        # Fall back to stored settings
-        settings = service.get_direct_connect_settings()
-        host = settings.get("host", "")
-        api_key = settings.get("api_key", "")
+    inputs = _resolve_openwebui_health_inputs(payload, service)
+    host = inputs["host"]
+    api_key = inputs["api_key"]
 
     # Validate that we have a host
     if not host or not host.strip():
@@ -209,6 +267,11 @@ def health_openwebui(
             "attempts": 0,
             "elapsed_seconds": 0.0,
             "detail": "No OpenWebUI host configured. Please configure a host in settings.",
+            "meta": {
+                "host_source": inputs.get("host_source"),
+                "api_key_source": inputs.get("api_key_source"),
+                "has_api_key": bool(api_key),
+            },
         }
 
     # Perform the health check
@@ -217,9 +280,17 @@ def health_openwebui(
         api_key=api_key,
         interval_seconds=2.0,  # Faster retries for UI responsiveness
         timeout_seconds=10.0,  # Shorter timeout for UI testing
-    )
+    ).to_dict()
 
-    return result.to_dict()
+    meta = result.setdefault("meta", {})
+    meta.update(
+        {
+            "host_source": inputs.get("host_source"),
+            "api_key_source": inputs.get("api_key_source"),
+            "has_api_key": bool(api_key),
+        }
+    )
+    return result
 
 
 @router.get("/chats", response_model=List[Chat])
@@ -895,6 +966,24 @@ def rebuild_summaries(
     return {"ok": True, "status": status_state}
 
 
+@router.post("/summaries/run")
+def run_summaries(
+    mode: Literal["incremental", "full"] = Query(default="incremental"),
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> dict:
+    """Trigger asynchronous summarization with an explicit mode."""
+    force_resummarize = mode == "full"
+    try:
+        status_state = service.run_summaries(
+            force_resummarize=force_resummarize,
+            reason=f"manual {mode}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "mode": mode, "status": status_state}
+
+
 @router.post("/summaries/cancel")
 def cancel_summary_job(
     _: AuthUserPublic = Depends(resolve_authenticated_user),
@@ -909,6 +998,223 @@ def cancel_summary_job(
     """
     status_state = service.cancel_summary_job()
     return {"ok": True, "status": status_state}
+
+
+# =========================================================================
+# Sprint 2: Multi-Metric Extraction API
+# =========================================================================
+
+
+@router.post(
+    "/metrics/extract",
+    response_model=MetricExtractionResponse,
+    tags=["metrics"],
+)
+def extract_conversation_metrics(
+    request: MetricExtractionRequest,
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> MetricExtractionResponse:
+    """Extract specific metrics from a conversation.
+
+    Sprint 2: Enables selective metric extraction - users can choose which
+    metrics to extract (summary, outcome, tags, classification) rather than
+    running all metrics for every conversation.
+
+    This endpoint supports:
+    - Selective execution (choose which metrics to extract)
+    - Force re-extraction (even if metrics already exist)
+    - Partial success (some metrics can fail while others succeed)
+
+    Args:
+        request: MetricExtractionRequest with chat_id and metrics list
+        service: DataService instance
+
+    Returns:
+        MetricExtractionResponse with extraction results for each metric
+
+    Example Request:
+        POST /api/v1/metrics/extract
+        {
+            "chat_id": "chat-123",
+            "metrics": ["summary", "outcome", "tags"],
+            "force_reextract": false
+        }
+
+    Example Response:
+        {
+            "chat_id": "chat-123",
+            "results": [
+                {"metric_name": "summary", "success": true, "data": {"summary": "..."}},
+                {"metric_name": "outcome", "success": true, "data": {"outcome": 5}},
+                {"metric_name": "tags", "success": false, "error": "..."}
+            ],
+            "total_metrics": 3,
+            "successful_metrics": 2,
+            "failed_metrics": 1
+        }
+    """
+    from backend import summarizer
+
+    # Get chat messages
+    messages = service.get_messages_for_chat(request.chat_id)
+    if not messages:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Chat {request.chat_id} not found or has no messages",
+        )
+
+    # Check if metrics already exist (unless force_reextract)
+    if not request.force_reextract:
+        storage = service.storage
+        chat_meta = storage.get_chat_metrics(request.chat_id)
+        existing_metrics = chat_meta.get("metrics", {}) if chat_meta else {}
+
+        if existing_metrics:
+            # Filter out metrics that already exist
+            requested_metrics = set(request.metrics)
+            existing_metric_names = set(existing_metrics.keys())
+            new_metrics = list(requested_metrics - existing_metric_names)
+
+            if not new_metrics:
+                # All requested metrics already exist
+                extraction_metadata = chat_meta.get("extraction_metadata", {})
+                return MetricExtractionResponse(
+                    chat_id=request.chat_id,
+                    results=[
+                        MetricExtractionResult(
+                            metric_name=metric,
+                            success=True,
+                            data={metric: existing_metrics[metric]},
+                            provider=extraction_metadata.get("provider"),
+                            model=extraction_metadata.get("models_used", {}).get(metric),
+                        )
+                        for metric in request.metrics
+                        if metric in existing_metrics
+                    ],
+                    total_metrics=len(request.metrics),
+                    successful_metrics=len(request.metrics),
+                    failed_metrics=0,
+                )
+            # Only extract new metrics
+            request.metrics = new_metrics
+
+    # Extract metrics
+    result = summarizer.extract_and_store_metrics(
+        chat_id=request.chat_id,
+        messages=messages,
+        metrics_to_extract=request.metrics,
+        storage=service.storage,
+    )
+
+    # Build response
+    if not result.get("success", False):
+        # Extraction failed completely
+        return MetricExtractionResponse(
+            chat_id=request.chat_id,
+            results=[
+                MetricExtractionResult(
+                    metric_name=metric,
+                    success=False,
+                    error=result.get("error", "Unknown error"),
+                    provider=None,
+                    model=None,
+                )
+                for metric in request.metrics
+            ],
+            total_metrics=len(request.metrics),
+            successful_metrics=0,
+            failed_metrics=len(request.metrics),
+        )
+
+    # Partial or full success - retrieve stored metrics
+    storage = service.storage
+    chat_meta = storage.get_chat_metrics(request.chat_id) or {}
+    stored_metrics = chat_meta.get("metrics", {})
+    extraction_metadata = chat_meta.get("extraction_metadata", {})
+
+    # Build result list
+    results = []
+    for metric in request.metrics:
+        if metric in result.get("metrics_extracted", []):
+            # Success
+            results.append(
+                MetricExtractionResult(
+                    metric_name=metric,
+                    success=True,
+                    data={metric: stored_metrics.get(metric)},
+                    provider=extraction_metadata.get("provider"),
+                    model=extraction_metadata.get("models_used", {}).get(metric),
+                )
+            )
+        else:
+            # Failed
+            results.append(
+                MetricExtractionResult(
+                    metric_name=metric,
+                    success=False,
+                    error=f"Failed to extract {metric}",
+                    provider=extraction_metadata.get("provider"),
+                    model=None,
+                )
+            )
+
+    successful_count = len(result.get("metrics_extracted", []))
+    failed_count = len(result.get("extraction_errors", []))
+
+    return MetricExtractionResponse(
+        chat_id=request.chat_id,
+        results=results,
+        total_metrics=len(request.metrics),
+        successful_metrics=successful_count,
+        failed_metrics=failed_count,
+    )
+
+
+@router.get(
+    "/metrics/available",
+    tags=["metrics"],
+)
+def get_available_metrics(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+) -> dict:
+    """Get list of available metrics that can be extracted.
+
+    Sprint 2: Returns metadata about each available metric extractor.
+
+    Returns:
+        Dictionary with available metrics and their descriptions
+
+    Example Response:
+        {
+            "metrics": [
+                {"name": "summary", "description": "One-line conversation summary"},
+                {"name": "outcome", "description": "1-5 outcome score with reasoning"},
+                {"name": "tags", "description": "Topic tags for categorization"},
+                {"name": "classification", "description": "Domain and resolution status"}
+            ]
+        }
+    """
+    return {
+        "metrics": [
+            {
+                "name": "summary",
+                "description": "One-line conversation summary",
+            },
+            {
+                "name": "outcome",
+                "description": "Outcome score (1-5) with reasoning",
+            },
+            {
+                "name": "tags",
+                "description": "Topic tags for categorization and filtering",
+            },
+            {
+                "name": "classification",
+                "description": "Domain type and resolution status",
+            },
+        ]
+    }
 
 
 @router.get("/users/me", response_model=AuthUserPublic, tags=["auth"])
