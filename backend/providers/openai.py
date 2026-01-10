@@ -122,31 +122,36 @@ class OpenAIProvider(LLMProvider):
         response.raise_for_status()
 
         data = response.json()
-        models_data = data.get("data", [])
+        models_data = self._extract_models_data(data)
 
         models = []
         for model_obj in models_data:
-            # Only include actual models (not deployments or other objects)
-            if model_obj.get("object") != "model":
-                continue
-
-            model_id = model_obj.get("id")
+            model_id = self._extract_model_id(model_obj)
             if not model_id:
                 continue
 
+            if isinstance(model_obj, dict):
+                object_type = model_obj.get("object")
+                if object_type in ("list", "model_list"):
+                    continue
+
             # Filter to chat/completion models (exclude embedding, audio, etc.)
             # Most OpenAI models support chat, but we can check ownership for hints
-            if self._is_likely_chat_model(model_id, model_obj):
+            if self._is_likely_chat_model(model_id, model_obj if isinstance(model_obj, dict) else {}):
                 models.append(
                     ModelInfo(
                         name=model_id,
                         display_name=model_id,
                         provider="openai",
                         supports_completions=None,  # Not validated yet
-                        metadata={
-                            "created": model_obj.get("created"),
-                            "owned_by": model_obj.get("owned_by"),
-                        },
+                        metadata=(
+                            {
+                                "created": model_obj.get("created"),
+                                "owned_by": model_obj.get("owned_by"),
+                            }
+                            if isinstance(model_obj, dict)
+                            else {}
+                        ),
                     )
                 )
 
@@ -168,37 +173,63 @@ class OpenAIProvider(LLMProvider):
         """
         LOGGER.info("Validating completion support for OpenAI model: %s", model)
 
-        try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=self._get_headers(),
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": "Hello"}],
-                    "temperature": 0,
-                    "max_tokens": 5,
-                },
-                timeout=self.timeout,
-            )
+        validation_timeout = min(self.timeout, 10.0)
+        payloads = [
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "temperature": 0,
+                "max_tokens": 5,
+            },
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+        ]
 
-            if response.status_code == 200:
-                data = response.json()
-                content = data.get("choices", [{}])[0].get("message", {}).get("content")
-                if content:
-                    LOGGER.info("Model %s supports completions", model)
-                    return True
+        for attempt, payload in enumerate(payloads, start=1):
+            try:
+                response = requests.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self._get_headers(),
+                    json=payload,
+                    timeout=validation_timeout,
+                )
 
-            LOGGER.warning(
-                "Model %s validation failed with status %d: %s",
-                model,
-                response.status_code,
-                response.text[:200],
-            )
-            return False
+                if response.status_code == 200:
+                    data = response.json()
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content")
+                    if content:
+                        LOGGER.info("Model %s supports completions", model)
+                        return True
+                    if data.get("choices"):
+                        LOGGER.info(
+                            "Model %s returned empty content during validation; treating as valid.",
+                            model,
+                        )
+                        return True
 
-        except requests.exceptions.RequestException as exc:
-            LOGGER.error("Model %s validation error: %s", model, exc)
-            return False
+                if response.status_code == 400 and attempt < len(payloads):
+                    LOGGER.info(
+                        "Model %s validation attempt %d failed with 400; retrying with minimal payload.",
+                        model,
+                        attempt,
+                    )
+                    continue
+
+                LOGGER.warning(
+                    "Model %s validation failed with status %d: %s",
+                    model,
+                    response.status_code,
+                    response.text[:200],
+                )
+                return False
+
+            except requests.exceptions.RequestException as exc:
+                LOGGER.error("Model %s validation error: %s", model, exc)
+                return False
+
+        return False
 
     def generate(
         self,
@@ -225,6 +256,7 @@ class OpenAIProvider(LLMProvider):
             Maps common options to OpenAI parameter names:
             - temperature: temperature (0.0-2.0)
             - num_predict: max_tokens
+            - json_mode: If True, sets response_format={"type": "json_object"}
             - Additional OpenAI-specific options can be passed directly
         """
         LOGGER.debug("Generating completion with OpenAI model: %s", model)
@@ -253,9 +285,14 @@ class OpenAIProvider(LLMProvider):
         elif "max_tokens" in options:
             request_body["max_tokens"] = options["max_tokens"]
 
+        # Enable JSON mode if requested
+        if options.get("json_mode"):
+            request_body["response_format"] = {"type": "json_object"}
+            LOGGER.debug("Enabled JSON mode for model %s", model)
+
         # Pass through any other OpenAI-specific options
         for key, value in options.items():
-            if key not in ("temperature", "num_predict", "max_tokens"):
+            if key not in ("temperature", "num_predict", "max_tokens", "json_mode"):
                 request_body[key] = value
 
         response = requests.post(
@@ -264,12 +301,40 @@ class OpenAIProvider(LLMProvider):
             json=request_body,
             timeout=self.timeout,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            detail = response.text.strip()
+            raise requests.exceptions.HTTPError(f"{exc} Response: {detail}") from exc
 
         data = response.json()
 
-        # Extract generated content
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        # Extract generated content (handle string, list-of-parts, or legacy text field)
+        content = ""
+        choices = data.get("choices") or []
+        if choices:
+            primary = choices[0] or {}
+            message = primary.get("message") or {}
+            message_content = message.get("content")
+            if isinstance(message_content, str):
+                content = message_content
+            elif isinstance(message_content, list):
+                parts = []
+                for part in message_content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        parts.append(part["text"])
+                content = "".join(parts).strip()
+            if not content:
+                text_candidate = primary.get("text")
+                if isinstance(text_candidate, str):
+                    content = text_candidate
+
+            if not content:
+                LOGGER.warning(
+                    "OpenAI completion returned empty content; finish_reason=%s keys=%s",
+                    primary.get("finish_reason"),
+                    list(primary.keys()),
+                )
 
         # Extract metadata
         metadata = {
@@ -292,6 +357,21 @@ class OpenAIProvider(LLMProvider):
             "openai"
         """
         return "openai"
+
+    def supports_json_mode(self) -> bool:
+        """Check if provider supports native JSON-structured output.
+
+        Returns:
+            True - OpenAI supports response_format={"type": "json_object"}.
+
+        Note:
+            JSON mode is supported by:
+            - gpt-4o and later (all variants)
+            - gpt-4-turbo-preview and later
+            - gpt-3.5-turbo-1106 and later
+            Older models may not support this feature but will gracefully ignore it.
+        """
+        return True
 
     def _get_headers(self) -> Dict[str, str]:
         """Build HTTP headers for OpenAI requests.
@@ -349,3 +429,32 @@ class OpenAIProvider(LLMProvider):
 
         # Default to including unknown models (can be validated later)
         return True
+
+    @staticmethod
+    def _extract_models_data(payload: Any) -> List[Any]:
+        """Return the models list from a provider-specific payload."""
+        if isinstance(payload, list):
+            return payload
+        if not isinstance(payload, dict):
+            return []
+        if isinstance(payload.get("data"), list):
+            return payload["data"]
+        if isinstance(payload.get("models"), list):
+            return payload["models"]
+        nested = payload.get("data")
+        if isinstance(nested, dict) and isinstance(nested.get("data"), list):
+            return nested["data"]
+        return []
+
+    @staticmethod
+    def _extract_model_id(model_obj: Any) -> Optional[str]:
+        """Return a model identifier from an entry."""
+        if isinstance(model_obj, str):
+            return model_obj
+        if not isinstance(model_obj, dict):
+            return None
+        return (
+            model_obj.get("id")
+            or model_obj.get("model")
+            or model_obj.get("name")
+        )

@@ -65,11 +65,10 @@ class OpenWebUIProvider(LLMProvider):
             return False
 
         try:
-            # Test connection with GET /api/models
-            response = requests.get(
-                f"{self.base_url}/api/models",
-                headers=self._get_headers(),
-                timeout=10,  # Quick check
+            # Test connection with GET /api/v1/models (fallback to /api/models)
+            response = self._get_with_fallback(
+                ["/api/v1/models", "/api/models"],
+                timeout=10,
             )
             if response.status_code == 401:
                 LOGGER.warning("OpenWebUI provider unavailable: Authentication failed")
@@ -95,9 +94,8 @@ class OpenWebUIProvider(LLMProvider):
             return "Base URL not configured (set OWUI_DIRECT_HOST)"
 
         try:
-            response = requests.get(
-                f"{self.base_url}/api/models",
-                headers=self._get_headers(),
+            response = self._get_with_fallback(
+                ["/api/v1/models", "/api/models"],
                 timeout=10,
             )
             if response.status_code == 401:
@@ -128,9 +126,8 @@ class OpenWebUIProvider(LLMProvider):
         """
         LOGGER.info("Discovering models from Open WebUI at %s", self.base_url)
 
-        response = requests.get(
-            f"{self.base_url}/api/models",
-            headers=self._get_headers(),
+        response = self._get_with_fallback(
+            ["/api/v1/models", "/api/models"],
             timeout=self.timeout,
         )
         response.raise_for_status()
@@ -184,16 +181,9 @@ class OpenWebUIProvider(LLMProvider):
         """
         LOGGER.info("Validating completion support for Open WebUI model: %s", model)
 
-        endpoint = f"{self.base_url}/api/chat/completions"
-        LOGGER.info(
-            "Validating OpenWebUI completion support (model=%s url=%s)",
-            model,
-            endpoint,
-        )
         try:
-            response = requests.post(
-                endpoint,
-                headers=self._get_headers(),
+            response = self._post_with_fallback(
+                ["/api/v1/chat/completions", "/api/chat/completions"],
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": "Hello"}],
@@ -226,9 +216,8 @@ class OpenWebUIProvider(LLMProvider):
 
         except requests.exceptions.RequestException as exc:
             LOGGER.error(
-                "Model %s validation request to %s failed: %s",
+                "Model %s validation request failed: %s",
                 model,
-                endpoint,
                 exc,
             )
             return False
@@ -290,9 +279,8 @@ class OpenWebUIProvider(LLMProvider):
             if key not in ("temperature", "num_predict", "max_tokens"):
                 request_body[key] = value
 
-        response = requests.post(
-            f"{self.base_url}/api/chat/completions",
-            headers=self._get_headers(),
+        response = self._post_with_fallback(
+            ["/api/v1/chat/completions", "/api/chat/completions"],
             json=request_body,
             timeout=self.timeout,
         )
@@ -324,6 +312,66 @@ class OpenWebUIProvider(LLMProvider):
             "openwebui"
         """
         return "openwebui"
+
+    def supports_json_mode(self) -> bool:
+        """Check if provider supports native JSON-structured output.
+
+        Returns:
+            False - OpenWebUI does not currently support native JSON mode.
+
+        Note:
+            OpenWebUI relies on prompt engineering for structured outputs.
+            Future versions may add support for response_format parameter.
+        """
+        return False
+
+    def _get_with_fallback(self, paths: List[str], *, timeout: float) -> requests.Response:
+        """GET with fallback paths for different Open WebUI API versions."""
+        last_response: Optional[requests.Response] = None
+        for path in paths:
+            url = f"{self.base_url}{path}"
+            response = requests.get(
+                url,
+                headers=self._get_headers(),
+                timeout=timeout,
+            )
+            last_response = response
+            if response.status_code in (404, 405, 500):
+                continue
+            return response
+        return last_response if last_response is not None else requests.get(
+            f"{self.base_url}{paths[0]}",
+            headers=self._get_headers(),
+            timeout=timeout,
+        )
+
+    def _post_with_fallback(
+        self,
+        paths: List[str],
+        *,
+        json: Dict[str, Any],
+        timeout: float,
+    ) -> requests.Response:
+        """POST with fallback paths for different Open WebUI API versions."""
+        last_response: Optional[requests.Response] = None
+        for path in paths:
+            url = f"{self.base_url}{path}"
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json=json,
+                timeout=timeout,
+            )
+            last_response = response
+            if response.status_code in (404, 405, 500):
+                continue
+            return response
+        return last_response if last_response is not None else requests.post(
+            f"{self.base_url}{paths[0]}",
+            headers=self._get_headers(),
+            json=json,
+            timeout=timeout,
+        )
 
     def _get_headers(self) -> Dict[str, str]:
         """Build HTTP headers for Open WebUI requests.

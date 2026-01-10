@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 from urllib.parse import urlparse
 
@@ -95,12 +96,12 @@ def set_summary_connection(connection: str) -> None:
     """Set the provider connection type used for summarization at runtime.
 
     Args:
-        connection: Provider type (ollama | openai | openwebui).
+        connection: Provider type (ollama | openai | litellm | openwebui).
     """
     global _SUMMARY_CONNECTION  # noqa: PLW0603 - module-level cache is intentional
     normalized = (connection or "").strip().lower()
-    if normalized not in ("ollama", "openai", "openwebui"):
-        raise ValueError(f"Invalid connection type: {connection}. Must be one of: ollama, openai, openwebui")
+    if normalized not in ("ollama", "openai", "litellm", "openwebui"):
+        raise ValueError(f"Invalid connection type: {connection}. Must be one of: ollama, openai, litellm, openwebui")
     _SUMMARY_CONNECTION = normalized
 
 
@@ -114,22 +115,39 @@ def set_summarizer_enabled(enabled: bool) -> None:
 class ConversationAnalysis:
     """Structured analysis result from LLM containing conversation metrics.
 
-    This dataclass represents the extracted insights from analyzing a chat conversation.
+    This dataclass represents the extracted insights from analyzing a chat conversation
+    using a two-pass analysis pipeline: topic extraction + detailed analysis.
+
     The summary field is ALWAYS plain text (never JSON or structured data).
     The outcome field is an optional integer score from 1-5 rating conversation success.
+
     Attributes:
         summary: Plain text summary describing the conversation topic and key points.
                  Guaranteed to be a single-line string, never JSON.
         outcome: Optional integer from 1-5 rating conversation success:
                  1 = Not Successful, 2 = Partially Successful, 3 = Moderately Successful,
                  4 = Mostly Successful, 5 = Fully Successful.
+        tags: Structured tags generated from topic and analysis data, organized by category.
+              Categories: topic_domain, resolution, interaction, quality.
+        resolution_status: Overall resolution state (resolved|pending|abandoned|unclear).
+        quality_notes: Brief objective observation about response quality.
+        primary_topic: Main subject identified in topic extraction phase.
+        domain: Broad category (technical|creative|educational|personal|professional|other).
+        interaction_type: Format (qa|brainstorm|task|conversation|roleplay|other).
         failure_reason: Textual description of why summarization failed, when applicable.
         provider: Identifier for the generator that produced the response (e.g. "ollama").
         prompt: Exact prompt that was sent to the provider, truncated only in logs.
         raw_response: Raw provider response text captured when a failure occurs.
+        failure_category: Category of failure (parse_error|provider_error|timeout|etc).
     """
     summary: str
     outcome: Optional[int] = None
+    tags: Dict[str, List[str]] = field(default_factory=dict)
+    resolution_status: Optional[str] = None
+    quality_notes: Optional[str] = None
+    primary_topic: Optional[str] = None
+    domain: Optional[str] = None
+    interaction_type: Optional[str] = None
     failure_reason: Optional[str] = None
     provider: Optional[str] = None
     prompt: Optional[str] = None
@@ -140,9 +158,11 @@ class ConversationAnalysis:
 class StructuredResponseError(RuntimeError):
     """Raised when a provider response cannot be parsed into the expected structure."""
 
-    def __init__(self, message: str, response_text: str = ""):
+    def __init__(self, message: str, response_text: str = "", prompt: str = "", provider: str = ""):
         super().__init__(message)
         self.response_text = response_text or ""
+        self.prompt = prompt or ""
+        self.provider = provider or ""
 
 
 class SummarizerProviderUnavailableError(RuntimeError):
@@ -169,8 +189,72 @@ SUMMARY_FIELD = "gen_chat_summary"
 OUTCOME_FIELD = "gen_chat_outcome"
 CHUNK_CHAR_LIMIT = max(64, int(os.getenv("SUMMARY_CHUNK_CHAR_LIMIT", "2048")))
 CHUNK_OVERLAP_LINES = max(0, int(os.getenv("SUMMARY_CHUNK_OVERLAP_LINES", "2")))
+
+# Retry configuration
 OLLAMA_RETRY_ATTEMPTS = max(1, int(os.getenv("SUMMARIZER_OLLAMA_RETRY_ATTEMPTS", "3")))
 OLLAMA_RETRY_DELAY_SECONDS = max(0.0, float(os.getenv("SUMMARIZER_OLLAMA_RETRY_DELAY_SECONDS", "3.0")))
+
+# Exponential backoff configuration
+# When enabled, retry delays increase exponentially: base_delay * (2 ** attempt) + jitter
+_exp_backoff_env = os.getenv("SUMMARIZER_USE_EXPONENTIAL_BACKOFF", "true").strip().lower()
+SUMMARIZER_USE_EXPONENTIAL_BACKOFF = _exp_backoff_env in {"1", "true", "yes", "on"}
+SUMMARIZER_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("SUMMARIZER_RETRY_MAX_ATTEMPTS", "5")))
+SUMMARIZER_RETRY_BASE_DELAY = max(0.1, float(os.getenv("SUMMARIZER_RETRY_BASE_DELAY", "1.0")))
+SUMMARIZER_RETRY_MAX_DELAY = max(1.0, float(os.getenv("SUMMARIZER_RETRY_MAX_DELAY", "60.0")))
+
+# Parse retry configuration
+# Number of times to retry LLM call if JSON parsing fails
+SUMMARIZER_PARSE_RETRY_ATTEMPTS = max(1, int(os.getenv("SUMMARIZER_PARSE_RETRY_ATTEMPTS", "2")))
+
+# Error logging configuration
+# When enabled, preserves full prompts and responses for debugging (can be large)
+_preserve_full_errors_env = os.getenv("SUMMARIZER_PRESERVE_FULL_ERRORS", "true").strip().lower()
+SUMMARIZER_PRESERVE_FULL_ERRORS = _preserve_full_errors_env in {"1", "true", "yes", "on"}
+# Maximum size for preserved errors (in characters) to prevent memory issues
+SUMMARIZER_MAX_ERROR_SIZE = max(1000, int(os.getenv("SUMMARIZER_MAX_ERROR_SIZE", "10000")))
+
+def _truncate_for_logging(text: str, max_size: int) -> str:
+    """Truncate text for logging to prevent memory issues.
+
+    Args:
+        text: Text to truncate
+        max_size: Maximum size in characters
+
+    Returns:
+        Truncated text with ellipsis if truncated
+    """
+    if not text:
+        return ""
+    if len(text) <= max_size:
+        return text
+    return text[:max_size] + f"...(truncated, total {len(text)} chars)"
+
+
+def _preserve_error_details(prompt: str, response: str, preserve_full: bool, max_size: int) -> tuple[str, str]:
+    """Preserve error details for debugging based on configuration.
+
+    Args:
+        prompt: Full prompt sent to LLM
+        response: Full response from LLM
+        preserve_full: Whether to preserve full details
+        max_size: Maximum size for each field
+
+    Returns:
+        Tuple of (preserved_prompt, preserved_response)
+    """
+    if not preserve_full:
+        # Only preserve truncated versions
+        return (
+            _truncate_for_logging(prompt, max_size // 2),
+            _truncate_for_logging(response, max_size // 2),
+        )
+
+    # Preserve full details but still apply max_size cap
+    return (
+        _truncate_for_logging(prompt, max_size),
+        _truncate_for_logging(response, max_size),
+    )
+
 
 def _normalize_base_url(value: str) -> str:
     """Normalize a host string into a usable HTTP base URL."""
@@ -334,6 +418,35 @@ def _is_transient_ollama_error(exc: BaseException) -> bool:
     return False
 
 
+def _calculate_retry_delay(attempt: int, base_delay: float, max_delay: float, use_exponential: bool) -> float:
+    """Calculate retry delay with optional exponential backoff and jitter.
+
+    Args:
+        attempt: Current attempt number (1-indexed)
+        base_delay: Base delay in seconds
+        max_delay: Maximum delay in seconds
+        use_exponential: Whether to use exponential backoff
+
+    Returns:
+        Delay in seconds with jitter applied
+    """
+    if not use_exponential:
+        # Fixed delay with small jitter
+        jitter = random.uniform(0, base_delay * 0.1)
+        return base_delay + jitter
+
+    # Exponential backoff: base_delay * (2 ** (attempt - 1))
+    exponential_delay = base_delay * (2 ** (attempt - 1))
+
+    # Cap at max_delay
+    capped_delay = min(exponential_delay, max_delay)
+
+    # Add jitter: random value between 0 and 10% of delay
+    jitter = random.uniform(0, capped_delay * 0.1)
+
+    return capped_delay + jitter
+
+
 def _call_provider_with_retry(
     context: str,
     *,
@@ -341,47 +454,55 @@ def _call_provider_with_retry(
     model: str,
     prompt: str,
 ) -> ConversationAnalysis:
-    """Call LLM provider with retry logic to handle transient connectivity failures."""
-    attempts = max(1, OLLAMA_RETRY_ATTEMPTS)
-    delay = max(0.0, OLLAMA_RETRY_DELAY_SECONDS)
+    """Call LLM provider with retry logic to handle transient connectivity failures.
+
+    Uses exponential backoff with jitter when SUMMARIZER_USE_EXPONENTIAL_BACKOFF is enabled.
+    """
+    # Use new exponential backoff config if enabled, otherwise fall back to legacy config
+    if SUMMARIZER_USE_EXPONENTIAL_BACKOFF:
+        attempts = SUMMARIZER_RETRY_MAX_ATTEMPTS
+        base_delay = SUMMARIZER_RETRY_BASE_DELAY
+        max_delay = SUMMARIZER_RETRY_MAX_DELAY
+        use_exponential = True
+    else:
+        attempts = max(1, OLLAMA_RETRY_ATTEMPTS)
+        base_delay = max(0.0, OLLAMA_RETRY_DELAY_SECONDS)
+        max_delay = base_delay
+        use_exponential = False
+
     last_error: Optional[BaseException] = None
 
     for attempt in range(1, attempts + 1):
         try:
             return _headline_with_provider(context, connection=connection, model=model, prompt=prompt)
         except (StructuredResponseError, OllamaOutOfMemoryError):
+            # Don't retry on parse errors or OOM (handled separately)
             raise
         except OllamaClientError as exc:
             last_error = exc
             if _is_transient_ollama_error(exc) and attempt < attempts:
-                wait_seconds = delay
-                if wait_seconds > 0:
-                    _logger.warning(
-                        "Ollama attempt %d/%d failed due to connectivity issue; retrying in %.1fs",
-                        attempt,
-                        attempts,
-                        wait_seconds,
-                        exc_info=True,
-                    )
-                    time.sleep(wait_seconds)
-                else:
-                    _logger.warning(
-                        "Ollama attempt %d/%d failed due to connectivity issue; retrying immediately",
-                        attempt,
-                        attempts,
-                        exc_info=True,
-                    )
+                wait_seconds = _calculate_retry_delay(attempt, base_delay, max_delay, use_exponential)
+                _logger.warning(
+                    "Provider attempt %d/%d failed due to connectivity issue; retrying in %.2fs (exponential=%s)",
+                    attempt,
+                    attempts,
+                    wait_seconds,
+                    use_exponential,
+                    exc_info=True,
+                )
+                time.sleep(wait_seconds)
                 continue
+
             if _is_transient_ollama_error(exc):
                 message = (
-                    f"Ollama became unreachable after {attempts} attempts. "
+                    f"Provider became unreachable after {attempts} attempts. "
                     "Verify the service is running and accessible."
                 )
                 raise SummarizerProviderUnavailableError(
-                    "ollama",
+                    connection,
                     message,
                     attempts=attempts,
-                    delay_seconds=delay,
+                    delay_seconds=base_delay,
                     last_error=str(exc),
                 ) from exc
             raise
@@ -661,6 +782,46 @@ _HEADLINE_USER_MOD_TMPL = (
 "{{\"summary\": \"your summary here\", \"outcome\": 4}}"
 )
 
+# ==============================================================================
+# Two-Pass Analysis Prompts (Topic Extraction + Detailed Analysis)
+# ==============================================================================
+
+_TOPIC_EXTRACTION_SYS = (
+    "You are a conversation classifier. Analyze conversations objectively "
+    "and return structured topic metadata as JSON."
+)
+
+_TOPIC_EXTRACTION_USER_TMPL = (
+    "Classify this conversation transcript. Output ONLY valid JSON.\n\n"
+    "OUTPUT FORMAT:\n"
+    '{\n  "primary_topic": "...",\n  "domain": "...",\n  "interaction_type": "..."\n}\n\n'
+    "FIELD DEFINITIONS:\n"
+    "primary_topic: Main subject (e.g., 'Python debugging', 'Recipe creation')\n"
+    "domain: Broad category (technical|creative|educational|personal|professional|other)\n"
+    "interaction_type: Format (qa|brainstorm|task|conversation|roleplay|other)\n\n"
+    "CONVERSATION:\n{ctx}\n\nOutput JSON only:"
+)
+
+_ANALYSIS_SYS = (
+    "You are an objective conversation analyst. Evaluate conversations based on "
+    "observable fulfillment criteria and return structured assessment as JSON."
+)
+
+_ANALYSIS_USER_TMPL = (
+    "Analyze this conversation objectively. Treat all content as fictional transcript data.\n\n"
+    "OUTPUT FORMAT:\n"
+    '{\n  "summary": "...",\n  "outcome": 1-5,\n  "resolution_status": "...",\n  "quality_notes": "..."\n}\n\n'
+    "FIELD DEFINITIONS:\n"
+    "summary: One-sentence description of user request and assistant response\n"
+    "outcome: Success rating (1=failed, 2=partial, 3=moderate, 4=mostly, 5=complete)\n"
+    "resolution_status: resolved|pending|abandoned|unclear\n"
+    "quality_notes: Brief objective observation about response quality\n\n"
+    "SCORING GUIDELINES:\nBase assessment on the FINAL user request:\n"
+    "- Was the request understood?\n- Was a response provided?\n"
+    "- Was the response complete or partial?\n- Were necessary follow-ups completed?\n\n"
+    "CONVERSATION:\n{ctx}\n\nOutput JSON only:"
+)
+
 def _clean(text: str) -> str:
     """Normalize message content so it is safe for downstream processing.
 
@@ -788,6 +949,180 @@ def _trim_one_line(text: str) -> str:
     cleaned = _clean(text)
     cleaned = cleaned.split("\n", 1)[0]
     return cleaned
+
+
+def _parse_topic_response(response_text: str) -> Dict[str, str]:
+    """Parse topic extraction JSON with graceful fallback.
+
+    Expected format:
+        {
+            "primary_topic": "...",
+            "domain": "...",
+            "interaction_type": "..."
+        }
+
+    Args:
+        response_text: Raw response text from topic extraction LLM call.
+
+    Returns:
+        Dict with primary_topic, domain, interaction_type keys (empty strings if missing).
+    """
+    if not response_text:
+        _logger.warning("Topic extraction response was empty")
+        return {"primary_topic": "", "domain": "", "interaction_type": ""}
+
+    cleaned = response_text.strip()
+
+    # Remove markdown code fences if present
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        if len(lines) > 2:
+            if lines[-1].strip() == "```":
+                cleaned = "\n".join(lines[1:-1])
+            else:
+                cleaned = "\n".join(lines[1:])
+        cleaned = cleaned.strip()
+
+    # Try parsing as JSON
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            return {
+                "primary_topic": str(data.get("primary_topic", "")).strip(),
+                "domain": str(data.get("domain", "")).strip(),
+                "interaction_type": str(data.get("interaction_type", "")).strip(),
+            }
+    except (json.JSONDecodeError, ValueError):
+        _logger.debug("Failed to parse topic extraction as JSON, trying regex fallback")
+
+    # Regex fallback for malformed JSON
+    result = {"primary_topic": "", "domain": "", "interaction_type": ""}
+
+    topic_match = re.search(r'"primary_topic"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
+    if topic_match:
+        try:
+            result["primary_topic"] = json.loads(f'"{topic_match.group(1)}"')
+        except json.JSONDecodeError:
+            result["primary_topic"] = topic_match.group(1).replace('\\"', '"')
+
+    domain_match = re.search(r'"domain"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
+    if domain_match:
+        try:
+            result["domain"] = json.loads(f'"{domain_match.group(1)}"')
+        except json.JSONDecodeError:
+            result["domain"] = domain_match.group(1).replace('\\"', '"')
+
+    interaction_match = re.search(r'"interaction_type"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
+    if interaction_match:
+        try:
+            result["interaction_type"] = json.loads(f'"{interaction_match.group(1)}"')
+        except json.JSONDecodeError:
+            result["interaction_type"] = interaction_match.group(1).replace('\\"', '"')
+
+    if any(result.values()):
+        _logger.warning("Recovered partial topic data from malformed JSON: %s", result)
+        return result
+
+    _logger.error("Failed to parse topic extraction response: %s", response_text[:200])
+    return {"primary_topic": "", "domain": "", "interaction_type": ""}
+
+
+def _parse_analysis_response(response_text: str) -> Dict[str, object]:
+    """Parse detailed analysis JSON with graceful fallback.
+
+    Expected format:
+        {
+            "summary": "...",
+            "outcome": 1-5,
+            "resolution_status": "...",
+            "quality_notes": "..."
+        }
+
+    Args:
+        response_text: Raw response text from analysis LLM call.
+
+    Returns:
+        Dict with summary, outcome, resolution_status, quality_notes keys (defaults if missing).
+    """
+    if not response_text:
+        _logger.warning("Analysis response was empty")
+        return {"summary": "", "outcome": None, "resolution_status": "", "quality_notes": ""}
+
+    cleaned = response_text.strip()
+
+    # Remove markdown code fences if present
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        if len(lines) > 2:
+            if lines[-1].strip() == "```":
+                cleaned = "\n".join(lines[1:-1])
+            else:
+                cleaned = "\n".join(lines[1:])
+        cleaned = cleaned.strip()
+
+    # Try parsing as JSON
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            outcome = data.get("outcome")
+            if outcome is not None:
+                try:
+                    outcome = int(outcome)
+                    if outcome < 1 or outcome > 5:
+                        _logger.warning("Outcome score %d out of range, ignoring", outcome)
+                        outcome = None
+                except (ValueError, TypeError):
+                    _logger.warning("Invalid outcome value type: %s", type(outcome))
+                    outcome = None
+
+            return {
+                "summary": str(data.get("summary", "")).strip(),
+                "outcome": outcome,
+                "resolution_status": str(data.get("resolution_status", "")).strip(),
+                "quality_notes": str(data.get("quality_notes", "")).strip(),
+            }
+    except (json.JSONDecodeError, ValueError):
+        _logger.debug("Failed to parse analysis as JSON, trying regex fallback")
+
+    # Regex fallback for malformed JSON
+    result: Dict[str, object] = {"summary": "", "outcome": None, "resolution_status": "", "quality_notes": ""}
+
+    summary_match = re.search(r'"summary"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
+    if summary_match:
+        try:
+            result["summary"] = json.loads(f'"{summary_match.group(1)}"')
+        except json.JSONDecodeError:
+            result["summary"] = summary_match.group(1).replace('\\"', '"')
+
+    outcome_match = re.search(r'"outcome"\s*:\s*("?)(-?\d+)\1', cleaned)
+    if outcome_match:
+        try:
+            outcome_val = int(outcome_match.group(2))
+            if 1 <= outcome_val <= 5:
+                result["outcome"] = outcome_val
+        except ValueError:
+            pass
+
+    status_match = re.search(r'"resolution_status"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
+    if status_match:
+        try:
+            result["resolution_status"] = json.loads(f'"{status_match.group(1)}"')
+        except json.JSONDecodeError:
+            result["resolution_status"] = status_match.group(1).replace('\\"', '"')
+
+    notes_match = re.search(r'"quality_notes"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
+    if notes_match:
+        try:
+            result["quality_notes"] = json.loads(f'"{notes_match.group(1)}"')
+        except json.JSONDecodeError:
+            result["quality_notes"] = notes_match.group(1).replace('\\"', '"')
+
+    if result["summary"] or result["outcome"] is not None:
+        _logger.warning("Recovered partial analysis data from malformed JSON: %s", result)
+        return result
+
+    _logger.error("Failed to parse analysis response: %s", response_text[:200])
+    return {"summary": "", "outcome": None, "resolution_status": "", "quality_notes": ""}
 
 
 def _parse_structured_response(response_text: str) -> ConversationAnalysis:
@@ -942,9 +1277,14 @@ def _headline_with_provider(
     Uses the ProviderRegistry to access the appropriate provider (Ollama, OpenAI, or Open WebUI)
     and generate a structured analysis with summary and outcome fields.
 
+    Implements parse retry logic:
+    1. First attempt: Normal generation
+    2. If parse fails and provider supports JSON mode: Retry with JSON mode enabled
+    3. If still fails: Retry with simplified prompt emphasizing JSON format
+
     Args:
         context: Condensed conversation text to analyze.
-        connection: Provider type (ollama | openai | openwebui). Defaults to ollama.
+        connection: Provider type (ollama | openai | openwebui | litellm). Defaults to ollama.
         model: Model identifier to use for generation. Defaults to get_summary_model().
         prompt: Optional custom prompt. Defaults to _HEADLINE_USER_TMPL.
 
@@ -976,52 +1316,143 @@ def _headline_with_provider(
         raise RuntimeError(f"Provider {connection} is not available: {reason}")
 
     # Prepare generation options
+    temperature = get_summary_temperature()
+    if connection == "openai" and active_model.startswith("gpt-5") and temperature != 1.0:
+        _logger.info(
+            "Adjusting summarizer temperature for model=%s provider=%s (from=%s to=1.0)",
+            active_model,
+            connection,
+            temperature,
+        )
+        temperature = 1.0
+
     options = {
-        "temperature": get_summary_temperature(),
+        "temperature": temperature,
         "num_predict": 256,  # Allow sufficient tokens for complete JSON response with summary text
-        "num_ctx": 1024,
     }
+    if connection == "ollama":
+        options["num_ctx"] = 1024
 
-    # Generate using provider
-    try:
-        result = provider.generate(
-            model=active_model,
-            prompt=prompt_text,
-            system=_HEADLINE_SYS,
-            options=options,
-        )
-    except Exception as exc:
-        _logger.error(
-            "Provider %s generation failed: %s",
-            connection,
-            exc,
-            exc_info=True,
-        )
-        raise
+    # Check if provider supports JSON mode
+    supports_json_mode = provider.supports_json_mode()
+    max_parse_attempts = SUMMARIZER_PARSE_RETRY_ATTEMPTS
+    last_parse_error: Optional[StructuredResponseError] = None
 
-    raw_text = result.content or ""
-    if not raw_text.strip():
-        _logger.warning(
-            "Provider %s returned empty response model=%s",
-            connection,
-            result.model,
-        )
+    for parse_attempt in range(1, max_parse_attempts + 1):
+        # Enable JSON mode on retry if supported
+        current_options = options.copy()
+        if parse_attempt > 1 and supports_json_mode:
+            current_options["json_mode"] = True
+            _logger.info(
+                "Parse retry attempt %d/%d: Enabling JSON mode for provider=%s",
+                parse_attempt,
+                max_parse_attempts,
+                connection,
+            )
 
-    analysis = _parse_structured_response(raw_text)
-    analysis.provider = connection
-    analysis.prompt = prompt_text
-    analysis.raw_response = result.content or ""
+        # Modify prompt on final retry to emphasize JSON format
+        current_prompt = prompt_text
+        if parse_attempt == max_parse_attempts and parse_attempt > 1:
+            current_prompt = (
+                "CRITICAL: Your response MUST be valid JSON only. No explanation, no markdown, just pure JSON.\n\n"
+                + prompt_text
+            )
+            _logger.info("Parse retry attempt %d/%d: Using simplified prompt", parse_attempt, max_parse_attempts)
 
-    _logger.debug(
-        "Provider %s analysis response model=%s chars=%d summary=%r outcome=%s",
-        connection,
-        result.model,
-        len(result.content or ""),
-        analysis.summary[:120] if analysis.summary else "",
-        analysis.outcome,
-    )
+        # Generate using provider
+        try:
+            result = provider.generate(
+                model=active_model,
+                prompt=current_prompt,
+                system=_HEADLINE_SYS,
+                options=current_options,
+            )
+        except Exception as exc:
+            _logger.error(
+                "Provider %s generation failed: %s",
+                connection,
+                exc,
+                exc_info=True,
+            )
+            raise
 
-    return analysis
+        raw_text = result.content or ""
+        if not raw_text.strip():
+            _logger.warning(
+                "Provider %s returned empty response model=%s",
+                connection,
+                result.model,
+            )
+
+        # Try to parse the response
+        try:
+            analysis = _parse_structured_response(raw_text)
+            analysis.provider = connection
+            analysis.prompt = current_prompt
+            analysis.raw_response = result.content or ""
+
+            _logger.debug(
+                "Provider %s analysis response model=%s chars=%d summary=%r outcome=%s (parse_attempt=%d)",
+                connection,
+                result.model,
+                len(result.content or ""),
+                analysis.summary[:120] if analysis.summary else "",
+                analysis.outcome,
+                parse_attempt,
+            )
+
+            return analysis
+
+        except StructuredResponseError as exc:
+            last_parse_error = exc
+
+            # Preserve error details for debugging
+            preserved_prompt, preserved_response = _preserve_error_details(
+                current_prompt,
+                raw_text,
+                SUMMARIZER_PRESERVE_FULL_ERRORS,
+                SUMMARIZER_MAX_ERROR_SIZE,
+            )
+
+            if parse_attempt < max_parse_attempts:
+                _logger.warning(
+                    "Parse attempt %d/%d failed for provider=%s: %s. Retrying...",
+                    parse_attempt,
+                    max_parse_attempts,
+                    connection,
+                    str(exc),
+                    extra={
+                        "prompt_preview": preserved_prompt[:500],
+                        "response_preview": preserved_response[:500],
+                        "provider": connection,
+                        "model": active_model,
+                        "parse_attempt": parse_attempt,
+                    },
+                )
+            else:
+                _logger.error(
+                    "All %d parse attempts failed for provider=%s. Last error: %s",
+                    max_parse_attempts,
+                    connection,
+                    str(exc),
+                    extra={
+                        "full_prompt": preserved_prompt,
+                        "full_response": preserved_response,
+                        "provider": connection,
+                        "model": active_model,
+                        "parse_attempts": max_parse_attempts,
+                    },
+                )
+                # Enhance the error with full context before re-raising
+                exc.prompt = current_prompt
+                exc.provider = connection
+                # Re-raise the enhanced error
+                raise
+
+    # Should never reach here, but just in case
+    if last_parse_error:
+        raise last_parse_error
+    raise StructuredResponseError("Failed to generate valid response after all retries", "")
 
 
 def _headline_with_ollama(
@@ -1440,7 +1871,7 @@ def _summarize_with_chunks(
             analysis.outcome,
         )
         return analysis
-    return ConversationAnalysis(summary="", outcome=None)
+    return analysis
 
 
 def summarize_chats(

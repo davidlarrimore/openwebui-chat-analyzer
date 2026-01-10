@@ -171,7 +171,24 @@ class OllamaClient:
         system: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
         keep_alive: str | int | None = None,
+        format: Optional[str] = None,
     ) -> OllamaGenerateResult:
+        """Generate a completion from Ollama.
+
+        Args:
+            prompt: The prompt to send to the model
+            model: Model name to use
+            system: Optional system prompt
+            options: Optional generation parameters (temperature, num_predict, etc.)
+            keep_alive: Keep-alive duration for model in memory
+            format: Response format - set to "json" for JSON mode (Ollama 0.1.34+)
+
+        Returns:
+            OllamaGenerateResult with model response
+
+        Note:
+            The format parameter enables structured JSON output (requires compatible model).
+        """
         payload: Dict[str, Any] = {
             "model": model or "",
             "prompt": prompt,
@@ -181,6 +198,8 @@ class OllamaClient:
             payload["system"] = system
         if options:
             payload["options"] = options
+        if format:
+            payload["format"] = format
         if keep_alive is not None:
             normalized_keep_alive: Any
             if isinstance(keep_alive, str):
@@ -193,11 +212,12 @@ class OllamaClient:
                 normalized_keep_alive = keep_alive
             payload["keep_alive"] = normalized_keep_alive
         LOGGER.debug(
-            "Calling Ollama generate model=%s prompt_chars=%d options_keys=%s keep_alive=%s",
+            "Calling Ollama generate model=%s prompt_chars=%d options_keys=%s keep_alive=%s format=%s",
             payload.get("model") or "",
             len(prompt),
             tuple(sorted((options or {}).keys())),
             payload.get("keep_alive"),
+            format,
         )
 
         response = self._request("POST", "/api/generate", json=payload)

@@ -171,7 +171,7 @@ class OllamaProvider(LLMProvider):
             model: Model name to use
             prompt: User prompt
             system: Optional system prompt
-            options: Optional generation parameters (temperature, num_predict, etc.)
+            options: Optional generation parameters (temperature, num_predict, json_mode, etc.)
 
         Returns:
             GenerateResult with generated content and metadata.
@@ -180,16 +180,28 @@ class OllamaProvider(LLMProvider):
             OllamaClientError: If generation fails.
 
         Note:
-            Passes options directly to Ollama (temperature, num_predict, num_ctx, etc.)
+            - Passes options directly to Ollama (temperature, num_predict, num_ctx, etc.)
+            - Supports json_mode option - sets format="json" for structured output
         """
         LOGGER.debug("Generating completion with Ollama model: %s", model)
+
+        options = options or {}
+
+        # Extract json_mode from options (not passed to Ollama options)
+        format_param = "json" if options.get("json_mode") else None
+        if format_param:
+            LOGGER.debug("Enabled JSON mode for Ollama model %s", model)
+
+        # Filter out json_mode from options (it's not an Ollama option)
+        ollama_options = {k: v for k, v in options.items() if k != "json_mode"}
 
         result = self._client.generate(
             model=model,
             prompt=prompt,
             system=system,
-            options=options,
+            options=ollama_options if ollama_options else None,
             keep_alive=config.OLLAMA_KEEP_ALIVE,
+            format=format_param,
         )
 
         return GenerateResult(
@@ -206,3 +218,15 @@ class OllamaProvider(LLMProvider):
             "ollama"
         """
         return "ollama"
+
+    def supports_json_mode(self) -> bool:
+        """Check if provider supports native JSON-structured output.
+
+        Returns:
+            True - Ollama supports format="json" parameter (v0.1.34+).
+
+        Note:
+            JSON mode is supported by most modern Ollama models when using
+            the format="json" parameter. The model must support structured output.
+        """
+        return True

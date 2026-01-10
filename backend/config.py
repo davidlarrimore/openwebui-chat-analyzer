@@ -60,6 +60,37 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1").rstrip("/")
 
+# LiteLLM Configuration
+LITELLM_API_KEY = os.getenv("LITELLM_API_KEY", "")
+LITELLM_API_BASE = os.getenv("LITELLM_API_BASE", "http://localhost:4000").rstrip("/")
+
+OPENWEBUI_TIMEOUT_SECONDS = float(os.getenv("OWUI_OPENWEBUI_TIMEOUT_SECONDS", "30"))
+
+# =========================================================================
+# Summarizer Configuration
+# =========================================================================
+
+# Legacy retry configuration (for backward compatibility)
+SUMMARIZER_OLLAMA_RETRY_ATTEMPTS = max(1, int(os.getenv("SUMMARIZER_OLLAMA_RETRY_ATTEMPTS", "3")))
+SUMMARIZER_OLLAMA_RETRY_DELAY_SECONDS = max(0.0, float(os.getenv("SUMMARIZER_OLLAMA_RETRY_DELAY_SECONDS", "3.0")))
+
+# Exponential backoff configuration
+# When enabled, retry delays increase exponentially: base_delay * (2 ** attempt) + jitter
+SUMMARIZER_USE_EXPONENTIAL_BACKOFF = os.getenv("SUMMARIZER_USE_EXPONENTIAL_BACKOFF", "true").strip().lower() in {"1", "true", "yes", "on"}
+SUMMARIZER_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("SUMMARIZER_RETRY_MAX_ATTEMPTS", "5")))
+SUMMARIZER_RETRY_BASE_DELAY = max(0.1, float(os.getenv("SUMMARIZER_RETRY_BASE_DELAY", "1.0")))
+SUMMARIZER_RETRY_MAX_DELAY = max(1.0, float(os.getenv("SUMMARIZER_RETRY_MAX_DELAY", "60.0")))
+
+# Parse retry configuration
+# Number of times to retry LLM call if JSON parsing fails (enables JSON mode on retry)
+SUMMARIZER_PARSE_RETRY_ATTEMPTS = max(1, int(os.getenv("SUMMARIZER_PARSE_RETRY_ATTEMPTS", "2")))
+
+# Error logging configuration
+# When enabled, preserves full prompts and responses for debugging (can be large)
+SUMMARIZER_PRESERVE_FULL_ERRORS = os.getenv("SUMMARIZER_PRESERVE_FULL_ERRORS", "true").strip().lower() in {"1", "true", "yes", "on"}
+# Maximum size for preserved errors (in characters) to prevent memory issues
+SUMMARIZER_MAX_ERROR_SIZE = max(1000, int(os.getenv("SUMMARIZER_MAX_ERROR_SIZE", "10000")))
+
 
 def _normalize_openwebui_base(value: Optional[str]) -> str:
     """Normalize a configured Open WebUI host into a usable base URL."""

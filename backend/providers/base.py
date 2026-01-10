@@ -138,6 +138,22 @@ class LLMProvider(ABC):
         """Return the provider identifier.
 
         Returns:
-            One of: "ollama", "openai", "openwebui"
+            One of: "ollama", "openai", "openwebui", "litellm"
+        """
+        pass
+
+    @abstractmethod
+    def supports_json_mode(self) -> bool:
+        """Check if provider supports native JSON-structured output.
+
+        Returns:
+            True if provider supports response_format or similar JSON mode,
+            False if provider relies on prompt engineering only.
+
+        Note:
+            - OpenAI: Returns True (supports response_format={"type": "json_object"})
+            - LiteLLM: Returns True (supports response_format passthrough)
+            - Ollama: Returns True if version supports format="json" parameter
+            - OpenWebUI: Returns False (no native structured output support)
         """
         pass
