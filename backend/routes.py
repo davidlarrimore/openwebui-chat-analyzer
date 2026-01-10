@@ -1181,17 +1181,22 @@ def get_available_metrics(
     """Get list of available metrics that can be extracted.
 
     Sprint 2: Returns metadata about each available metric extractor.
+    Sprint 4: Enhanced with enabled status and sprint information.
 
     Returns:
-        Dictionary with available metrics and their descriptions
+        Dictionary with available metrics and their metadata
 
     Example Response:
         {
             "metrics": [
-                {"name": "summary", "description": "One-line conversation summary"},
-                {"name": "outcome", "description": "1-5 outcome score with reasoning"},
-                {"name": "tags", "description": "Topic tags for categorization"},
-                {"name": "classification", "description": "Domain and resolution status"}
+                {
+                    "name": "summary",
+                    "description": "One-line conversation summary",
+                    "sprint": 2,
+                    "enabled_by_default": true,
+                    "requires_messages": false
+                },
+                ...
             ]
         }
     """
@@ -1200,18 +1205,42 @@ def get_available_metrics(
             {
                 "name": "summary",
                 "description": "One-line conversation summary",
+                "sprint": 2,
+                "enabled_by_default": True,
+                "requires_messages": False,
+                "features": ["quality_validation"],
             },
             {
                 "name": "outcome",
-                "description": "Outcome score (1-5) with reasoning",
+                "description": "Outcome score (1-5) with multi-factor evaluation",
+                "sprint": 2,
+                "enabled_by_default": True,
+                "requires_messages": False,
+                "features": ["multi_factor_scoring", "completeness", "accuracy", "helpfulness"],
             },
             {
                 "name": "tags",
                 "description": "Topic tags for categorization and filtering",
+                "sprint": 2,
+                "enabled_by_default": True,
+                "requires_messages": False,
+                "features": [],
             },
             {
                 "name": "classification",
                 "description": "Domain type and resolution status",
+                "sprint": 2,
+                "enabled_by_default": True,
+                "requires_messages": False,
+                "features": [],
+            },
+            {
+                "name": "dropoff",
+                "description": "Conversation completion and abandonment detection",
+                "sprint": 3,
+                "enabled_by_default": False,
+                "requires_messages": True,
+                "features": ["abandonment_patterns", "question_detection"],
             },
         ]
     }
