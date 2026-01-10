@@ -626,6 +626,89 @@ class DatabaseStorage:
             log_parts.append(f"{len(outcomes)} with outcomes")
         LOGGER.info("Updated summaries for %s", ", ".join(log_parts))
 
+    def update_chat_metrics(
+        self,
+        chat_id: str,
+        metrics: Dict[str, Any],
+        extraction_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Update conversation metrics in chat metadata JSON field.
+
+        Sprint 2: Stores extended metrics in the 'meta' JSON field with flexible schema.
+        Preserves existing gen_chat_summary and gen_chat_outcome fields for backward
+        compatibility while adding richer metrics data.
+
+        Args:
+            chat_id: Chat ID to update
+            metrics: Dictionary of metric data (summary, outcome, tags, etc.)
+            extraction_metadata: Optional metadata about the extraction process
+        """
+        with session_scope() as session:
+            # Fetch existing chat record
+            chat = session.execute(
+                select(ChatRecord).where(ChatRecord.chat_id == chat_id)
+            ).scalar_one_or_none()
+
+            if not chat:
+                LOGGER.warning("Chat %s not found, cannot update metrics", chat_id)
+                return
+
+            # Get existing meta or start fresh
+            existing_meta = chat.meta or {}
+
+            # Build metrics structure
+            metrics_data = existing_meta.get("metrics", {})
+            metrics_data.update(metrics)
+
+            # Build extraction metadata structure
+            if extraction_metadata:
+                metadata_data = existing_meta.get("extraction_metadata", {})
+                metadata_data.update(extraction_metadata)
+                existing_meta["extraction_metadata"] = metadata_data
+
+            # Store metrics
+            existing_meta["metrics"] = metrics_data
+
+            # Update chat record
+            values = {"meta": existing_meta}
+
+            # Also update legacy fields for backward compatibility
+            if "summary" in metrics:
+                values["gen_chat_summary"] = metrics["summary"]
+            if "outcome" in metrics:
+                values["gen_chat_outcome"] = metrics["outcome"]
+
+            session.execute(
+                update(ChatRecord).where(ChatRecord.chat_id == chat_id).values(**values)
+            )
+
+        LOGGER.debug(
+            "Updated metrics for chat %s: %s",
+            chat_id,
+            ", ".join(metrics.keys()),
+        )
+
+    def get_chat_metrics(self, chat_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve conversation metrics from chat metadata.
+
+        Sprint 2: Retrieves extended metrics from the 'meta' JSON field.
+
+        Args:
+            chat_id: Chat ID to retrieve metrics for
+
+        Returns:
+            Dictionary of metrics data, or None if chat not found or no metrics exist
+        """
+        with session_scope() as session:
+            chat = session.execute(
+                select(ChatRecord).where(ChatRecord.chat_id == chat_id)
+            ).scalar_one_or_none()
+
+            if not chat or not chat.meta:
+                return None
+
+            return chat.meta.get("metrics")
+
     def wipe_chats_and_messages(self) -> None:
         """Transactionally wipe only chats and messages (for full sync).
 

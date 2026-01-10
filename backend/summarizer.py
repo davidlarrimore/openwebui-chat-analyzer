@@ -2104,3 +2104,238 @@ def attach_summaries(
 ) -> None:
     """Convenience wrapper that mutates chat dictionaries with generated summaries."""
     summarize_chats(chats, messages)
+
+
+# =========================================================================
+# Sprint 2: Multi-Metric Extraction Orchestration
+# =========================================================================
+
+from backend.metrics.base import MetricExtractor, MetricResult
+from backend.metrics.summary import SummaryExtractor
+from backend.metrics.outcome import OutcomeExtractor
+from backend.metrics.tags import TagsExtractor
+from backend.metrics.classification import ClassificationExtractor
+from datetime import datetime
+
+
+# Registry of available metric extractors
+# TODO: Sprint 4 - Add per-metric model selection configuration
+_METRIC_EXTRACTORS: Dict[str, MetricExtractor] = {
+    "summary": SummaryExtractor(),
+    "outcome": OutcomeExtractor(),
+    "tags": TagsExtractor(),
+    "classification": ClassificationExtractor(),
+}
+
+
+def extract_metrics(
+    context: str,
+    chat_id: str,
+    metrics_to_extract: Optional[List[str]] = None,
+    connection: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Extract multiple metrics from conversation using specialized extractors.
+
+    Sprint 2: Orchestrates multi-metric extraction with selective execution.
+    Each metric gets its own LLM call with a specialized prompt optimized for
+    that specific metric. Supports graceful failure (partial results on error).
+
+    Args:
+        context: Conversation text (pre-processed, salient messages)
+        chat_id: Chat ID for logging/tracking
+        metrics_to_extract: List of metric names to extract, or None for all
+        connection: Provider connection type (defaults to current summarizer settings)
+        model: Model name (defaults to current summarizer settings)
+
+    Returns:
+        Tuple of (metrics_data, extraction_metadata):
+        - metrics_data: Dict mapping metric names to extracted values
+        - extraction_metadata: Dict with extraction process details
+
+    Example:
+        metrics, metadata = extract_metrics(
+            context="user: Help with Python\nassistant: Here's a guide...",
+            chat_id="chat-123",
+            metrics_to_extract=["summary", "outcome", "tags"]
+        )
+        # metrics = {"summary": "Python help", "outcome": 5, "tags": ["python"]}
+        # metadata = {"timestamp": "...", "provider": "ollama", ...}
+    """
+    # Determine which metrics to run
+    if metrics_to_extract is None:
+        metrics_to_extract = list(_METRIC_EXTRACTORS.keys())
+    else:
+        # Validate requested metrics
+        invalid_metrics = [m for m in metrics_to_extract if m not in _METRIC_EXTRACTORS]
+        if invalid_metrics:
+            _logger.warning(
+                "Invalid metrics requested for chat %s: %s",
+                chat_id,
+                invalid_metrics,
+            )
+            metrics_to_extract = [
+                m for m in metrics_to_extract if m in _METRIC_EXTRACTORS
+            ]
+
+    if not metrics_to_extract:
+        _logger.warning("No valid metrics to extract for chat %s", chat_id)
+        return {}, {}
+
+    # Get provider and model settings
+    if connection is None:
+        connection = get_connection_type()
+    if model is None:
+        model = get_summary_model()
+
+    _logger.info(
+        "Extracting metrics for chat %s: %s (provider=%s model=%s)",
+        chat_id,
+        ", ".join(metrics_to_extract),
+        connection,
+        model,
+    )
+
+    # Get provider
+    registry = get_provider_registry()
+    provider = registry.get_provider(connection)
+
+    if not provider.is_available():
+        error_msg = f"Provider {connection} is not available: {provider.get_unavailable_reason()}"
+        _logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+    # Extract each metric sequentially
+    metrics_data: Dict[str, Any] = {}
+    models_used: Dict[str, str] = {}
+    extraction_errors: List[str] = []
+
+    for metric_name in metrics_to_extract:
+        extractor = _METRIC_EXTRACTORS[metric_name]
+
+        try:
+            result = extractor.extract(
+                context=context,
+                provider=provider,
+                model=model,
+                provider_name=connection,
+            )
+
+            if result.success and result.data:
+                # Merge metric data into results
+                metrics_data.update(result.data)
+                models_used[metric_name] = result.model or model
+                _logger.debug(
+                    "Successfully extracted metric=%s for chat=%s",
+                    metric_name,
+                    chat_id,
+                )
+            else:
+                extraction_errors.append(metric_name)
+                _logger.warning(
+                    "Failed to extract metric=%s for chat=%s: %s",
+                    metric_name,
+                    chat_id,
+                    result.error,
+                )
+
+        except Exception as e:
+            extraction_errors.append(metric_name)
+            _logger.error(
+                "Unexpected error extracting metric=%s for chat=%s: %s",
+                metric_name,
+                chat_id,
+                e,
+                exc_info=True,
+            )
+
+    # Build extraction metadata
+    extraction_metadata = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "provider": connection,
+        "models_used": models_used,
+        "metrics_extracted": list(metrics_data.keys()),
+        "extraction_errors": extraction_errors,
+    }
+
+    _logger.info(
+        "Completed metric extraction for chat %s: %d/%d successful",
+        chat_id,
+        len(metrics_data),
+        len(metrics_to_extract),
+    )
+
+    return metrics_data, extraction_metadata
+
+
+def extract_and_store_metrics(
+    chat_id: str,
+    messages: Sequence[Mapping[str, object]],
+    metrics_to_extract: Optional[List[str]] = None,
+    storage: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Extract metrics and store them in the database.
+
+    Sprint 2: Convenience function that combines metric extraction with
+    storage persistence. Uses the same salient context building as the
+    legacy summarizer for consistency.
+
+    Args:
+        chat_id: Chat ID to process
+        messages: Chat messages for this conversation
+        metrics_to_extract: List of metric names, or None for all
+        storage: DatabaseStorage instance (optional, will import if not provided)
+
+    Returns:
+        Dictionary with extraction results and status
+
+    Example:
+        result = extract_and_store_metrics(
+            chat_id="chat-123",
+            messages=[...],
+            metrics_to_extract=["summary", "outcome"]
+        )
+        # result = {"success": True, "metrics_extracted": ["summary", "outcome"], ...}
+    """
+    if storage is None:
+        from backend.storage import get_storage
+
+        storage = get_storage()
+
+    try:
+        # Build salient context (reuse existing logic)
+        context = _build_salient_context(messages)
+
+        # Extract metrics
+        metrics_data, extraction_metadata = extract_metrics(
+            context=context,
+            chat_id=chat_id,
+            metrics_to_extract=metrics_to_extract,
+        )
+
+        # Store metrics in database
+        storage.update_chat_metrics(
+            chat_id=chat_id,
+            metrics=metrics_data,
+            extraction_metadata=extraction_metadata,
+        )
+
+        return {
+            "success": True,
+            "chat_id": chat_id,
+            "metrics_extracted": list(metrics_data.keys()),
+            "extraction_errors": extraction_metadata.get("extraction_errors", []),
+        }
+
+    except Exception as e:
+        _logger.error(
+            "Failed to extract and store metrics for chat %s: %s",
+            chat_id,
+            e,
+            exc_info=True,
+        )
+        return {
+            "success": False,
+            "chat_id": chat_id,
+            "error": str(e),
+        }
