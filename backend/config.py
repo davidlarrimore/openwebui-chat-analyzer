@@ -91,6 +91,16 @@ SUMMARIZER_PRESERVE_FULL_ERRORS = os.getenv("SUMMARIZER_PRESERVE_FULL_ERRORS", "
 # Maximum size for preserved errors (in characters) to prevent memory issues
 SUMMARIZER_MAX_ERROR_SIZE = max(1000, int(os.getenv("SUMMARIZER_MAX_ERROR_SIZE", "10000")))
 
+# Sprint 3: Quality validation and drop-off detection configuration
+# Minimum keyword overlap ratio for summary quality validation (0.0-1.0)
+SUMMARIZER_MIN_KEYWORD_OVERLAP = max(0.0, min(1.0, float(os.getenv("SUMMARIZER_MIN_KEYWORD_OVERLAP", "0.15"))))
+# Enable quality validation for summaries (adds quality_score and quality_notes to results)
+SUMMARIZER_ENABLE_QUALITY_VALIDATION = os.getenv("SUMMARIZER_ENABLE_QUALITY_VALIDATION", "true").strip().lower() in {"1", "true", "yes", "on"}
+# Enable drop-off detection (analyzes whether conversations ended naturally)
+SUMMARIZER_ENABLE_DROPOFF_DETECTION = os.getenv("SUMMARIZER_ENABLE_DROPOFF_DETECTION", "true").strip().lower() in {"1", "true", "yes", "on"}
+# Number of recent messages to analyze for drop-off detection
+SUMMARIZER_DROPOFF_LOOKBACK_MESSAGES = max(2, int(os.getenv("SUMMARIZER_DROPOFF_LOOKBACK_MESSAGES", "4")))
+
 
 def _normalize_openwebui_base(value: Optional[str]) -> str:
     """Normalize a configured Open WebUI host into a usable base URL."""
