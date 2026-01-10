@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, CheckCircle2, XCircle, AlertTriangle, Info } from "lucide-react";
 import { apiGet, apiPost, ProviderType } from "@/lib/api";
+import { MonitoringDashboard } from "@/components/summarizer/monitoring-dashboard";
 
 interface AvailableMetric {
   name: string;
@@ -374,6 +375,9 @@ export function SummarizerClient() {
           </CardContent>
         </Card>
       )}
+
+      {/* Advanced Monitoring Dashboard (Sprint 5) */}
+      <MonitoringDashboard />
 
       {/* Save Button */}
       <div className="flex justify-end">
