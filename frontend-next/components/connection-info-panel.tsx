@@ -38,6 +38,7 @@ import {
   type ProviderConnection,
   type SummarizerModel,
 } from "@/lib/api";
+import { fetchHealthStatus, type HealthStatus } from "@/lib/health";
 import { toast } from "@/components/ui/use-toast";
 import type { SummaryStatus, DatasetMeta, OllamaModelTag } from "@/lib/types";
 
@@ -185,6 +186,8 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     error: null as string | null,
     confirmOpen: false,
   });
+  const [openwebuiHealth, setOpenwebuiHealth] = React.useState<HealthStatus | null>(null);
+  const [isCheckingOpenwebui, setIsCheckingOpenwebui] = React.useState(false);
 
   React.useEffect(() => {
     selectedConnectionRef.current = state.selectedConnection;
@@ -288,12 +291,11 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
             const shouldForceValidate = shouldAutoValidate && forceAutoValidate;
             const modelsResponse = await getSummarizerModels(
               providerType,
-              false,
+              true,  // Include unvalidated models
               shouldAutoValidate,
               shouldForceValidate
             );
             const modelNames = modelsResponse.models
-              .filter(model => model.validated)
               .map(model => model.name.trim())
               .sort((a, b) => a.localeCompare(b));
             modelsByConnection[providerType] = modelNames;
@@ -445,6 +447,33 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }
   }, []);
 
+  const refreshOpenwebuiHealth = React.useCallback(
+    async (hostOverride?: string) => {
+      const hostToCheck = (hostOverride ?? originalValues.hostname ?? state.hostname ?? "").trim();
+      if (!hostToCheck) {
+        setOpenwebuiHealth(null);
+        return;
+      }
+      setIsCheckingOpenwebui(true);
+      try {
+        const result = await fetchHealthStatus("openwebui");
+        setOpenwebuiHealth(result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unable to fetch OpenWebUI status";
+        setOpenwebuiHealth({
+          service: "openwebui",
+          status: "error",
+          attempts: 0,
+          elapsed_seconds: 0,
+          detail: message,
+        });
+      } finally {
+        setIsCheckingOpenwebui(false);
+      }
+    },
+    [originalValues.hostname, state.hostname]
+  );
+
   // Poll scheduler config every 10 seconds to update next_run_at
   React.useEffect(() => {
     const interval = setInterval(() => {
@@ -516,6 +545,10 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     const interval = setInterval(checkForAutoSync, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  React.useEffect(() => {
+    void refreshOpenwebuiHealth();
+  }, [refreshOpenwebuiHealth]);
 
   // Fetch settings, sync status, scheduler config, and dataset metadata on mount
   React.useEffect(() => {
@@ -638,6 +671,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
           hostname: updatedSettings.host,
           apiKey: updatedSettings.api_key,
         });
+        await refreshOpenwebuiHealth(updatedSettings.host);
         // TODO: Show success toast notification
       } else {
         setState(prev => ({ ...prev, isSaving: false, isEditMode: false }));
@@ -720,6 +754,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
       });
     } finally {
       setState(prev => ({ ...prev, isTesting: false }));
+      void refreshOpenwebuiHealth();
     }
   };
 
@@ -774,11 +809,10 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }));
 
     try {
-      // Fetch models for the new connection (only validated)
-      const modelsResponse = await getSummarizerModels(newConnection, false);
+      // Fetch models for the new connection (including unvalidated)
+      const modelsResponse = await getSummarizerModels(newConnection, true);
 
       const modelNames = modelsResponse.models
-        .filter(model => model.validated)
         .map(model => model.name.trim())
         .sort((a, b) => a.localeCompare(b));
 
@@ -1069,6 +1103,36 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     }));
   };
 
+  const openwebuiStatus = !state.hostname
+    ? "not_configured"
+    : isCheckingOpenwebui || openwebuiHealth === null
+      ? "loading"
+      : openwebuiHealth?.status ?? "error";
+
+  const openwebuiStatusDetail = React.useMemo(() => {
+    if (!state.hostname) {
+      return "Add a host to enable sync.";
+    }
+    if (!openwebuiHealth) {
+      return isCheckingOpenwebui ? "Checking connection..." : "Status unavailable.";
+    }
+    if (openwebuiHealth.status !== "ok") {
+      return openwebuiHealth.detail || "Unable to reach OpenWebUI.";
+    }
+    const meta = openwebuiHealth.meta ?? {};
+    const parts: string[] = [];
+    if (typeof meta.chat_count === "number") {
+      parts.push(`${meta.chat_count} chats`);
+    }
+    if (typeof meta.version === "string" && meta.version.trim()) {
+      parts.push(`v${meta.version.trim()}`);
+    }
+    if (typeof meta.host === "string" && meta.host.trim()) {
+      parts.push(meta.host.trim());
+    }
+    return parts.join(" • ") || "Connected";
+  }, [isCheckingOpenwebui, openwebuiHealth, state.hostname]);
+
   return (
     <div className={cn("w-full space-y-6", className)}>
       {/* System Status Section */}
@@ -1086,17 +1150,25 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
               <div className="flex items-center gap-2">
                 <div className={cn(
                   "h-3 w-3 rounded-full",
-                  state.hostname ? "bg-green-500" : "bg-red-500"
+                  openwebuiStatus === "ok"
+                    ? "bg-emerald-500"
+                    : openwebuiStatus === "loading"
+                      ? "bg-amber-400"
+                      : "bg-destructive"
                 )} />
                 <span className="font-semibold">
-                  {state.hostname ? "Configured" : "Not Configured"}
+                  {openwebuiStatus === "ok"
+                    ? "Online"
+                    : openwebuiStatus === "loading"
+                      ? "Checking..."
+                      : openwebuiStatus === "not_configured"
+                        ? "Not Configured"
+                        : "Offline"}
                 </span>
               </div>
-              {state.hostname && (
-                <div className="text-xs text-muted-foreground truncate">
-                  {state.hostname}
-                </div>
-              )}
+              <div className="text-xs text-muted-foreground truncate">
+                {openwebuiStatusDetail}
+              </div>
             </div>
 
             {/* Dataset Status */}
