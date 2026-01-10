@@ -162,6 +162,7 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
     modelsByConnection: {
       ollama: [],
       openai: [],
+      litellm: [],
       openwebui: [],
     },
     summaryModelError: null,
