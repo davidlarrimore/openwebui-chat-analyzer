@@ -560,7 +560,7 @@ class SummarizerSettings(BaseModel):
     )
     connection: str = Field(
         ...,
-        description="LLM provider connection type (ollama | openai | openwebui).",
+        description="LLM provider connection type (ollama | openai | openwebui | litellm).",
     )
     model_source: Literal["database", "environment", "default"] = Field(
         ...,
@@ -600,8 +600,8 @@ class SummarizerSettingsUpdate(BaseModel):
     )
     connection: Optional[str] = Field(
         default=None,
-        description="LLM provider connection type (ollama | openai | openwebui).",
-        pattern="^(ollama|openai|openwebui)$",
+        description="LLM provider connection type (ollama | openai | openwebui | litellm).",
+        pattern="^(ollama|openai|openwebui|litellm)$",
     )
 
 
@@ -610,7 +610,7 @@ class ProviderConnection(BaseModel):
 
     type: str = Field(
         ...,
-        description="Provider identifier (ollama | openai | openwebui)",
+        description="Provider identifier (ollama | openai | openwebui | litellm)",
     )
     available: bool = Field(
         ...,
@@ -670,7 +670,7 @@ class ValidateModelRequest(BaseModel):
 
     connection: str = Field(
         ...,
-        description="Provider identifier (ollama | openai | openwebui)",
+        description="Provider identifier (ollama | openai | openwebui | litellm)",
     )
     model: str = Field(
         ...,
