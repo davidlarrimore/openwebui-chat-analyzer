@@ -3252,7 +3252,7 @@ class DataService:
 
         # Handle connection type setting
         env_connection = os.getenv("SUMMARIZER_CONNECTION_TYPE", "").strip().lower()
-        if env_connection and env_connection in ("ollama", "openai", "openwebui"):
+        if env_connection and env_connection in ("ollama", "openai", "litellm", "openwebui"):
             pass  # Valid environment connection
         else:
             env_connection = None
@@ -3262,7 +3262,7 @@ class DataService:
         stored_connection = None
         if isinstance(stored_connection_raw, str) and stored_connection_raw.strip():
             conn_val = stored_connection_raw.strip().lower()
-            if conn_val in ("ollama", "openai", "openwebui"):
+            if conn_val in ("ollama", "openai", "litellm", "openwebui"):
                 stored_connection = conn_val
 
         if stored_connection is not None:

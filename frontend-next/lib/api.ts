@@ -286,7 +286,7 @@ export async function updateSummarizerSettings(
 // Summarizer Provider Connections API
 // ============================================================================
 
-export type ProviderType = "ollama" | "openai" | "openwebui";
+export type ProviderType = "ollama" | "openai" | "litellm" | "openwebui";
 
 export interface ProviderConnection {
   type: ProviderType;
