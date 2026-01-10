@@ -1552,9 +1552,9 @@ class DataService:
         # Load connection setting with three-tier priority (database → environment → default)
         env_connection_raw = os.getenv("SUMMARIZER_CONNECTION_TYPE", "")
         env_connection = (env_connection_raw or "").strip().lower() or None
-        if env_connection is not None and env_connection not in ("ollama", "openai", "openwebui"):
+        if env_connection is not None and env_connection not in ("ollama", "openai", "litellm", "openwebui"):
             LOGGER.warning(
-                "Ignoring invalid SUMMARIZER_CONNECTION_TYPE value: %s (expected ollama, openai, openwebui)",
+                "Ignoring invalid SUMMARIZER_CONNECTION_TYPE value: %s (expected ollama, openai, litellm, openwebui)",
                 env_connection_raw,
             )
             env_connection = None
@@ -1564,7 +1564,7 @@ class DataService:
         stored_connection = None
         if isinstance(stored_connection_raw, str) and stored_connection_raw.strip():
             conn_val = stored_connection_raw.strip().lower()
-            if conn_val in ("ollama", "openai", "openwebui"):
+            if conn_val in ("ollama", "openai", "litellm", "openwebui"):
                 stored_connection = conn_val
 
         if stored_connection is not None:
