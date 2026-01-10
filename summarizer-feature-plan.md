@@ -299,7 +299,7 @@ This plan outlines a comprehensive redesign of the Summarizer system to transfor
 
 | Sprint | Status | Actual Tokens | Actual Time | Actual Cost | Notes |
 |--------|--------|---------------|-------------|-------------|-------|
-| Sprint 1 | ✅ **DONE** | 15,271,642 | ~2 hours | **$14.87** | **Network connectivity issues caused rework and extra tokens.** Avg: 53,211 tokens/request ($0.052/request). All features implemented with comprehensive testing (41 test cases). Bug fix (d485eb1): Added litellm to connection validation. |
+| Sprint 1 | ✅ **DONE** | 15,286,642 | ~2.5 hours | **$15.02** | **Network connectivity issues caused rework and extra tokens.** All features implemented with comprehensive testing (41 test cases). Post-implementation debugging fixed 2 bugs (commits: 9de37bf, e292628, f9a2ec7). |
 | Sprint 2 | Not Started | - | - | - | - |
 | Sprint 3 | Not Started | - | - | - | - |
 | Sprint 4 | Not Started | - | - | - | - |
@@ -310,23 +310,31 @@ This plan outlines a comprehensive redesign of the Summarizer system to transfor
 **Status**: ✅ **DONE** - Committed (bdf636c + d485eb1)
 
 **Cost Analysis**:
-- **Total Tokens**: 15,271,642 tokens
-- **Average per Request**: 53,211 tokens
-- **Total Spend**: $14.87
-- **Cost per Request**: $0.052
+- **Implementation Tokens**: 15,271,642 tokens
+- **Debugging Tokens**: ~15,000 tokens
+- **Total Tokens**: 15,286,642 tokens
+- **Total Spend**: $15.02
+- **Average per Request**: ~53,000 tokens ($0.052/request)
 
 **Variance from Estimate**:
 - **Estimated Cost**: $5.00
-- **Actual Cost**: $14.87
-- **Variance**: +197% ($9.87 over budget)
+- **Actual Cost**: $15.02
+- **Variance**: +200% ($10.02 over budget)
 
 **Root Cause**: Network connectivity issues during implementation caused multiple retries, rework, and token usage spikes. Despite higher token usage, all deliverables were completed successfully with comprehensive test coverage.
 
-**Post-Implementation Bug Fix**:
-- **Issue**: User testing revealed "litellm" was missing from connection type validation in `backend/services.py`
-- **Impact**: Caused "Bad Request" errors and "Connection changed (not persisted)" errors in frontend
-- **Resolution**: Added "litellm" to validation tuple (commit d485eb1)
-- **Files Modified**: `backend/services.py` (line 3412)
+**Post-Implementation Bug Fixes** (~15,000 tokens, $0.15):
+1. **Missing LiteLLM Validation (commits: 9de37bf, e292628)**:
+   - **Issue**: "litellm" missing from validation in `backend/services.py` and `backend/models.py`
+   - **Impact**: "Bad Request" and "Connection changed (not persisted)" errors
+   - **Resolution**: Added "litellm" to validation tuples and Pydantic regex patterns
+   - **Files Modified**: `backend/services.py` (line 3412), `backend/models.py` (4 model fields)
+
+2. **gpt-5 Temperature Mismatch (commit: f9a2ec7)**:
+   - **Issue**: gpt-5 models via LiteLLM only accept temperature=1.0, but summarizer used 0.2
+   - **Impact**: "Data Sync Failed: Internal Error" during summarization
+   - **Resolution**: Extended auto-adjustment logic to cover litellm provider
+   - **Files Modified**: `backend/summarizer.py` (line 1321)
 
 ## Verification & Testing Strategy
 
