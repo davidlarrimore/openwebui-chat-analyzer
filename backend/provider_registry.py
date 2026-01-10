@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from . import config
 from .models_registry import get_models_registry
 from .providers import (
+    LiteLLMProvider,
     LLMProvider,
     ModelInfo,
     OllamaProvider,
@@ -67,6 +68,13 @@ class ProviderRegistry:
         else:
             LOGGER.debug("OpenAI provider not registered (API key not configured)")
 
+        # Register LiteLLM if API key is configured
+        if config.LITELLM_API_KEY:
+            self._providers["litellm"] = LiteLLMProvider()
+            LOGGER.info("Registered LiteLLM provider")
+        else:
+            LOGGER.debug("LiteLLM provider not registered (API key not configured)")
+
         # Register OpenWebUI if base URL is configured
         openwebui_base = config.get_openwebui_api_base()
         openwebui_key = config.get_openwebui_api_key()
@@ -94,7 +102,7 @@ class ProviderRegistry:
 
         Returns:
             List of connection status objects with keys:
-            - type: Provider identifier ("ollama" | "openai" | "openwebui")
+            - type: Provider identifier ("ollama" | "openai" | "litellm" | "openwebui")
             - available: Boolean indicating if provider is usable
             - reason: Optional string explaining why unavailable
 
@@ -102,6 +110,7 @@ class ProviderRegistry:
             [
                 {"type": "ollama", "available": True, "reason": None},
                 {"type": "openai", "available": False, "reason": "API key not configured"},
+                {"type": "litellm", "available": False, "reason": "API key not configured"},
                 {"type": "openwebui", "available": False, "reason": "Base URL not configured"}
             ]
         """
@@ -139,6 +148,21 @@ class ProviderRegistry:
                 "reason": "API key not configured (set OPENAI_API_KEY)",
             })
 
+        # LiteLLM (only if configured)
+        litellm = self._providers.get("litellm")
+        if litellm:
+            connections.append({
+                "type": "litellm",
+                "available": litellm.is_available(),
+                "reason": litellm.get_unavailable_reason(),
+            })
+        else:
+            connections.append({
+                "type": "litellm",
+                "available": False,
+                "reason": "API key not configured (set LITELLM_API_KEY)",
+            })
+
         # OpenWebUI (only if configured)
         openwebui = self._providers.get("openwebui")
         if openwebui:
@@ -167,7 +191,7 @@ class ProviderRegistry:
         """Get models available from a specific provider.
 
         Args:
-            connection_type: Provider identifier ("ollama" | "openai" | "openwebui")
+            connection_type: Provider identifier ("ollama" | "openai" | "litellm" | "openwebui")
             include_unvalidated: If True, include models not yet validated for completions
             auto_validate_missing: When True, automatically validates models if no validated
                 entries exist for the provider.
@@ -221,12 +245,16 @@ class ProviderRegistry:
             })
 
         validated_count = sum(1 for m in result if m["validated"])
-        if (
+        # Validate models if:
+        # - Auto-validation is enabled AND
+        # - We have models to validate AND
+        # - Either force_auto_validate is True OR (no validated models exist AND include_unvalidated is False)
+        should_validate = (
             auto_validate_missing
-            and not include_unvalidated
             and total_discovered > 0
-            and (force_auto_validate or validated_count == 0)
-        ):
+            and (force_auto_validate or (validated_count == 0 and not include_unvalidated))
+        )
+        if should_validate:
             LOGGER.warning(
                 "No validated models found for %s; auto validating %d candidates",
                 connection_type,
