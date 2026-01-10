@@ -799,3 +799,105 @@ class GenAIEmbedResponse(BaseModel):
     raw: Dict[str, Any] = Field(
         default_factory=dict, description="Raw response payload returned by Ollama"
     )
+
+
+# =========================================================================
+# Sprint 2: Multi-Metric Extraction Models
+# =========================================================================
+
+
+class MetricExtractionRequest(BaseModel):
+    """Request to extract specific metrics from a conversation.
+
+    Sprint 2: Enables selective metric execution - users can choose which
+    metrics to extract rather than running all metrics for every conversation.
+    """
+
+    chat_id: str = Field(..., description="Chat ID to extract metrics for")
+    metrics: List[str] = Field(
+        ...,
+        description="List of metrics to extract (summary, outcome, tags, classification)",
+    )
+    force_reextract: bool = Field(
+        default=False,
+        description="Force re-extraction even if metrics already exist",
+    )
+
+
+class MetricExtractionResult(BaseModel):
+    """Result from a single metric extraction."""
+
+    metric_name: str = Field(..., description="Name of the metric (summary, outcome, etc.)")
+    success: bool = Field(..., description="Whether extraction succeeded")
+    data: Optional[Dict[str, Any]] = Field(
+        default=None, description="Extracted metric data (structure varies by metric)"
+    )
+    error: Optional[str] = Field(
+        default=None, description="Error message if extraction failed"
+    )
+    provider: Optional[str] = Field(
+        default=None, description="Provider used for extraction"
+    )
+    model: Optional[str] = Field(default=None, description="Model used for extraction")
+
+
+class MetricExtractionResponse(BaseModel):
+    """Response containing results from multiple metric extractions."""
+
+    chat_id: str = Field(..., description="Chat ID that was processed")
+    results: List[MetricExtractionResult] = Field(
+        ..., description="Results for each requested metric"
+    )
+    total_metrics: int = Field(..., description="Total number of metrics requested")
+    successful_metrics: int = Field(..., description="Number of metrics extracted successfully")
+    failed_metrics: int = Field(..., description="Number of metrics that failed")
+
+
+class ConversationMetrics(BaseModel):
+    """Comprehensive metrics extracted from a conversation.
+
+    Sprint 2: This model represents the complete set of metrics stored
+    in the chat metadata JSON field. Flexible schema allows easy extension
+    with new metrics in future sprints.
+    """
+
+    summary: Optional[str] = Field(
+        default=None, description="One-line conversation summary"
+    )
+    outcome: Optional[int] = Field(
+        default=None, description="Outcome score (1-5)", ge=1, le=5
+    )
+    outcome_reasoning: Optional[str] = Field(
+        default=None, description="Explanation for outcome score"
+    )
+    tags: Optional[List[str]] = Field(
+        default=None, description="Topic tags for categorization"
+    )
+    domain: Optional[str] = Field(
+        default=None, description="Domain classification (technical, creative, etc.)"
+    )
+    resolution_status: Optional[str] = Field(
+        default=None,
+        description="Resolution status (resolved, pending, abandoned, unclear)",
+    )
+
+
+class ExtractionMetadata(BaseModel):
+    """Metadata about the metric extraction process.
+
+    Sprint 2: Tracks which metrics were extracted, when, and with which models.
+    Enables debugging and quality monitoring.
+    """
+
+    timestamp: str = Field(..., description="ISO 8601 timestamp of extraction")
+    provider: str = Field(..., description="Provider used for extraction")
+    models_used: Dict[str, str] = Field(
+        ...,
+        description="Map of metric names to model names used for each metric",
+    )
+    metrics_extracted: List[str] = Field(
+        ..., description="List of metrics that were successfully extracted"
+    )
+    extraction_errors: List[str] = Field(
+        default_factory=list, description="List of metrics that failed during extraction"
+    )
