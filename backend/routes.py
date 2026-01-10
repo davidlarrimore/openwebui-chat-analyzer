@@ -1354,6 +1354,75 @@ def update_admin_summarizer_settings(
 
 
 @router.get(
+    "/admin/summarizer/settings",
+    response_model=SummarizerSettings,
+    tags=["admin"],
+)
+def get_summarizer_settings_v2(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> SummarizerSettings:
+    """Return the active summarizer configuration (alternate path for new UI)."""
+    settings = service.get_summarizer_settings()
+    return SummarizerSettings(**settings)
+
+
+@router.post(
+    "/admin/summarizer/settings",
+    response_model=SummarizerSettings,
+    tags=["admin"],
+)
+def update_summarizer_settings_v2(
+    payload: SummarizerSettingsUpdate,
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> SummarizerSettings:
+    """Update summarizer configuration (alternate path for new UI)."""
+    try:
+        settings = service.update_summarizer_settings(
+            model=payload.model,
+            temperature=payload.temperature,
+            enabled=payload.enabled,
+            connection=payload.connection
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SummarizerSettings(**settings)
+
+
+@router.get(
+    "/admin/summarizer/statistics",
+    tags=["admin"],
+)
+def get_summarizer_statistics(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> Dict[str, Any]:
+    """Return summarizer performance statistics."""
+    stats = service.get_summarizer_statistics()
+    return stats
+
+
+@router.post(
+    "/admin/summarizer/test-connection",
+    tags=["admin"],
+)
+def test_summarizer_connection(
+    _: AuthUserPublic = Depends(resolve_authenticated_user),
+    service: DataService = Depends(resolve_data_service),
+) -> Dict[str, str]:
+    """Test the current summarizer connection."""
+    try:
+        result = service.test_summarizer_connection()
+        return result
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": str(exc)
+        }
+
+
+@router.get(
     "/admin/ollama/models",
     tags=["admin"],
 )

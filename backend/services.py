@@ -3459,6 +3459,132 @@ class DataService:
 
         return self.get_summarizer_settings()
 
+    def get_summarizer_statistics(self) -> Dict[str, Any]:
+        """Return summarizer performance statistics.
+
+        Includes overall stats and per-metric breakdown.
+        """
+        with self._lock:
+            total_chats = len(self._chats)
+            chats_with_summaries = sum(
+                1 for chat in self._chats
+                if chat.get(SUMMARY_FIELD) or self._get_chat_summary(chat)
+            )
+            chats_with_outcome = sum(
+                1 for chat in self._chats
+                if chat.get(OUTCOME_FIELD) is not None
+            )
+
+        # Calculate basic stats
+        total_processed = chats_with_summaries
+        total_failed = total_chats - chats_with_summaries if total_chats > 0 else 0
+        success_rate = chats_with_summaries / total_chats if total_chats > 0 else 0.0
+
+        # Per-metric statistics
+        by_metric = {
+            "summary": {
+                "success": chats_with_summaries,
+                "failed": total_chats - chats_with_summaries,
+            },
+            "outcome": {
+                "success": chats_with_outcome,
+                "failed": total_chats - chats_with_outcome,
+            },
+        }
+
+        return {
+            "total_processed": total_processed,
+            "total_failed": total_failed,
+            "success_rate": success_rate,
+            "by_metric": by_metric,
+        }
+
+    def test_summarizer_connection(self) -> Dict[str, str]:
+        """Test the current summarizer connection.
+
+        Returns a dict with 'status' and 'message' keys.
+        """
+        settings = self.get_summarizer_settings()
+        connection_type = settings.get("connection", "ollama")
+        model = settings.get("model", "")
+
+        if not model:
+            return {
+                "status": "error",
+                "message": "No model configured. Please select a model in the Connection tab.",
+            }
+
+        try:
+            # Get the provider from the registry
+            from backend.provider_registry import get_default_provider_registry
+            registry = get_default_provider_registry()
+
+            # Get the appropriate provider based on connection type
+            if connection_type == "ollama":
+                provider = registry.get_ollama_provider()
+            elif connection_type == "openai":
+                provider = registry.get_openai_provider()
+            elif connection_type == "litellm":
+                provider = registry.get_litellm_provider()
+            elif connection_type == "openwebui":
+                provider = registry.get_openwebui_provider()
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Unknown connection type: {connection_type}",
+                }
+
+            if provider is None:
+                return {
+                    "status": "error",
+                    "message": f"{connection_type.capitalize()} provider not available. Check configuration.",
+                }
+
+            # Try to validate the model
+            try:
+                is_valid = provider.validate_model(model)
+                if is_valid:
+                    return {
+                        "status": "success",
+                        "message": f"Successfully connected to {connection_type} with model {model}",
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "message": f"Model {model} is not available or does not support completions",
+                    }
+            except Exception as validation_error:
+                # Try a simple generation test as fallback
+                try:
+                    result = provider.generate(
+                        prompt="Say 'test' if you can see this message",
+                        model=model,
+                        temperature=0.1,
+                        max_tokens=10,
+                    )
+                    if result and len(result.strip()) > 0:
+                        return {
+                            "status": "success",
+                            "message": f"Successfully connected to {connection_type} with model {model}",
+                        }
+                    else:
+                        return {
+                            "status": "error",
+                            "message": f"Model {model} returned empty response",
+                        }
+                except Exception as gen_error:
+                    return {
+                        "status": "error",
+                        "message": f"Failed to generate with model {model}: {str(gen_error)}",
+                    }
+
+        except Exception as exc:
+            LOGGER.exception("Failed to test summarizer connection")
+            return {
+                "status": "error",
+                "message": f"Connection test failed: {str(exc)}",
+            }
+
     def sync_ollama_models(self) -> Dict[str, Any]:
         """Sync Ollama models with database and test completion support.
 
