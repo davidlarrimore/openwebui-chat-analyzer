@@ -299,7 +299,7 @@ This plan outlines a comprehensive redesign of the Summarizer system to transfor
 
 | Sprint | Status | Actual Tokens | Actual Time | Actual Cost | Notes |
 |--------|--------|---------------|-------------|-------------|-------|
-| Sprint 1 | ✅ **DONE** | 15,271,642 | ~2 hours | **$14.87** | **Network connectivity issues caused rework and extra tokens.** Avg: 53,211 tokens/request ($0.052/request). All features implemented with comprehensive testing (41 test cases). |
+| Sprint 1 | ✅ **DONE** | 15,271,642 | ~2 hours | **$14.87** | **Network connectivity issues caused rework and extra tokens.** Avg: 53,211 tokens/request ($0.052/request). All features implemented with comprehensive testing (41 test cases). Bug fix (d485eb1): Added litellm to connection validation. |
 | Sprint 2 | Not Started | - | - | - | - |
 | Sprint 3 | Not Started | - | - | - | - |
 | Sprint 4 | Not Started | - | - | - | - |
@@ -307,7 +307,7 @@ This plan outlines a comprehensive redesign of the Summarizer system to transfor
 | Sprint 6 | Not Started | - | - | - | - |
 
 ### Sprint 1 Detailed Breakdown
-**Status**: ✅ **DONE** - Accepted and ready for commit
+**Status**: ✅ **DONE** - Committed (bdf636c + d485eb1)
 
 **Cost Analysis**:
 - **Total Tokens**: 15,271,642 tokens
@@ -321,6 +321,12 @@ This plan outlines a comprehensive redesign of the Summarizer system to transfor
 - **Variance**: +197% ($9.87 over budget)
 
 **Root Cause**: Network connectivity issues during implementation caused multiple retries, rework, and token usage spikes. Despite higher token usage, all deliverables were completed successfully with comprehensive test coverage.
+
+**Post-Implementation Bug Fix**:
+- **Issue**: User testing revealed "litellm" was missing from connection type validation in `backend/services.py`
+- **Impact**: Caused "Bad Request" errors and "Connection changed (not persisted)" errors in frontend
+- **Resolution**: Added "litellm" to validation tuple (commit d485eb1)
+- **Files Modified**: `backend/services.py` (line 3412)
 
 ## Verification & Testing Strategy
 
