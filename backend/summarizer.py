@@ -1317,7 +1317,8 @@ def _headline_with_provider(
 
     # Prepare generation options
     temperature = get_summary_temperature()
-    if connection == "openai" and active_model.startswith("gpt-5") and temperature != 1.0:
+    # gpt-5 models only support temperature=1.0 (applies to both openai and litellm providers)
+    if connection in ("openai", "litellm") and active_model.startswith("gpt-5") and temperature != 1.0:
         _logger.info(
             "Adjusting summarizer temperature for model=%s provider=%s (from=%s to=1.0)",
             active_model,
