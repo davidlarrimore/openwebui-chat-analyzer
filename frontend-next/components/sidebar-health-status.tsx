@@ -9,7 +9,8 @@ const POLL_INTERVAL_MS = 10000;
 const SERVICE_PRESENTATION: Record<HealthService, { label: string; icon: string }> = {
   backend: { label: "Backend API", icon: "🛰️" },
   ollama: { label: "Ollama", icon: "🧠" },
-  database: { label: "Database", icon: "🗄️" }
+  database: { label: "Database", icon: "🗄️" },
+  openwebui: { label: "OpenWebUI", icon: "🕸️" }
 };
 
 type ServiceLookup = {
@@ -87,6 +88,19 @@ function summariseMeta(service: HealthService, status: HealthStatus | null): str
     return "API reachable";
   }
 
+  if (service === "openwebui") {
+    const version = typeof meta["version"] === "string" ? meta["version"] : undefined;
+    const chatCount = typeof meta["chat_count"] === "number" ? meta["chat_count"] : undefined;
+    if (chatCount !== undefined) {
+      const label = chatCount === 1 ? "chat" : "chats";
+      return `${chatCount} ${label} accessible${version ? ` • v${version}` : ""}`;
+    }
+    if (version) {
+      return `v${version}`;
+    }
+    return "Connected";
+  }
+
   return undefined;
 }
 
@@ -128,6 +142,13 @@ function formatErrorDetail(service: HealthService, detail: unknown): string | un
     ];
     if (connectionIndicators.some(indicator => lower.includes(indicator))) {
       return `Unable to reach Ollama at ${location}. Confirm the service is running and accessible.`;
+    }
+  }
+
+  if (service === "openwebui") {
+    const hostMatch = message.match(/https?:\/\/[^\s)]+/i);
+    if (hostMatch) {
+      return `${message} (target: ${hostMatch[0]})`;
     }
   }
 

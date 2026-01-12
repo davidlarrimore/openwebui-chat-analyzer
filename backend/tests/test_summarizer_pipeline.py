@@ -72,3 +72,31 @@ def test_summarize_chats_emits_chunk_events(monkeypatch: pytest.MonkeyPatch) -> 
         if event[-1] and event[-1].get("type") == "chat"
     ]
     assert final_events, "Expected a final chat completion event."
+
+
+def test_summarize_with_chunks_preserves_failure_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure failure reasons from the LLM path aren't dropped."""
+    failure = summarizer.ConversationAnalysis(
+        summary="",
+        outcome=None,
+        failure_reason="Ollama returned an empty summary response.",
+        provider="ollama",
+    )
+
+    def fake_summarize_context(_: str, **__: Any) -> summarizer.ConversationAnalysis:
+        return failure
+
+    monkeypatch.setattr(summarizer, "_summarize_context", fake_summarize_context)
+
+    analysis = summarizer._summarize_with_chunks(  # pylint: disable=protected-access
+        ["line one", "line two"],
+        fallback_context="line one line two",
+        on_progress=None,
+        progress_index=1,
+        total=1,
+        chat_id="chat-1",
+        connection="ollama",
+    )
+
+    assert analysis.failure_reason == "Ollama returned an empty summary response."
+    assert analysis.provider == "ollama"

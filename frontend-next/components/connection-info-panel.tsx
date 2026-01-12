@@ -1268,232 +1268,29 @@ export function ConnectionInfoPanel({ className, initialSettings }: ConnectionIn
         </CardContent>
       </Card>
 
-      {/* Summarizer Configuration */}
-      <Card>
+      {/* Summarizer Configuration - Moved to Summarizer Tab */}
+      <Card className="border-2 border-dashed">
         <CardHeader>
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">🧠</span>
             <div>
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <span>🧠 Summarizer Settings</span>
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Configure the LLM provider, model, and temperature for automated chat summaries.
+              <CardTitle className="text-lg">Summarizer Configuration</CardTitle>
+              <p className="text-sm text-muted-foreground mt-1">
+                Summarizer configuration has moved to the dedicated Summarizer tab
               </p>
-            </div>
-            <div className="flex w-full justify-end lg:w-auto">
-              <div className="inline-flex w-full max-w-sm justify-end rounded-md shadow-sm lg:w-auto" role="group">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-none first:rounded-l-md last:rounded-r-md first:border-r-0"
-                  onClick={() => fetchSummarizerConfig()}
-                  disabled={state.isLoadingSummaryModels}
-                >
-                  {state.isLoadingSummaryModels ? "⏳ Refreshing..." : "🔁 Refresh"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="default"
-                  className="rounded-none first:rounded-l-md last:rounded-r-md bg-emerald-600 text-white hover:bg-emerald-700"
-                  onClick={handleValidateModels}
-                  disabled={state.isLoadingSummaryModels || state.isValidatingSummaryModels}
-                >
-                  {state.isValidatingSummaryModels ? "🧪 Validating..." : "✅ Validate"}
-                </Button>
-              </div>
             </div>
           </div>
         </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Summarizer Enable/Disable Toggle */}
-          <div className="flex items-center justify-between rounded-lg border p-3">
-            <div className="flex-1 space-y-1">
-              <Label htmlFor="summarizer-enabled" className="font-medium">
-                Enable Summarizer
-              </Label>
-              <p className="text-xs text-muted-foreground">
-                Generate summaries for chats during data loading
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              {state.summarizerEnabledSource && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-                  {state.summarizerEnabledSource}
-                </span>
-              )}
-              <Switch
-                id="summarizer-enabled"
-                checked={state.summarizerEnabled}
-                onCheckedChange={handleSummarizerEnabledChange}
-                disabled={state.isUpdatingSummarizerEnabled}
-              />
-            </div>
-          </div>
-
-          {/* Connection Type Selector */}
-          <div className="space-y-2">
-            <Label className="font-medium">Connection Type</Label>
-            <div className="grid grid-cols-3 gap-2">
-              {state.availableConnections.map((conn) => {
-                const isSelected = conn.type === state.selectedConnection;
-                const isDisabled = !conn.available || state.isLoadingConnections || state.isLoadingSummaryModels;
-
-                return (
-                  <button
-                    key={conn.type}
-                    type="button"
-                    onClick={() => !isDisabled && handleConnectionChange(conn.type)}
-                    disabled={isDisabled}
-                    className={cn(
-                      "flex flex-col items-center justify-center rounded-lg border-2 p-3 text-sm font-medium transition-all",
-                      isSelected && conn.available
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border bg-background hover:border-primary/50",
-                      !conn.available && "opacity-50 cursor-not-allowed",
-                      isDisabled && "cursor-wait"
-                    )}
-                    title={!conn.available && conn.reason ? conn.reason : undefined}
-                  >
-                    <span>{CONNECTION_LABELS[conn.type] ?? conn.type}</span>
-                    {!conn.available && (
-                      <span className="text-xs text-muted-foreground mt-1">
-                        Unavailable
-                      </span>
-                    )}
-                    {isSelected && conn.available && (
-                      <span className="text-xs mt-1">✓</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-            {state.selectedConnection && (() => {
-              const selectedConn = state.availableConnections.find(c => c.type === state.selectedConnection);
-              return selectedConn && !selectedConn.available && selectedConn.reason ? (
-                <p className="text-xs text-muted-foreground">
-                  {selectedConn.reason}
-                </p>
-              ) : null;
-            })()}
-          </div>
-
-          {state.summaryModelError ? (
-            <div className="flex items-start justify-between gap-3 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-              <div className="flex-1">
-                <span>⚠️ {state.summaryModelError}</span>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => fetchSummarizerConfig()}
-                disabled={state.isLoadingSummaryModels}
-              >
-                Retry
-              </Button>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="summarizer-model" className="font-medium">
-                  Summarizer Model
-                </Label>
-                {state.summaryModelSource && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-                    {state.summaryModelSource}
-                  </span>
-                )}
-              </div>
-              <select
-                id="summarizer-model"
-                className={cn(
-                  "w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring",
-                  state.isUpdatingSummaryModel ? "opacity-75" : "",
-                )}
-                value={state.summaryModel}
-                onChange={handleSummaryModelChange}
-                disabled={
-                  state.isLoadingSummaryModels ||
-                  state.isUpdatingSummaryModel ||
-                  state.availableSummaryModels.length === 0
-                }
-              >
-                {state.availableSummaryModels.length === 0 ? (
-                  <option value="">
-                    {state.isLoadingSummaryModels ? "Loading models..." : "No models detected"}
-                  </option>
-                ) : (
-                  state.availableSummaryModels.map(model => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))
-                )}
-              </select>
-              <p className="text-xs text-muted-foreground">
-                This model is used when rebuilding summaries or running manual summarizer jobs.
-              </p>
-              {summaryModelUnavailable && (
-                <p className="text-xs text-destructive">
-                  The configured model was not found on the selected provider. Select another option before running summaries.
-                </p>
-              )}
-
-              {/* Temperature Slider */}
-              <div className="space-y-3 pt-4 border-t">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="summarizer-temperature" className="font-medium">
-                      Temperature
-                    </Label>
-                    <div className="text-xs text-muted-foreground">
-                      {getTemperatureLabel(state.summaryTemperature)} — {state.summaryTemperature.toFixed(1)}
-                    </div>
-                  </div>
-                  {state.summaryTemperatureSource && (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-                      {state.summaryTemperatureSource}
-                    </span>
-                  )}
-                </div>
-                <input
-                  id="summarizer-temperature"
-                  type="range"
-                  min="0"
-                  max="2"
-                  step="0.1"
-                  value={state.summaryTemperature}
-                  onChange={(e) => {
-                    const newValue = parseFloat(e.target.value);
-                    setState(prev => ({ ...prev, summaryTemperature: newValue }));
-                  }}
-                  onMouseUp={(e) => {
-                    const target = e.target as HTMLInputElement;
-                    handleTemperatureChange(parseFloat(target.value));
-                  }}
-                  onTouchEnd={(e) => {
-                    const target = e.target as HTMLInputElement;
-                    handleTemperatureChange(parseFloat(target.value));
-                  }}
-                  disabled={state.isLoadingSummaryModels || state.isUpdatingSummaryTemperature}
-                  className={cn(
-                    "w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer",
-                    "[&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary",
-                    "[&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-0",
-                    state.isUpdatingSummaryTemperature ? "opacity-50" : ""
-                  )}
-                />
-                <div className="flex justify-between text-xs text-muted-foreground px-1">
-                  <span>Strict (0.0)</span>
-                  <span>Balanced (0.5)</span>
-                  <span>Experimental (1.5)</span>
-                  <span>Max (2.0)</span>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Controls creativity vs. consistency in generated summaries. Lower values follow instructions more closely, higher values are more creative.
-                </p>
-              </div>
-            </div>
-          )}
+        <CardContent>
+          <p className="text-sm text-muted-foreground mb-4">
+            Configure LLM provider, model selection, temperature, and metrics extraction in the new Summarizer admin panel.
+          </p>
+          <Button
+            variant="outline"
+            onClick={() => router.push("/dashboard/admin/summarizer")}
+          >
+            Open Summarizer Settings →
+          </Button>
         </CardContent>
       </Card>
 

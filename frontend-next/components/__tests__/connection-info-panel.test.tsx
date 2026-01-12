@@ -15,10 +15,13 @@ import React from "react";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { ConnectionInfoPanel } from "../connection-info-panel";
 import * as api from "@/lib/api";
+import * as health from "@/lib/health";
 
 // Mock the API module
 jest.mock("@/lib/api");
 const mockedApi = api as jest.Mocked<typeof api>;
+jest.mock("@/lib/health");
+const mockedHealth = health as jest.Mocked<typeof health>;
 
 // Mock toast
 jest.mock("@/components/ui/use-toast", () => ({
@@ -83,6 +86,13 @@ describe("ConnectionInfoPanel", () => {
     mockedApi.updateAnonymizationSettings.mockResolvedValue({ enabled: true, source: "database" });
     mockedApi.getOpenWebUISettings.mockResolvedValue(defaultInitialSettings);
     mockedApi.updateOpenWebUISettings.mockResolvedValue(defaultInitialSettings);
+    mockedHealth.fetchHealthStatus.mockResolvedValue({
+      service: "openwebui",
+      status: "ok",
+      attempts: 1,
+      elapsed_seconds: 0.1,
+      meta: { host: "http://test.com", chat_count: 0 },
+    });
     mockedApi.apiGet.mockImplementation(async (path: string) => {
       if (path === "api/v1/datasets/meta") {
         return { chat_count: 0, user_count: 0, model_count: 0, message_count: 0 };

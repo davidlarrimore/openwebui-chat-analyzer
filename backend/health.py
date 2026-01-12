@@ -184,16 +184,26 @@ def _ping_openwebui(host: str, api_key: Optional[str]) -> Dict[str, Any]:
         LOGGER.debug("Testing OpenWebUI connection without authentication")
 
     # Try to fetch basic endpoints
-    result: Dict[str, Any] = {}
+    result: Dict[str, Any] = {"host": base_url, "authenticated": bool(token)}
 
     try:
         with requests.Session() as session:
             session.headers.update(headers)
 
+            # Lightweight availability check
+            health_url = f"{base_url}/api/health"
+            try:
+                response = session.get(health_url, timeout=5)
+                response.raise_for_status()
+                result["reachable"] = True
+            except requests.exceptions.RequestException as exc:
+                LOGGER.debug("Could not fetch health from %s: %s", health_url, exc)
+                result["reachable"] = False
+
             # Try to get version/config info
             config_url = f"{base_url}/api/config"
             try:
-                response = session.get(config_url, timeout=10)
+                response = session.get(config_url, timeout=5)
                 response.raise_for_status()
                 config_data = response.json()
                 if isinstance(config_data, dict):
@@ -201,31 +211,29 @@ def _ping_openwebui(host: str, api_key: Optional[str]) -> Dict[str, Any]:
             except (requests.exceptions.RequestException, ValueError) as exc:
                 LOGGER.debug("Could not fetch config from %s: %s", config_url, exc)
 
-            # Try to get chat count (requires auth)
-            chats_url = f"{base_url}/api/v1/chats/all/db"
+            # Try a lightweight authenticated endpoint instead of full chat export
+            models_url = f"{base_url}/api/v1/models"
             try:
-                response = session.get(chats_url, timeout=10)
+                response = session.get(models_url, timeout=10)
                 response.raise_for_status()
-                chats_data = response.json()
-                if isinstance(chats_data, list):
-                    result["chat_count"] = len(chats_data)
-                elif isinstance(chats_data, dict) and "chats" in chats_data:
-                    result["chat_count"] = len(chats_data.get("chats", []))
+                models_data = response.json()
+                if isinstance(models_data, list):
+                    result["model_count"] = len(models_data)
             except requests.exceptions.HTTPError as exc:
                 if exc.response.status_code == 401:
-                    raise RuntimeError("Authentication failed. Please check your API key.")
-                raise RuntimeError(f"HTTP {exc.response.status_code}: {exc.response.reason}")
+                    raise RuntimeError(f"Authentication failed for {base_url}. Please check your API key.")
+                raise RuntimeError(f"HTTP {exc.response.status_code} from {base_url}: {exc.response.reason}")
             except requests.exceptions.RequestException as exc:
-                raise RuntimeError(f"Connection failed: {str(exc)}")
+                raise RuntimeError(f"Connection failed for {base_url}: {str(exc)}")
             except ValueError as exc:
-                raise RuntimeError(f"Invalid JSON response: {str(exc)}")
+                raise RuntimeError(f"Invalid JSON response from {base_url}: {str(exc)}")
 
     except requests.exceptions.ConnectionError as exc:
-        raise RuntimeError(f"Cannot connect to {base_url}. Please check the hostname.")
+        raise RuntimeError(f"Cannot connect to {base_url}. Please check the hostname. ({exc})")
     except requests.exceptions.Timeout:
         raise RuntimeError(f"Connection to {base_url} timed out.")
     except requests.exceptions.RequestException as exc:
-        raise RuntimeError(f"Request failed: {str(exc)}")
+        raise RuntimeError(f"Request failed for {base_url}: {str(exc)}")
 
     return result
 

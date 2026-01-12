@@ -52,7 +52,7 @@ services:
       - PORT=3000
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   nginx:
