@@ -662,13 +662,32 @@ def sync_openwebui(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        # Catch any other exceptions and log them with full traceback
+        import traceback
+        error_details = traceback.format_exc()
+        LOGGER.error("Unexpected error during sync: %s\n%s", str(exc), error_details)
+        raise HTTPException(
+            status_code=500,
+            detail=f"An unexpected error occurred during sync: {type(exc).__name__}: {str(exc)}"
+        ) from exc
 
-    mode_label = getattr(stats, "mode", None) or "unknown"
-    return UploadResponse(
-        detail=f"Open WebUI data synced successfully ({mode_label} mode).",
-        dataset=dataset,
-        stats=stats,
-    )
+    try:
+        mode_label = getattr(stats, "mode", None) or "unknown"
+        return UploadResponse(
+            detail=f"Open WebUI data synced successfully ({mode_label} mode).",
+            dataset=dataset,
+            stats=stats,
+        )
+    except Exception as exc:
+        # Catch errors during response creation and log them
+        import traceback
+        error_details = traceback.format_exc()
+        LOGGER.error("Error creating sync response: %s\n%s", str(exc), error_details)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Sync completed but failed to create response: {type(exc).__name__}: {str(exc)}"
+        ) from exc
 
 
 @router.get("/sync/scheduler", response_model=SyncSchedulerConfig)

@@ -36,7 +36,8 @@ COPY --chown=appuser:appuser backend/ /app/backend
 USER appuser
 
 EXPOSE 8502
-CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8502"]
+# Add timeout for long-running requests (sync operations can take 60+ seconds)
+CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8502", "--timeout-keep-alive", "300"]
 
 # ------------------------------------------------------------
 # Frontend Next.js image

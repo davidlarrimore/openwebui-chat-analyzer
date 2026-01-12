@@ -489,7 +489,20 @@ export async function getSyncStatus(): Promise<SyncStatusResponse> {
  * @param request - Sync request with hostname, optional API key, and sync mode
  */
 export async function runSync(request: SyncRunRequest): Promise<SyncRunResponse> {
-  return apiPost<SyncRunResponse>("api/v1/openwebui/sync", request);
+  // Sync operations can take 60+ seconds for large datasets
+  // Use a longer timeout and add signal for abort control
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+
+  try {
+    return await apiPost<SyncRunResponse>(
+      "api/v1/openwebui/sync",
+      request,
+      { signal: controller.signal }
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 /**
