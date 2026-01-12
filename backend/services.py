@@ -3516,22 +3516,16 @@ class DataService:
 
         try:
             # Get the provider from the registry
-            from backend.provider_registry import get_default_provider_registry
-            registry = get_default_provider_registry()
+            from backend.provider_registry import get_provider_registry
+            registry = get_provider_registry()
 
             # Get the appropriate provider based on connection type
-            if connection_type == "ollama":
-                provider = registry.get_ollama_provider()
-            elif connection_type == "openai":
-                provider = registry.get_openai_provider()
-            elif connection_type == "litellm":
-                provider = registry.get_litellm_provider()
-            elif connection_type == "openwebui":
-                provider = registry.get_openwebui_provider()
-            else:
+            try:
+                provider = registry.get_provider(connection_type)
+            except ValueError as e:
                 return {
                     "status": "error",
-                    "message": f"Unknown connection type: {connection_type}",
+                    "message": str(e),
                 }
 
             if provider is None:
@@ -3557,12 +3551,11 @@ class DataService:
                 # Try a simple generation test as fallback
                 try:
                     result = provider.generate(
-                        prompt="Say 'test' if you can see this message",
                         model=model,
-                        temperature=0.1,
-                        max_tokens=10,
+                        prompt="Say 'test' if you can see this message",
+                        options={"temperature": 0.1, "max_tokens": 10},
                     )
-                    if result and len(result.strip()) > 0:
+                    if result and result.content and len(result.content.strip()) > 0:
                         return {
                             "status": "success",
                             "message": f"Successfully connected to {connection_type} with model {model}",

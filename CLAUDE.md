@@ -18,17 +18,28 @@ This is a **local-first analytics platform** for Open WebUI conversations, compr
    - Writes to SQLite via `backend/storage.py:DatabaseStorage`
    - Maintains pseudonym mapping for privacy (`backend/data/pseudonyms.json`)
 
-2. **Summarization Pipeline** (`backend/summarizer.py`):
+2. **Multi-Metric Extraction Pipeline** (`backend/summarizer.py`, `backend/metrics/`):
    - Extracts salient utterances using sentence-transformers (configurable via `SALIENT_K`)
-   - Generates one-line summaries via provider registry (`backend/provider_registry.py`)
-   - Supports three connection types: Ollama (local), OpenAI (API), OpenWebUI (fallback)
+   - **LLM as a Judge** architecture with separate extractors for each metric:
+     - **Summary** (`backend/metrics/summary.py`): One-line conversation summaries with quality validation
+     - **Outcome** (`backend/metrics/outcome.py`): Multi-factor scoring (completeness, accuracy, helpfulness)
+     - **Tags** (`backend/metrics/tags.py`): Topic classification and categorization
+     - **Classification** (`backend/metrics/classification.py`): Domain and resolution status
+   - Native structured output support (JSON mode) with exponential backoff retry
+   - Quality validation detects hallucinations via keyword overlap analysis
+   - Drop-off detection identifies abandoned conversations
+   - Graceful degradation: partial results on failure, per-metric retry logic
    - Saves incrementally to avoid data loss during long-running jobs
+   - Stores extended metrics in JSON `meta` field (backward compatible)
 
 3. **Provider Architecture** (`backend/providers/`):
    - Abstract base: `backend/providers/base.py:LLMProvider`
-   - Implementations: `ollama.py`, `openai.py`, `openwebui.py`
+   - Implementations: `ollama.py`, `openai.py`, `litellm.py`, `openwebui.py`
    - Registry manages model discovery and validation (`backend/provider_registry.py`)
    - All providers support: list models, validate, generate completions
+   - **Structured output support**: JSON mode via `response_format` (OpenAI/LiteLLM) or `format` parameter (Ollama)
+   - Exponential backoff with jitter for transient failures
+   - Parse error retry with automatic JSON mode activation
 
 4. **Authentication System** (`backend/auth/`):
    - Three modes: `DEFAULT` (local only), `OAUTH` (OIDC only), `HYBRID` (both)
@@ -40,6 +51,14 @@ This is a **local-first analytics platform** for Open WebUI conversations, compr
    - Auto-routes all requests through `/api/backend/*` prefix
    - Server-side: forwards cookies to backend for session validation
    - Client-side: credentials-included fetch with auth redirect handling
+
+6. **Monitoring & Observability** (`backend/monitoring.py`):
+   - **MetricsCollector** singleton for centralized metrics collection
+   - Thread-safe with circular buffers (1000 logs, 200 failures)
+   - Tracks: latency, token usage, retry counts, success/failure rates per metric
+   - Optional detailed logging to `logs/summarizer/*.jsonl` (configurable retention)
+   - 5 monitoring API endpoints for statistics, failures, and log export
+   - Live monitoring dashboard in admin UI with color-coded metrics
 
 ### Key Subsystems
 
@@ -62,7 +81,11 @@ This is a **local-first analytics platform** for Open WebUI conversations, compr
 
 **Frontend Structure**:
 - **Pages**: `frontend-next/app/` (App Router)
+  - Admin layout with tabs: `/dashboard/admin/layout.tsx`
+  - Connection config: `/dashboard/admin/connection/`
+  - Summarizer config: `/dashboard/admin/summarizer/` (Sprint 4)
 - **Components**: `frontend-next/components/` (shared UI with shadcn/ui)
+  - Summarizer components: `components/summarizer/` (config panel, monitoring dashboard)
 - **API/Types**: `frontend-next/lib/` (centralized API client + TypeScript types)
 - **Auth**: Automatic redirects, session checks on protected routes
 
@@ -171,10 +194,14 @@ echo $OWUI_SQLITE_PATH  # or check .env
 ### Modifying the Summarization Pipeline
 
 - Model selection: stored in `Setting` table with key `SUMMARIZER_PRIMARY_MODEL`
-- Connection type: `SUMMARIZER_CONNECTION_TYPE` (ollama|openai|openwebui)
+- Connection type: `SUMMARIZER_CONNECTION_TYPE` (ollama|openai|litellm|openwebui)
 - Runtime config: `backend/summarizer.py` module-level variables (`_SUMMARY_MODEL`, etc.)
 - Context building: `_build_salient_context()` uses sentence-transformers
 - Incremental saves: `DataService._update_chat_summary()` commits after each chat
+- **Multi-metric extraction**: Use `extract_metrics()` for selective metric extraction
+- **Metric configuration**: Admin UI allows enabling/disabling individual metrics
+- **Quality validation**: `backend/metrics/validation.py` provides hallucination detection
+- **Monitoring**: All extractions auto-logged to `MetricsCollector` singleton
 
 ### Testing with Sample Data
 
@@ -191,9 +218,22 @@ make restart-backend
 - `OWUI_DIRECT_HOST`: Default Open WebUI URL
 - `OLLAMA_BASE_URL`: Ollama service URL (`http://host.docker.internal:11434` in Docker)
 - `OPENAI_API_KEY`: Required for OpenAI provider
+- `LITELLM_API_KEY`: Required for LiteLLM provider
+- `LITELLM_API_BASE`: LiteLLM proxy URL (default: `http://localhost:4000`)
 - `AUTH_MODE`: `DEFAULT` (local) | `HYBRID` (local+OIDC) | `OAUTH` (OIDC only)
 - `SESSION_SECRET`: MUST be changed in production
 - `OWUI_SQLITE_PATH`: Database location (default: `data/openwebui_chat_analyzer.db`)
+
+**Summarizer Configuration** (Sprint 1-5 enhancements):
+- `SUMMARIZER_USE_EXPONENTIAL_BACKOFF`: Enable exponential backoff retry (default: true)
+- `SUMMARIZER_RETRY_MAX_ATTEMPTS`: Max retry attempts (default: 5)
+- `SUMMARIZER_PARSE_RETRY_ATTEMPTS`: Retry on JSON parse errors (default: 2)
+- `SUMMARIZER_MIN_KEYWORD_OVERLAP`: Quality validation threshold (default: 0.15)
+- `SUMMARIZER_ENABLE_QUALITY_VALIDATION`: Enable hallucination detection (default: true)
+- `SUMMARIZER_ENABLE_DROPOFF_DETECTION`: Detect abandoned conversations (default: true)
+- `SUMMARIZER_ENABLE_DETAILED_LOGGING`: Log prompts/responses to files (default: false)
+- `SUMMARIZER_MAX_RETRIES`: Per-metric retry limit (default: 2, max: 5)
+- `SUMMARIZER_ENABLE_GRACEFUL_DEGRADATION`: Continue on partial failures (default: true)
 
 **Provider Registry** (`backend/data/models_registry.json`):
 - Maps model IDs to friendly names
@@ -213,3 +253,14 @@ make restart-backend
 - **Hot Reload**: Backend uses `uvicorn --reload`; frontend uses Next.js dev server
 - **Docker Networking**: Frontend uses `FRONTEND_NEXT_BACKEND_BASE_URL=http://backend:8502` internally
 - **Port Mapping**: Backend → 8502, Frontend → 8503 (configurable via `FRONTEND_NEXT_PORT`)
+- **Multi-Metric Architecture** (Sprints 1-6 Complete):
+  - Each metric (summary, outcome, tags, classification) extracted via separate LLM call
+  - Metrics stored in JSON `meta` field; legacy fields (`gen_chat_summary`, `gen_chat_outcome`) maintained for backward compatibility
+  - Selective metric execution: users choose which metrics to extract via admin UI
+  - Dedicated Summarizer admin tab with full configuration UI (model, temperature, metrics)
+  - Monitoring auto-tracks all extractions with latency, token usage, and success rates
+  - Quality validation and drop-off detection run automatically when enabled
+  - Production-grade reliability: exponential backoff, parse retry, graceful degradation
+  - Comprehensive testing: integration tests (437 lines), load tests (486 lines), 100+ conversation scenarios
+  - Full documentation: See `docs/SUMMARIZER.md` for detailed architecture and troubleshooting guide
+  - **Sprint 6 Deliverables**: End-to-end integration tests, performance/load tests, comprehensive documentation, consolidated admin UI

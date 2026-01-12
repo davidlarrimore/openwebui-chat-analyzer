@@ -10,6 +10,7 @@ DEV_COMPOSE_FILES ?= -f docker-compose.yml -f docker-compose.dev.yml
 
 .PHONY: help up up-frontend-next up-backend down down-frontend-next \
 	down-backend build build-frontend-next build-backend rebuild \
+	rebuild-frontend rebuild-backend \
 	restart restart-frontend-next restart-backend destroy logs \
 	logs-frontend-next logs-backend ps status dev dev-down dev-restart \
 	shell-frontend-next shell-frontend-next-dev shell-backend \
@@ -58,8 +59,30 @@ build-frontend-next: ## Build only the Next.js frontend image
 build-backend: ## Build only the backend image
 	$(COMPOSE) build $(BACKEND)
 
-rebuild: ## Rebuild images and restart all services
-	$(COMPOSE) up -d --build $(SERVICES)
+rebuild: ## Rebuild images and restart services (use SERVICE=frontend|backend for specific service)
+	@if [ "$(SERVICE)" = "frontend" ] || [ "$(SERVICE)" = "frontend-next" ]; then \
+		echo "Rebuilding frontend-next container..."; \
+		$(COMPOSE) build $(FRONTEND_NEXT); \
+		echo "Restarting frontend-next service..."; \
+		$(COMPOSE) up -d $(FRONTEND_NEXT); \
+		echo "Frontend-next rebuilt and restarted successfully!"; \
+	elif [ "$(SERVICE)" = "backend" ]; then \
+		echo "Rebuilding backend container..."; \
+		$(COMPOSE) build $(BACKEND); \
+		echo "Restarting backend service..."; \
+		$(COMPOSE) up -d $(BACKEND); \
+		echo "Backend rebuilt and restarted successfully!"; \
+	else \
+		echo "Rebuilding all services..."; \
+		$(COMPOSE) up -d --build $(SERVICES); \
+		echo "All services rebuilt and restarted successfully!"; \
+	fi
+
+rebuild-frontend: ## Rebuild frontend only (shorthand for 'make rebuild SERVICE=frontend')
+	@$(MAKE) rebuild SERVICE=frontend
+
+rebuild-backend: ## Rebuild backend only (shorthand for 'make rebuild SERVICE=backend')
+	@$(MAKE) rebuild SERVICE=backend
 
 # -------------------------------------------------------------------
 # Restart and status helpers
